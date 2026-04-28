@@ -1,0 +1,159 @@
+/* frontend/src/index.css */
+
+/* Inter font from Google Fonts */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ---------------------------------------------------------------------------
+   Base reset
+--------------------------------------------------------------------------- */
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background-color: #080C18;
+  background-image:
+    linear-gradient(135deg, rgba(10,30,60,0.9) 0%, rgba(8,12,24,1) 45%, rgba(12,8,28,0.95) 100%),
+    radial-gradient(ellipse 70% 40% at 100% 0%, rgba(60,30,120,0.25) 0%, transparent 60%);
+  background-attachment: fixed;
+  color: #F1F5F9;
+  font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ---------------------------------------------------------------------------
+   Scrollbar — dark institutional style
+--------------------------------------------------------------------------- */
+::-webkit-scrollbar        { width: 5px; height: 5px; }
+::-webkit-scrollbar-track  { background: #0B1420; }
+::-webkit-scrollbar-thumb  { background: #1E3A5F; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #2E5280; }
+
+/* ---------------------------------------------------------------------------
+   Recharts overrides — keep tooltips and legends on-brand
+--------------------------------------------------------------------------- */
+.recharts-tooltip-wrapper .recharts-default-tooltip {
+  background: #0D1B2E !important;
+  border: 1px solid #1E3A5F !important;
+  border-radius: 6px !important;
+  font-size: 12px !important;
+}
+
+.recharts-legend-item-text {
+  color: #94A3B8 !important;
+  font-size: 11px !important;
+}
+
+.recharts-cartesian-axis-tick-value {
+  fill: #475569 !important;
+  font-size: 11px !important;
+}
+
+.recharts-cartesian-grid-horizontal line,
+.recharts-cartesian-grid-vertical line {
+  stroke: #1E3A5F !important;
+  stroke-opacity: 0.5 !important;
+}
+
+/* ---------------------------------------------------------------------------
+   Utility classes used across components
+--------------------------------------------------------------------------- */
+
+/* Positive / negative return colours */
+.text-pos { color: #34D399; }
+.text-neg { color: #F87171; }
+.text-neu { color: #0EA5E9; }
+
+/* Status badge */
+.badge-active {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 10px;
+  font-weight: 500;
+  background: rgba(52,211,153,0.1);
+  color: #34D399;
+  border: 1px solid rgba(52,211,153,0.25);
+}
+
+.badge-paused {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 10px;
+  font-weight: 500;
+  background: rgba(245,158,11,0.1);
+  color: #F59E0B;
+  border: 1px solid rgba(245,158,11,0.25);
+}
+
+/* Section label */
+.section-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: #475569;
+  padding-bottom: 10px;
+}
+
+/* Card base */
+.card {
+  background: #111C2B;
+  border: 1px solid #1E3A5F;
+  border-radius: 8px;
+}
+
+/* Divider */
+.divider {
+  height: 1px;
+  background: #1E3A5F;
+  margin: 0 0 16px;
+}
+
+/* Table */
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.data-table th {
+  text-align: left;
+  padding: 7px 10px;
+  font-weight: 500;
+  color: #475569;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  border-bottom: 1px solid #1E3A5F;
+  background: #0D1B2E;
+}
+.data-table th.right,
+.data-table td.right { text-align: right; }
+
+.data-table tbody tr {
+  border-bottom: 1px solid #162032;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.data-table tbody tr:hover {
+  background: #1A2D45;
+}
+.data-table td {
+  padding: 7px 10px;
+  color: #CBD5E1;
+}
