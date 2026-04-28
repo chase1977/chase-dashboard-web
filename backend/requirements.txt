@@ -1,0 +1,11 @@
+# backend/requirements.txt
+fastapi
+uvicorn[standard]
+pandas
+numpy
+openpyxl
+reportlab
+python-multipart
+python-dotenv
+pydantic
+supabase

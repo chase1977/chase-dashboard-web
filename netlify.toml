@@ -6,6 +6,12 @@
   NODE_VERSION = "20"
 
 [[redirects]]
+  from   = "/api/*"
+  to     = "https://RAILWAY_URL_HERE/api/:splat"
+  status = 200
+  force  = true
+
+[[redirects]]
   from   = "/*"
   to     = "/index.html"
   status = 200
