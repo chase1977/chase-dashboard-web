@@ -7,7 +7,7 @@
 
 [[redirects]]
   from   = "/api/*"
-  to     = "https://RAILWAY_URL_HERE/api/:splat"
+  to     = "https://chase-dashboard-web-production.up.railway.app/api/:splat"
   status = 200
   force  = true
 
