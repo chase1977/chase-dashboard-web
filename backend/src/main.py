@@ -12,7 +12,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
-from src.services.demo_service import ensure_demo_data
 from src.routers import portfolio, reports, management
 
 # ---------------------------------------------------------------------------
@@ -56,8 +55,7 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def startup_event():
-    ensure_demo_data(DATA_DIR)
-    print(f"[main] Data directory: {os.path.abspath(DATA_DIR)}")
+    print(f"[main] Supabase backend active. DATA_DIR: {os.path.abspath(DATA_DIR)}")
 
 
 # ---------------------------------------------------------------------------

@@ -3,18 +3,18 @@
 /api/portfolio  —  all portfolio and drill-down endpoints.
 
 Endpoints:
-  GET /api/portfolio/                         Portfolio home page data
+  GET /api/portfolio/                         Portfolio home page (live Supabase)
   GET /api/portfolio/drilldown/{entity_id}    Any entity drill-down
   GET /api/portfolio/trader_context/{entity_id}  3-tab trader breakdown
-  GET /api/portfolio/hierarchy/{entity_type}  Hierarchy table tabs
-  GET /api/portfolio/fund_ledger              TWR + bank balance + ledger
+  GET /api/portfolio/hierarchy/{entity_type}  Hierarchy table tabs (live Supabase)
+  GET /api/portfolio/fund_ledger              TWR + bank balance + ledger (live Supabase)
 """
 
 from fastapi import APIRouter, Query, HTTPException
 from typing import Optional
 import os
+import datetime
 
-from src.services import data_service as ds
 from src.services import supabase_service as sb_svc
 from src.models.schemas import (
     PortfolioPageResponse, DrillDownPageResponse,
@@ -25,70 +25,69 @@ from src.models.schemas import (
 )
 
 router   = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
-DATA_DIR = os.environ.get(
-    "DATA_DIR",
-    os.path.join(os.path.dirname(__file__), "..", "..", "data")
-)
 
 TIME_RANGE_DAYS = {"1D": 1, "7D": 7, "30D": 30, "YTD": None, "SI": None}
 
 
 def _days(time_range: str) -> Optional[int]:
-    if time_range.upper() == "YTD":
-        import datetime
+    tr = time_range.upper()
+    if tr == "YTD":
         today = datetime.date.today()
         return (today - today.replace(month=1, day=1)).days
-    return TIME_RANGE_DAYS.get(time_range.upper())
+    return TIME_RANGE_DAYS.get(tr)
 
 
 # ---------------------------------------------------------------------------
-# Portfolio home page
+# Portfolio home page — live Supabase
 # ---------------------------------------------------------------------------
 
 @router.get("/", response_model=PortfolioPageResponse)
 def get_portfolio(time_range: str = Query("SI")):
-    days      = _days(time_range)
-    port_snap = ds.latest_snapshot("portfolio_main", DATA_DIR)
-    kpis      = KpiData(**ds.snapshot_kpis(port_snap))
+    """
+    Portfolio home page data — all figures from live Supabase tables.
 
-    entities = ds.get_entities(DATA_DIR)
-    ents_idx = entities.set_index("entity_id")
+    Sources:
+      - user_pfees_estimation  → KPIs (AUM, PnL), pod allocation, pod PnL
+      - balance_history        → equity curve, period returns (1D/7D/30D)
+      - capital_events         → TWR, initial investment
+      - pods + strategies      → pod grouping (empty = Darwin-level grouping)
+    """
+    days = _days(time_range)
 
-    # Pod summaries — include pod_code and pod_color
-    pods          = ds.children_of("portfolio_main", entity_type="pod", data_dir=DATA_DIR)
-    pod_summaries = []
-    for _, pod in pods.iterrows():
-        snap = ds.latest_snapshot(pod["entity_id"], DATA_DIR)
-        if snap is None:
-            continue
-        ent = ents_idx.loc[pod["entity_id"]] if pod["entity_id"] in ents_idx.index else None
-        pod_summaries.append(PodSummary(
-            entity_id = pod["entity_id"],
-            name      = pod["name"],
-            pod_code  = ent["pod_code"]  if ent is not None else "",
-            pod_color = ent["pod_color"] if ent is not None else "",
-            kpis      = KpiData(**ds.snapshot_kpis(snap)),
-        ))
+    # KPIs
+    kpis_dict = sb_svc.get_portfolio_kpis()
+    kpis      = KpiData(**kpis_dict)
+
+    # Pod strips
+    pod_data = sb_svc.get_pods_with_kpis()
+    pods     = [
+        PodSummary(
+            entity_id = p["entity_id"],
+            name      = p["name"],
+            pod_code  = p.get("pod_code", ""),
+            pod_color = p.get("pod_color", "#6366f1"),
+            kpis      = KpiData(**p["kpis"]),
+        )
+        for p in pod_data
+    ]
 
     # Equity curve
-    curve_df     = ds.equity_series_for("portfolio_main", days=days, data_dir=DATA_DIR)
     equity_curve = [
-        EquityPoint(timestamp=str(r["timestamp"]), equity=float(r["equity"]))
-        for _, r in curve_df.iterrows()
+        EquityPoint(timestamp=pt["timestamp"], equity=pt["equity"])
+        for pt in sb_svc.get_equity_curve_data(days)
     ]
 
-    allocation       = [AllocationSlice(**r) for r in ds.allocation_by_children("portfolio_main", DATA_DIR)]
-    pnl_contribution = [PnlBar(**r)          for r in ds.pnl_by_children("portfolio_main", DATA_DIR)]
+    # Allocation donut + PnL bars
+    allocation       = [AllocationSlice(**a) for a in sb_svc.get_allocation_data()]
+    pnl_contribution = [PnlBar(**p)          for p in sb_svc.get_pnl_contribution_data()]
 
-    port_name = entities.loc[
-        entities["entity_id"] == "portfolio_main", "name"
-    ].values[0] if not entities.empty else "Portfolio"
+    last_updated = sb_svc.get_latest_pfees_date() or str(datetime.date.today())
 
     return PortfolioPageResponse(
-        portfolio_name   = port_name,
-        last_updated     = str(port_snap["timestamp"]) if port_snap is not None else "",
+        portfolio_name   = "Chase Capital",
+        last_updated     = last_updated,
         kpis             = kpis,
-        pods             = pod_summaries,
+        pods             = pods,
         equity_curve     = equity_curve,
         allocation       = allocation,
         pnl_contribution = pnl_contribution,
@@ -96,188 +95,24 @@ def get_portfolio(time_range: str = Query("SI")):
 
 
 # ---------------------------------------------------------------------------
-# Drill-down page (any entity)
-# ---------------------------------------------------------------------------
-
-@router.get("/drilldown/{entity_id}", response_model=DrillDownPageResponse)
-def get_drilldown(entity_id: str, time_range: str = Query("SI")):
-    days     = _days(time_range)
-    entities = ds.get_entities(DATA_DIR)
-    ent_row  = entities[entities["entity_id"] == entity_id]
-
-    if ent_row.empty:
-        raise HTTPException(status_code=404, detail=f"Entity {entity_id} not found")
-
-    ent  = ent_row.iloc[0]
-    snap = ds.latest_snapshot(entity_id, DATA_DIR)
-    kpis = KpiData(**ds.snapshot_kpis(snap))
-
-    curve_df     = ds.equity_series_for(entity_id, days=days, data_dir=DATA_DIR)
-    equity_curve = [
-        EquityPoint(timestamp=str(r["timestamp"]), equity=float(r["equity"]))
-        for _, r in curve_df.iterrows()
-    ]
-
-    allocation       = [AllocationSlice(**r) for r in ds.allocation_by_children(entity_id, DATA_DIR)]
-    pnl_contribution = [PnlBar(**r)          for r in ds.pnl_by_children(entity_id, DATA_DIR)]
-    breakdown        = [BreakdownRow(**r)    for r in ds.breakdown_table(entity_id, DATA_DIR)]
-    breadcrumb       = ds.ancestor_chain(entity_id, DATA_DIR)
-
-    return DrillDownPageResponse(
-        entity_id        = entity_id,
-        entity_name      = ent["name"],
-        entity_type      = ent["entity_type"],
-        breadcrumb       = breadcrumb,
-        pod_code         = ent.get("pod_code",      ""),
-        pod_color        = ent.get("pod_color",     ""),
-        strategy_code    = ent.get("strategy_code", ""),
-        trading_style    = ent.get("trading_style", ""),
-        entity_status    = ent.get("status",        ""),
-        kpis             = kpis,
-        equity_curve     = equity_curve,
-        allocation       = allocation,
-        pnl_contribution = pnl_contribution,
-        breakdown        = breakdown,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Trader context — 3-tab breakdown (Venues | Pods | Strategies)
-# ---------------------------------------------------------------------------
-
-@router.get("/trader_context/{entity_id}", response_model=TraderContextResponse)
-def get_trader_context(entity_id: str):
-    """
-    Returns venues, pods and strategies for a given trader entity_id.
-    Cross-pod traders (e.g. CFZ in SYSDWX and ALPHA) show multiple rows
-    in pods and strategies — one per allocation slice.
-    """
-    entities = ds.get_entities(DATA_DIR)
-    ent_row  = entities[entities["entity_id"] == entity_id]
-
-    if ent_row.empty:
-        raise HTTPException(status_code=404, detail=f"Entity {entity_id} not found")
-
-    entity_name = ent_row.iloc[0]["name"]
-    ctx         = ds.trader_context(entity_id, DATA_DIR)
-
-    return TraderContextResponse(
-        entity_id   = entity_id,
-        entity_name = entity_name,
-        venues      = [BreakdownRow(**r) for r in ctx["venues"]],
-        pods        = [BreakdownRow(**r) for r in ctx["pods"]],
-        strategies  = [BreakdownRow(**r) for r in ctx["strategies"]],
-    )
-
-
-# ---------------------------------------------------------------------------
-# Hierarchy tables (Pods / Strategies / Traders / Venues tabs)
+# Hierarchy tables (Pods / Strategies / Traders / Venues tabs) — live Supabase
 # ---------------------------------------------------------------------------
 
 @router.get("/hierarchy/{entity_type}", response_model=HierarchyTableResponse)
 def get_hierarchy_table(entity_type: str):
-    entities  = ds.get_entities(DATA_DIR)
-    snap_map  = (ds.get_snapshots(DATA_DIR)
-                   .sort_values("timestamp")
-                   .groupby("entity_id").last())
-    port_snap = ds.latest_snapshot("portfolio_main", DATA_DIR)
-    port_inv  = float(port_snap.get("aum", port_snap.get("invested_capital", 1))) \
-                if port_snap is not None else 1
+    """
+    Returns hierarchy tab rows from live Supabase data.
 
-    subset = entities[entities["entity_type"] == entity_type]
-
-    # ── Venues: aggregate by unique venue name ──
-    # Each trader has its own venue child entity, but the user sees
-    # one row per counterparty (Alpha, Darwinex, IB) with combined metrics.
-    if entity_type == "venue":
-        venue_agg = {}  # name → aggregated dict
-
-        for _, ent in subset.iterrows():
-            if ent["entity_id"] not in snap_map.index:
-                continue
-            s    = snap_map.loc[ent["entity_id"]]
-            aum  = float(s.get("aum", s.get("invested_capital", 0)))
-            pnl  = float(s.get("pnl_total", s.get("open_pnl", 0)))
-            name = ent["name"]
-
-            if name not in venue_agg:
-                venue_agg[name] = dict(
-                    name          = name,
-                    entity_id     = f"venue__{name.lower().replace(' ', '_')}",
-                    entity_type   = "venue",
-                    pod_code      = "",
-                    strategy_code = "",
-                    pod_color     = "",
-                    trading_style = "",
-                    status        = "Active",
-                    aum           = 0.0,
-                    pnl           = 0.0,
-                    _weight       = 0.0,
-                    pct_1d        = 0.0,
-                    pct_7d        = 0.0,
-                    pct_30d       = 0.0,
-                    drawdown      = 0.0,
-                    win_rate      = 0.0,
-                )
-
-            agg       = venue_agg[name]
-            agg["aum"] = round(agg["aum"] + aum, 2)
-            agg["pnl"] = round(agg["pnl"] + pnl, 2)
-            old_w      = agg["_weight"]
-            agg["_weight"] += aum
-            new_w      = agg["_weight"]
-
-            for field in ("pct_1d", "pct_7d", "pct_30d", "drawdown", "win_rate"):
-                val = float(s.get(field, 0))
-                agg[field] = round(
-                    (agg[field] * old_w + val * aum) / new_w
-                    if new_w > 0 else 0.0,
-                    6
-                )
-
-        rows = []
-        for agg in venue_agg.values():
-            agg.pop("_weight", None)
-            alloc_pct = round(agg["aum"] / port_inv * 100, 2) if port_inv > 0 else 0.0
-            rows.append(BreakdownRow(allocation_pct=alloc_pct, **agg))
-
-        rows.sort(key=lambda x: x.name.lower())
-        return HierarchyTableResponse(entity_type=entity_type, rows=rows)
-
-    # ── All other entity types: one row per entity ──
-    rows = []
-    for _, ent in subset.iterrows():
-        if ent["entity_id"] not in snap_map.index:
-            continue
-        s   = snap_map.loc[ent["entity_id"]]
-        aum = float(s.get("aum", s.get("invested_capital", 0)))
-        pnl = float(s.get("pnl_total", s.get("open_pnl",   0)))
-
-        rows.append(BreakdownRow(
-            entity_id      = ent["entity_id"],
-            name           = ent["name"],
-            entity_type    = ent["entity_type"],
-            allocation_pct = round(aum / port_inv * 100, 2) if port_inv > 0 else 0.0,
-            aum            = round(aum, 2),
-            pnl            = round(pnl, 2),
-            pct_1d         = round(float(s.get("pct_1d",   0)), 6),
-            pct_7d         = round(float(s.get("pct_7d",   0)), 6),
-            pct_30d        = round(float(s.get("pct_30d",  0)), 6),
-            drawdown       = round(float(s.get("drawdown", 0)), 4),
-            win_rate       = round(float(s.get("win_rate", 0)), 4),
-            trading_style  = ent.get("trading_style", ""),
-            status         = ent.get("status",        ""),
-            pod_code       = ent.get("pod_code",      ""),
-            strategy_code  = ent.get("strategy_code", ""),
-            pod_color      = ent.get("pod_color",     ""),
-        ))
-
-    rows.sort(key=lambda x: x.name.lower())
+    entity_type: pod | strategy | trader | venue
+    - pod / strategy: aggregated from user_pfees_estimation + pods/strategies tables
+    - trader / venue: returns empty rows until trader data is available
+    """
+    rows = [BreakdownRow(**r) for r in sb_svc.get_hierarchy_rows(entity_type)]
     return HierarchyTableResponse(entity_type=entity_type, rows=rows)
 
 
 # ---------------------------------------------------------------------------
-# Fund Ledger — TWR + Bank Balance + Capital Events
+# Fund Ledger — TWR + Bank Balance + Capital Events (live Supabase)
 # ---------------------------------------------------------------------------
 
 @router.get("/fund_ledger", response_model=FundLedgerSummary)
@@ -285,21 +120,14 @@ def get_fund_ledger():
     """
     GET /api/portfolio/fund_ledger
 
-    Returns the complete fund capital ledger computed from live Supabase data:
+    Returns complete fund capital ledger from live Supabase:
       - AUM from user_pfees_estimation (latest snapshot)
       - PnL from user_pfees_estimation (latest snapshot)
       - TWR chain-linked from capital_events + balance_history
-      - Bank balance from capital_events (deposits - withdrawals)
+      - Bank balance from capital_events
       - Sub-period breakdown bounded by capital events
-
-    Falls back to local JSON/CSV if Supabase is not configured.
-    Used by: SummaryStrip on dashboard top.
     """
-    try:
-        summary = sb_svc.compute_fund_metrics()
-    except Exception:
-        # Fallback to local demo data if Supabase not reachable
-        summary = ds.get_fund_ledger_summary(DATA_DIR)
+    summary = sb_svc.compute_fund_metrics()
 
     return FundLedgerSummary(
         twr             = summary["twr"],
@@ -314,4 +142,96 @@ def get_fund_ledger():
         num_periods     = summary["num_periods"],
         inception_date  = summary["inception_date"],
         last_updated    = summary["last_updated"],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Drill-down page (any entity) — retained for future use
+# ---------------------------------------------------------------------------
+
+@router.get("/drilldown/{entity_id}", response_model=DrillDownPageResponse)
+def get_drilldown(entity_id: str, time_range: str = Query("SI")):
+    """
+    Entity drill-down page. Returns empty data until pods/strategies are populated
+    and drilldown is wired to Supabase. entity_id format: pod_<id> | strategy_<id>
+    """
+    # Parse type + id from entity_id (e.g. "pod_3", "darwin_sxr")
+    parts       = entity_id.split("_", 1)
+    entity_type = parts[0] if parts else "unknown"
+    days        = _days(time_range)
+
+    kpis = KpiData(
+        initial_investment=0,
+        current_equity=0,
+        performance=0,
+        total_pnl=0,
+        pct_1d=0,
+        pct_7d=0,
+        pct_30d=0,
+    )
+
+    # Try to get pod/strategy name from Supabase
+    entity_name = entity_id
+    pod_code    = ""
+    pod_color   = ""
+    strategy_code = ""
+
+    if entity_type == "pod":
+        try:
+            pid  = int(parts[1]) if len(parts) > 1 else -1
+            pods = sb_svc.list_pods()
+            pod  = next((p for p in pods if p["id"] == pid), None)
+            if pod:
+                entity_name   = pod.get("name", entity_id)
+                pod_code      = pod.get("pod_code", "")
+                pod_color     = pod.get("color", "")
+        except Exception:
+            pass
+
+    elif entity_type == "strategy":
+        try:
+            sid      = int(parts[1]) if len(parts) > 1 else -1
+            strats   = sb_svc.list_strategies()
+            strategy = next((s for s in strats if s["id"] == sid), None)
+            if strategy:
+                entity_name   = strategy.get("name", entity_id)
+                strategy_code = strategy.get("strategy_code", "")
+        except Exception:
+            pass
+
+    equity_curve = [
+        EquityPoint(timestamp=pt["timestamp"], equity=pt["equity"])
+        for pt in sb_svc.get_equity_curve_data(days)
+    ]
+
+    return DrillDownPageResponse(
+        entity_id        = entity_id,
+        entity_name      = entity_name,
+        entity_type      = entity_type,
+        breadcrumb       = [{"id": "portfolio_main", "name": "Portfolio"}],
+        pod_code         = pod_code,
+        pod_color        = pod_color,
+        strategy_code    = strategy_code,
+        trading_style    = "",
+        entity_status    = "Active",
+        kpis             = kpis,
+        equity_curve     = equity_curve,
+        allocation       = [],
+        pnl_contribution = [],
+        breakdown        = [],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Trader context — returns empty until trader data available
+# ---------------------------------------------------------------------------
+
+@router.get("/trader_context/{entity_id}", response_model=TraderContextResponse)
+def get_trader_context(entity_id: str):
+    return TraderContextResponse(
+        entity_id   = entity_id,
+        entity_name = entity_id,
+        venues      = [],
+        pods        = [],
+        strategies  = [],
     )
