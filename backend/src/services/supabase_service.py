@@ -111,6 +111,90 @@ def get_latest_pfees_date() -> Optional[str]:
     return _get_cached("pfees_date", _fetch)
 
 
+def get_pfees_history_all() -> list[dict]:
+    """
+    All rows from user_pfees_estimation ordered by Date asc (cached 60s).
+    Used for per-Darwin period returns, drawdown, and sparklines.
+    ~880 rows for 22 days × 20 Darwins × 2 accounts — fine to cache.
+    """
+    def _fetch():
+        sb  = get_client()
+        res = (
+            sb.table("user_pfees_estimation")
+            .select('"Date","AccountId","Darwin","Invested","Current PnL"')
+            .order('"Date"', desc=False)
+            .execute()
+        )
+        return res.data or []
+    return _get_cached("pfees_history_all", _fetch)
+
+
+def _compute_trader_metrics(history: list[dict]) -> dict:
+    """
+    Compute per-(AccountId, Darwin_raw) performance metrics from full pfees history.
+
+    Equity = Invested + Current PnL  (Darwinex: Invested is deployed capital,
+    PnL is cumulative gain/loss — equity is the true current value).
+
+    Period returns: (equity_latest - equity_Ndays_ago) / equity_Ndays_ago
+    Max drawdown:   peak-to-trough on equity series, expressed as a negative fraction.
+
+    Returns { (account_id_int, darwin_raw_str): { pct_1d, pct_7d, pct_30d, max_drawdown } }
+    """
+    from collections import defaultdict
+
+    # Build equity time series per (AccountId, Darwin)
+    series: dict = defaultdict(list)
+    for row in history:
+        acct = int(row.get("AccountId") or 0)
+        drw  = (row.get("Darwin") or "").strip()
+        inv  = float(row.get("Invested")     or 0)
+        pnl  = float(row.get("Current PnL") or 0)
+        d    = str(row.get("Date"))
+        series[(acct, drw)].append({"date": d, "equity": round(inv + pnl, 2)})
+
+    # Sort each series by date
+    for key in series:
+        series[key].sort(key=lambda r: r["date"])
+
+    result: dict = {}
+    for (acct, drw), pts in series.items():
+        if not pts:
+            result[(acct, drw)] = {"pct_1d": 0.0, "pct_7d": 0.0, "pct_30d": 0.0, "max_drawdown": 0.0}
+            continue
+
+        latest_equity = pts[-1]["equity"]
+        latest_date   = pts[-1]["date"]
+
+        def _pct(n_days: int) -> float:
+            cutoff = (datetime.fromisoformat(latest_date) - timedelta(days=n_days)).strftime("%Y-%m-%d")
+            past   = [p for p in pts if p["date"] <= cutoff]
+            if not past or past[-1]["equity"] == 0:
+                return 0.0
+            return round((latest_equity - past[-1]["equity"]) / abs(past[-1]["equity"]), 6)
+
+        # Max drawdown: peak-to-trough on equity series
+        peak   = -float("inf")
+        max_dd = 0.0
+        for pt in pts:
+            eq = pt["equity"]
+            if eq > peak:
+                peak = eq
+            if peak > 0:
+                dd = (eq - peak) / peak
+                if dd < max_dd:
+                    max_dd = dd
+
+        result[(acct, drw)] = {
+            "pct_1d":       _pct(1),
+            "pct_7d":       _pct(7),
+            "pct_30d":      _pct(30),
+            "max_drawdown": round(max_dd, 6),
+        }
+
+    return result
+
+
 def get_pfees_latest_snapshot() -> list[dict]:
     """All rows from user_pfees_estimation for the latest date (cached 60s)."""
     def _fetch():
@@ -794,18 +878,22 @@ def get_hierarchy_rows(entity_type: str) -> list[dict]:
 
     elif entity_type == "trader":
         snapshot   = get_pfees_latest_snapshot()
+        history    = get_pfees_history_all()          # full date history for metrics
         strategies = list_strategies()
         pods_list  = list_pods()
         pods_idx   = {p["id"]: p for p in pods_list}
 
-        # account_id → strategy (primary mapping)
+        # account_id → strategy mapping (AccountId in pfees = account_id on strategy)
         acct_to_strat: dict[int, dict] = {}
         for s in strategies:
             aid = s.get("account_id")
             if aid is not None:
                 acct_to_strat[int(aid)] = s
 
-        # Total invested per AccountId — denominator for allocation % within strategy
+        # Pre-compute per-(AccountId, Darwin) metrics from full history
+        trader_metrics = _compute_trader_metrics(history)
+
+        # Total invested per AccountId — denominator for within-strategy allocation %
         acct_total: dict[int, float] = {}
         for row in snapshot:
             acct     = int(row.get("AccountId") or 0)
@@ -814,18 +902,29 @@ def get_hierarchy_rows(entity_type: str) -> list[dict]:
 
         rows = []
         for row in snapshot:
-            darwin_raw = (row.get("Darwin") or "").strip()
-            # Display only ticker prefix: "CFZ.5.18" → "CFZ"
-            darwin_display = _darwin_display(darwin_raw)
+            darwin_raw     = (row.get("Darwin") or "").strip()
+            darwin_display = _darwin_display(darwin_raw)   # CFZ.5.18 → CFZ
             acct           = int(row.get("AccountId") or 0)
             invested       = float(row.get("Invested") or 0)
             pnl            = float(row.get("Current PnL") or 0)
 
-            strat    = acct_to_strat.get(acct, {})
-            pid      = strat.get("pod_id")
-            pod      = pods_idx.get(pid, {}) if pid else {}
+            # Strategy + pod via AccountId
+            strat   = acct_to_strat.get(acct, {})
+            pid     = strat.get("pod_id")
+            pod     = pods_idx.get(pid, {}) if pid else {}
 
-            # Allocation % = Darwin invested / total invested in that AccountId
+            # Use strategy color as dot color (matches pod strip color on portfolio page)
+            # Falls back to pod color, then generic blue
+            strat_color = strat.get("color") or pod.get("color") or "#6366f1"
+
+            # Per-Darwin metrics from full history
+            m         = trader_metrics.get((acct, darwin_raw), {})
+            t_pct_1d  = m.get("pct_1d",       0.0)
+            t_pct_7d  = m.get("pct_7d",        0.0)
+            t_pct_30d = m.get("pct_30d",       0.0)
+            t_max_dd  = m.get("max_drawdown",  0.0)
+
+            # Allocation % within AccountId (strategy-level denominator)
             acct_tot  = acct_total.get(acct, 0.0)
             alloc_pct = round(invested / acct_tot * 100, 2) if acct_tot else 0.0
 
@@ -837,16 +936,16 @@ def get_hierarchy_rows(entity_type: str) -> list[dict]:
                 "allocation_pct": alloc_pct,
                 "aum":            invested,
                 "pnl":            pnl,
-                "pct_1d":         pct_1d,
-                "pct_7d":         pct_7d,
-                "pct_30d":        pct_30d,
-                "drawdown":       0.0,
+                "pct_1d":         t_pct_1d,
+                "pct_7d":         t_pct_7d,
+                "pct_30d":        t_pct_30d,
+                "drawdown":       t_max_dd,
                 "win_rate":       0.0,
                 "trading_style":  None,
                 "status":         "Active",
                 "pod_code":       pod.get("pod_code", ""),
                 "strategy_code":  strat.get("strategy_code", ""),
-                "pod_color":      pod.get("color", "#6366f1"),
+                "pod_color":      strat_color,
             })
 
         rows.sort(key=lambda x: x["aum"], reverse=True)
