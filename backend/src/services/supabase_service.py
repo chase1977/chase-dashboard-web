@@ -834,14 +834,24 @@ def get_hierarchy_rows(entity_type: str) -> list[dict]:
         rows               = []
         strat_net_deployed = _get_net_deployed_per_account()
 
+        # Broker → AccountId reverse mapping (for strategies with brokerage_account set)
+        acct_to_broker_s = _match_pfees_accounts_to_brokerage()   # { acct_int: "Chase1" }
+        broker_to_acct_s = {v: k for k, v in acct_to_broker_s.items()}  # { "Chase1": acct_int }
+
         if strategies:
             for s in strategies:
                 code    = (s.get("strategy_code") or "").upper()
                 acct_id = s.get("account_id")
+                broker  = s.get("brokerage_account")
 
-                # Primary: account_id → aggregate; fallback: strategy_code → Darwin display
+                # Lookup priority:
+                # 1. account_id column directly (if set + matches pfees AccountId)
+                # 2. brokerage_account → AccountId via invest-vs-deploy matching
+                # 3. strategy_code → Darwin display name fallback
                 if acct_id is not None and int(acct_id) in acct_agg:
                     agg = acct_agg[int(acct_id)]
+                elif broker and broker_to_acct_s.get(broker) in acct_agg:
+                    agg = acct_agg[broker_to_acct_s[broker]]
                 else:
                     agg = darwin_agg.get(code, {"invested": 0.0, "pnl": 0.0})
 
@@ -905,14 +915,24 @@ def get_hierarchy_rows(entity_type: str) -> list[dict]:
         pods_list  = list_pods()
         pods_idx   = {p["id"]: p for p in pods_list}
 
-        # Primary: account_id → strategy (most reliable when set)
+        # ── Lookup chain (3 levels) ──────────────────────────────────────────
+        # 1. account_id on strategy matches pfees AccountId integer directly
         acct_to_strat: dict[int, dict] = {}
         for s in strategies:
             aid = s.get("account_id")
             if aid is not None:
                 acct_to_strat[int(aid)] = s
 
-        # Fallback: strategy_code → strategy (matches Darwin display prefix e.g. "CFZ")
+        # 2. brokerage_account on strategy matched to pfees AccountId via
+        #    invested-vs-net_deployed ratio comparison (works without account_id column)
+        broker_to_strat: dict[str, dict] = {}
+        for s in strategies:
+            broker = s.get("brokerage_account")
+            if broker:
+                broker_to_strat[broker] = s
+        acct_to_broker = _match_pfees_accounts_to_brokerage()   # { acct_int: "Chase1" }
+
+        # 3. strategy_code → strategy (last resort; works only if code == Darwin prefix)
         darwin_to_strat: dict[str, dict] = {}
         for s in strategies:
             code = (s.get("strategy_code") or "").upper()
@@ -937,8 +957,14 @@ def get_hierarchy_rows(entity_type: str) -> list[dict]:
             invested       = float(row.get("Invested") or 0)
             pnl            = float(row.get("Current PnL") or 0)
 
-            # Strategy lookup: account_id primary, Darwin display code fallback
-            strat = acct_to_strat.get(acct) or darwin_to_strat.get(darwin_display) or {}
+            # Strategy lookup: account_id → brokerage_account match → darwin code
+            broker = acct_to_broker.get(acct)
+            strat  = (
+                acct_to_strat.get(acct)                             # level 1
+                or (broker_to_strat.get(broker) if broker else None)  # level 2 ← key fix
+                or darwin_to_strat.get(darwin_display)              # level 3
+                or {}
+            )
             pid   = strat.get("pod_id")
             pod   = pods_idx.get(pid, {}) if pid else {}
 
@@ -1476,6 +1502,58 @@ def get_net_deployed() -> dict[str, float]:
     internal_transfers cache). Used by /api/management/net-deployed endpoint.
     """
     return _get_net_deployed_per_account()
+
+
+def _match_pfees_accounts_to_brokerage() -> dict[int, str]:
+    """
+    Match pfees AccountId integers → brokerage account names (Chase1, Chase3xA etc.)
+    by comparing total Invested per AccountId against net_deployed per brokerage account.
+
+    Greedy closest-ratio match: largest AccountId total → closest net_deployed bucket.
+    Handles leveraged accounts (3x) where invested ≠ net_deployed exactly.
+
+    Returns { account_id_int: brokerage_account_name }
+    e.g. { 12345: "Chase1", 67890: "Chase3xA" }
+
+    Cached under "pfees_acct_broker_map" for 60s (invalidated with internal_transfers).
+    """
+    def _compute():
+        snapshot     = get_pfees_latest_snapshot()
+        net_deployed = _get_net_deployed_per_account()
+        if not net_deployed or not snapshot:
+            return {}
+
+        # Sum Invested per AccountId from pfees
+        acct_invested: dict[int, float] = {}
+        for row in snapshot:
+            acct = int(row.get("AccountId") or 0)
+            inv  = float(row.get("Invested") or 0)
+            acct_invested[acct] = round(acct_invested.get(acct, 0.0) + inv, 2)
+
+        # Greedy match: sort AccountIds by total invested desc, pick closest broker
+        remaining = dict(net_deployed)   # brokers not yet matched
+        mapping: dict[int, str] = {}
+
+        for acct, inv_total in sorted(acct_invested.items(), key=lambda x: x[1], reverse=True):
+            if not remaining:
+                break
+            if inv_total == 0:
+                continue
+            # Closest by ratio inv_total / deployed → 1.0
+            best_broker = min(
+                remaining,
+                key=lambda b: abs(inv_total / remaining[b] - 1.0) if remaining[b] > 0 else float("inf"),
+            )
+            deployed = remaining[best_broker]
+            if deployed > 0:
+                ratio = inv_total / deployed
+                if 0.3 <= ratio <= 3.0:   # wide tolerance: 3x leverage, early PnL swings
+                    mapping[acct]   = best_broker
+                    del remaining[best_broker]
+
+        return mapping
+
+    return _get_cached("pfees_acct_broker_map", _compute)
 
 
 def create_internal_transfer(transfer_date: str, from_account: str,
