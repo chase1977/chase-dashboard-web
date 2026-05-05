@@ -309,7 +309,7 @@ function CapitalEventsTab({ data, queryClient }) {
     } finally { setDeleting(false); setDeletingId(null) }
   }
 
-  function InlineForm({ isEdit }) {
+  function renderCapitalForm(isEdit) {
     const type      = isEdit ? editType   : formType
     const isDeposit = type === 'deposit'
     const setType   = isEdit ? setEditType   : setFormType
@@ -413,8 +413,8 @@ function CapitalEventsTab({ data, queryClient }) {
         </div>
       )}
 
-      {showForm && !editEv && <InlineForm isEdit={false} />}
-      {editEv && <InlineForm isEdit={true} />}
+      {showForm && !editEv && renderCapitalForm(false)}
+      {editEv && renderCapitalForm(true)}
 
       {/* Event list */}
       <p style={{ fontSize: 10, fontWeight: 600, color: '#475569', textTransform: 'uppercase',
@@ -548,7 +548,7 @@ function InternalTransfersTab({ queryClient }) {
     } finally { setDeleting(false); setDeletingId(null) }
   }
 
-  function TransferForm({ isEdit }) {
+  function renderTransferForm(isEdit) {
     const date    = isEdit ? editDate   : formDate
     const from    = isEdit ? editFrom   : formFrom
     const to      = isEdit ? editTo     : formTo
@@ -640,8 +640,8 @@ function InternalTransfersTab({ queryClient }) {
         </div>
       )}
 
-      {showForm && !editRec && <TransferForm isEdit={false} />}
-      {editRec && <TransferForm isEdit={true} />}
+      {showForm && !editRec && renderTransferForm(false)}
+      {editRec && renderTransferForm(true)}
 
       {/* List */}
       <p style={{ fontSize: 10, fontWeight: 600, color: '#475569', textTransform: 'uppercase',
@@ -767,7 +767,7 @@ function MiscellaneousTab({ queryClient }) {
     } finally { setDeleting(false); setDeletingId(null) }
   }
 
-  function MiscForm({ isEdit }) {
+  function renderMiscForm(isEdit) {
     const date    = isEdit ? editDate   : formDate
     const etype   = isEdit ? editEType  : formEType
     const dir     = isEdit ? editDir    : formDir
@@ -875,8 +875,8 @@ function MiscellaneousTab({ queryClient }) {
         </div>
       )}
 
-      {showForm && !editRec && <MiscForm isEdit={false} />}
-      {editRec && <MiscForm isEdit={true} />}
+      {showForm && !editRec && renderMiscForm(false)}
+      {editRec && renderMiscForm(true)}
 
       {/* List */}
       <p style={{ fontSize: 10, fontWeight: 600, color: '#475569', textTransform: 'uppercase',
