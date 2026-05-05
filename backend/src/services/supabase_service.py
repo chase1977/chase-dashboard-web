@@ -819,19 +819,41 @@ def get_hierarchy_rows(entity_type: str) -> list[dict]:
             darwin_agg[darwin]["invested"] = round(darwin_agg[darwin]["invested"] + invested, 2)
             darwin_agg[darwin]["pnl"]      = round(darwin_agg[darwin]["pnl"] + pnl, 2)
 
-        # Map strategies → pfees
-        total_aum = sum(v["invested"] for v in darwin_agg.values()) or 1.0
-        rows      = []
+        # ALSO aggregate pfees by AccountId — primary lookup when account_id set on strategy
+        acct_agg: dict[int, dict] = {}
+        for row in snapshot:
+            acct     = int(row.get("AccountId") or 0)
+            invested = float(row.get("Invested") or 0)
+            pnl      = float(row.get("Current PnL") or 0)
+            if acct not in acct_agg:
+                acct_agg[acct] = {"invested": 0.0, "pnl": 0.0}
+            acct_agg[acct]["invested"] = round(acct_agg[acct]["invested"] + invested, 2)
+            acct_agg[acct]["pnl"]      = round(acct_agg[acct]["pnl"] + pnl, 2)
 
+        total_aum          = sum(v["invested"] for v in darwin_agg.values()) or 1.0
+        rows               = []
         strat_net_deployed = _get_net_deployed_per_account()
+
         if strategies:
             for s in strategies:
                 code    = (s.get("strategy_code") or "").upper()
-                agg     = darwin_agg.get(code, {"invested": 0.0, "pnl": 0.0})
-                pid     = s.get("pod_id")
-                pod     = pods_idx.get(pid, {}) if pid else {}
-                _acct   = s.get("brokerage_account")
-                initial = strat_net_deployed.get(_acct, 0.0) if _acct else float(s.get("initial_investment") or 0)
+                acct_id = s.get("account_id")
+
+                # Primary: account_id → aggregate; fallback: strategy_code → Darwin display
+                if acct_id is not None and int(acct_id) in acct_agg:
+                    agg = acct_agg[int(acct_id)]
+                else:
+                    agg = darwin_agg.get(code, {"invested": 0.0, "pnl": 0.0})
+
+                pid        = s.get("pod_id")
+                pod        = pods_idx.get(pid, {}) if pid else {}
+                # Prefer joined pod data (.select("*,pods(...)")) — always present when pod_id set
+                pod_joined = s.get("pods") or {}
+                pod_color  = pod_joined.get("color") or pod.get("color") or "#6366f1"
+                pod_code_s = pod_joined.get("pod_code") or pod.get("pod_code") or ""
+
+                _acct      = s.get("brokerage_account")
+                initial    = strat_net_deployed.get(_acct, 0.0) if _acct else float(s.get("initial_investment") or 0)
 
                 rows.append({
                     "entity_id":      f"strategy_{s['id']}",
@@ -847,9 +869,9 @@ def get_hierarchy_rows(entity_type: str) -> list[dict]:
                     "win_rate":       0.0,
                     "trading_style":  s.get("trading_style", None),
                     "status":         s.get("status", "Active"),
-                    "pod_code":       pod.get("pod_code", ""),
+                    "pod_code":       pod_code_s,
                     "strategy_code":  s.get("strategy_code", ""),
-                    "pod_color":      pod.get("color", "#6366f1"),
+                    "pod_color":      pod_color,
                 })
         else:
             # No strategies — one row per Darwin code
@@ -883,12 +905,19 @@ def get_hierarchy_rows(entity_type: str) -> list[dict]:
         pods_list  = list_pods()
         pods_idx   = {p["id"]: p for p in pods_list}
 
-        # account_id → strategy mapping (AccountId in pfees = account_id on strategy)
+        # Primary: account_id → strategy (most reliable when set)
         acct_to_strat: dict[int, dict] = {}
         for s in strategies:
             aid = s.get("account_id")
             if aid is not None:
                 acct_to_strat[int(aid)] = s
+
+        # Fallback: strategy_code → strategy (matches Darwin display prefix e.g. "CFZ")
+        darwin_to_strat: dict[str, dict] = {}
+        for s in strategies:
+            code = (s.get("strategy_code") or "").upper()
+            if code:
+                darwin_to_strat[code] = s
 
         # Pre-compute per-(AccountId, Darwin) metrics from full history
         trader_metrics = _compute_trader_metrics(history)
@@ -908,14 +937,16 @@ def get_hierarchy_rows(entity_type: str) -> list[dict]:
             invested       = float(row.get("Invested") or 0)
             pnl            = float(row.get("Current PnL") or 0)
 
-            # Strategy + pod via AccountId
-            strat   = acct_to_strat.get(acct, {})
-            pid     = strat.get("pod_id")
-            pod     = pods_idx.get(pid, {}) if pid else {}
+            # Strategy lookup: account_id primary, Darwin display code fallback
+            strat = acct_to_strat.get(acct) or darwin_to_strat.get(darwin_display) or {}
+            pid   = strat.get("pod_id")
+            pod   = pods_idx.get(pid, {}) if pid else {}
 
-            # Use strategy color as dot color (matches pod strip color on portfolio page)
-            # Falls back to pod color, then generic blue
-            strat_color = strat.get("color") or pod.get("color") or "#6366f1"
+            # Pod color: prefer joined pod data from list_strategies() join,
+            # fall back to pods_idx lookup, then generic blue
+            pod_joined  = strat.get("pods") or {}   # from .select("*,pods(name,color,pod_code)")
+            pod_color   = pod_joined.get("color") or pod.get("color") or "#6366f1"
+            pod_code_t  = pod_joined.get("pod_code") or pod.get("pod_code") or ""
 
             # Per-Darwin metrics from full history
             m         = trader_metrics.get((acct, darwin_raw), {})
@@ -931,7 +962,6 @@ def get_hierarchy_rows(entity_type: str) -> list[dict]:
             rows.append({
                 "entity_id":      f"trader_{darwin_raw.lower().replace('.', '_')}_{acct}",
                 "name":           darwin_display,
-                "darwin_full":    darwin_raw,
                 "entity_type":    "trader",
                 "allocation_pct": alloc_pct,
                 "aum":            invested,
@@ -943,9 +973,9 @@ def get_hierarchy_rows(entity_type: str) -> list[dict]:
                 "win_rate":       0.0,
                 "trading_style":  None,
                 "status":         "Active",
-                "pod_code":       pod.get("pod_code", ""),
+                "pod_code":       pod_code_t,
                 "strategy_code":  strat.get("strategy_code", ""),
-                "pod_color":      strat_color,
+                "pod_color":      pod_color,
             })
 
         rows.sort(key=lambda x: x["aum"], reverse=True)
