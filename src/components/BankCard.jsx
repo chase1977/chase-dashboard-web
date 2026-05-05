@@ -17,8 +17,8 @@ function formatCurrency(val, decimals = 0) {
   const abs = Math.abs(val);
   const sign = val < 0 ? "-" : val > 0 ? "+" : "";
   if (abs >= 999_950) return `${sign}£${(abs / 1_000_000).toFixed(2)}M`;
-  if (abs >= 1_000)   return `${sign}£${(abs / 1_000).toFixed(1)}K`;
-  return `${sign}£${abs.toFixed(decimals)}`;
+  if (abs >= 1_000)   return `${sign}£${(abs / 1_000).toFixed(2)}K`;
+  return `${sign}£${abs.toFixed(2)}`;
 }
 
 function useCountUp(target, duration = COUNT_DURATION_MS) {

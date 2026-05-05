@@ -48,7 +48,7 @@ function fmtMoney(v) {
   if (v == null) return '—'
   const abs = Math.abs(v)
   if (abs >= 999_950) return `£${(abs / 1_000_000).toFixed(2)}M`
-  if (abs >= 1_000)   return `£${(abs / 1_000).toFixed(1)}K`
+  if (abs >= 1_000)   return `£${(abs / 1_000).toFixed(2)}K`
   return `£${abs.toFixed(2)}`
 }
 

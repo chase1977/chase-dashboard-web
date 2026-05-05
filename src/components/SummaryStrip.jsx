@@ -47,16 +47,16 @@ function formatCurrency(val) {
   const abs  = Math.abs(val)
   const sign = val < 0 ? '-' : val > 0 ? '+' : ''
   if (abs >= 999_950) return `${sign}£${(abs / 1_000_000).toFixed(2)}M`
-  if (abs >= 1_000)   return `${sign}£${(abs / 1_000).toFixed(1)}K`
-  return `${sign}£${abs.toFixed(0)}`
+  if (abs >= 1_000)   return `${sign}£${(abs / 1_000).toFixed(2)}K`
+  return `${sign}£${abs.toFixed(2)}`
 }
 
 function formatCurrencyAbs(val) {
   if (val === null || val === undefined) return '—'
   const abs = Math.abs(val)
   if (abs >= 999_950) return `£${(abs / 1_000_000).toFixed(2)}M`
-  if (abs >= 1_000)   return `£${(abs / 1_000).toFixed(1)}K`
-  return `£${abs.toFixed(0)}`
+  if (abs >= 1_000)   return `£${(abs / 1_000).toFixed(2)}K`
+  return `£${abs.toFixed(2)}`
 }
 
 function fmtPct(val, decimals = 2) {
@@ -511,6 +511,12 @@ function InternalTransfersTab({ queryClient, capitalData }) {
     staleTime: 30_000,
   })
 
+  const { data: miscList = [] } = useQuery({
+    queryKey: ['misc_events'],
+    queryFn:  fetchMiscEvents,
+    staleTime: 30_000,
+  })
+
   const [showForm,     setShowForm]     = useState(false)
   const [formDate,     setFormDate]     = useState(todayISO())
   const [formFrom,     setFormFrom]     = useState('Wallet')
@@ -651,7 +657,9 @@ function InternalTransfersTab({ queryClient, capitalData }) {
   const totalDeploy = totalOut - totalBack
   const totalDep    = capitalData?.total_deposited ?? 0
   const totalWith   = capitalData?.total_withdrawn ?? 0
-  const walletBal   = totalDep - totalWith - totalDeploy
+  // Misc credits/debits land in the wallet — include net in wallet balance
+  const miscNet     = miscList.reduce((s, m) => m.direction === 'credit' ? s + m.amount : s - m.amount, 0)
+  const walletBal   = totalDep - totalWith - totalDeploy + miscNet
 
   return (
     <>
