@@ -248,6 +248,7 @@ function StrategyForm({ initial, pods, onSave, onCancel, saving, error }) {
   const [name,             setName]            = useState(initial?.name               ?? '')
   const [code,             setCode]            = useState(initial?.strategy_code      ?? '')
   const [podId,            setPodId]           = useState(initial?.pod_id             ?? '')
+  const [investment,       setInvestment]      = useState(initial?.initial_investment ?? '')
   const [date,             setDate]            = useState(initial?.date_created       ?? todayISO())
   const [status,           setStatus]          = useState(initial?.status             ?? 'Active')
   const [notes,            setNotes]           = useState(initial?.notes              ?? '')
@@ -270,18 +271,24 @@ function StrategyForm({ initial, pods, onSave, onCancel, saving, error }) {
     staleTime: 60_000,
   })
 
-  const computedInitial = netDeployed[brokerageAccount] ?? null
+  const computedInitial  = brokerageAccount ? (netDeployed[brokerageAccount] ?? null) : null
+  // Auto mode = brokerage account selected → initial auto-computed from transfers
+  // Manual mode = no brokerage account → admin types in the amount (e.g. News1 £16K external)
+  const isAutoMode = !!brokerageAccount
 
   function handleSubmit(e) {
     e.preventDefault()
     onSave({
       name,
-      strategy_code:     code.toUpperCase(),
-      pod_id:            podId !== '' ? parseInt(podId, 10) : null,
-      date_created:      date,
+      strategy_code:      code.toUpperCase(),
+      pod_id:             podId !== '' ? parseInt(podId, 10) : null,
+      // In auto mode initial_investment is ignored by backend (computed from transfers).
+      // In manual mode it's the source of truth for pod initial calculation.
+      initial_investment: isAutoMode ? 0 : (parseFloat(investment) || 0),
+      date_created:       date,
       status,
       notes,
-      brokerage_account: brokerageAccount || null,
+      brokerage_account:  brokerageAccount || null,
       ...(accountId !== '' ? { account_id: parseInt(accountId, 10) } : {}),
     })
   }
@@ -316,22 +323,32 @@ function StrategyForm({ initial, pods, onSave, onCancel, saving, error }) {
           <select
             style={INPUT}
             value={brokerageAccount}
-            onChange={e => setBrokerageAccount(e.target.value)}
+            onChange={e => { setBrokerageAccount(e.target.value); setInvestment('') }}
           >
-            <option value="">— None —</option>
+            <option value="">— None (manual) —</option>
             {BROKERAGE_ACCOUNTS.map(a => (
               <option key={a} value={a}>{a}</option>
             ))}
           </select>
-          {/* Show computed net deployed for selected account */}
-          {brokerageAccount && (
+          {isAutoMode && (
             <div style={{ marginTop: 4, fontSize: 10, color: computedInitial != null ? '#34D399' : '#475569' }}>
               {computedInitial != null
-                ? `Net deployed: ${fmtMoney(computedInitial)} (auto-computed from transfers)`
-                : 'No transfers recorded for this account yet'}
+                ? `Auto: ${fmtMoney(computedInitial)} net deployed`
+                : 'No transfers recorded yet'}
             </div>
           )}
         </FormField>
+
+        {/* Manual initial investment — only when no brokerage account set */}
+        {!isAutoMode && (
+          <FormField label="Initial Investment (£)">
+            <AmountInput value={investment} onChange={setInvestment} style={INPUT} />
+            <div style={{ marginTop: 4, fontSize: 10, color: '#475569' }}>
+              Manual entry — for external / off-platform capital
+            </div>
+          </FormField>
+        )}
+
         <FormField label="Date Created">
           <input type="date" style={INPUT} value={date} onChange={e => setDate(e.target.value)} />
         </FormField>

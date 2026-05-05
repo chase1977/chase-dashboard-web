@@ -509,7 +509,15 @@ def get_pods_with_kpis() -> list[dict]:
 
     # Net deployed per brokerage account — pod initial = sum of net deployed
     # for all strategies in that pod that have a brokerage_account set.
+    # Hybrid: auto when brokerage_account set, manual initial_investment fallback.
     net_deployed = _get_net_deployed_per_account()
+
+    def _strategy_initial(s: dict) -> float:
+        """Auto from transfers if brokerage_account set, else manual initial_investment."""
+        acct = s.get("brokerage_account")
+        if acct:
+            return net_deployed.get(acct, 0.0)
+        return float(s.get("initial_investment") or 0)
 
     result = []
 
@@ -519,7 +527,7 @@ def get_pods_with_kpis() -> list[dict]:
             pid   = pod["id"]
             agg   = pod_agg.get(pid, {"invested": 0.0, "pnl": 0.0})
             initial = sum(
-                net_deployed.get(s.get("brokerage_account") or "", 0.0)
+                _strategy_initial(s)
                 for s in data["strategies"]
                 if s.get("pod_id") == pid
             )
@@ -661,6 +669,12 @@ def get_hierarchy_rows(entity_type: str) -> list[dict]:
         net_deployed = _get_net_deployed_per_account()
         rows         = []
 
+        def _hier_strat_initial(s: dict) -> float:
+            acct = s.get("brokerage_account")
+            if acct:
+                return net_deployed.get(acct, 0.0)
+            return float(s.get("initial_investment") or 0)
+
         for pid, agg in pod_agg.items():
             if pid == UNALLOCATED:
                 pod = {"name": "Unallocated", "pod_code": "", "color": "#6b7280", "id": -1}
@@ -668,7 +682,7 @@ def get_hierarchy_rows(entity_type: str) -> list[dict]:
                 pod = pods_idx.get(pid, {"name": f"Pod {pid}", "pod_code": "", "color": "#6366f1", "id": pid})
 
             initial = sum(
-                net_deployed.get(s.get("brokerage_account") or "", 0.0)
+                _hier_strat_initial(s)
                 for s in data["strategies"]
                 if s.get("pod_id") == pid
             ) if pid != UNALLOCATED else agg["invested"]
@@ -716,13 +730,15 @@ def get_hierarchy_rows(entity_type: str) -> list[dict]:
         total_aum = sum(v["invested"] for v in darwin_agg.values()) or 1.0
         rows      = []
 
+        strat_net_deployed = _get_net_deployed_per_account()
         if strategies:
             for s in strategies:
                 code    = (s.get("strategy_code") or "").upper()
                 agg     = darwin_agg.get(code, {"invested": 0.0, "pnl": 0.0})
                 pid     = s.get("pod_id")
                 pod     = pods_idx.get(pid, {}) if pid else {}
-                initial = float(s.get("initial_investment") or 0)
+                _acct   = s.get("brokerage_account")
+                initial = strat_net_deployed.get(_acct, 0.0) if _acct else float(s.get("initial_investment") or 0)
 
                 rows.append({
                     "entity_id":      f"strategy_{s['id']}",
@@ -908,6 +924,13 @@ def get_pods_with_kpis_fast(pod_pfees_map: dict, balance_hist: list[dict]) -> li
     pct_30d = _period_return_from_hist(balance_hist, 30)
 
     net_deployed = _get_net_deployed_per_account()
+
+    def _strat_initial_fast(s: dict) -> float:
+        acct = s.get("brokerage_account")
+        if acct:
+            return net_deployed.get(acct, 0.0)
+        return float(s.get("initial_investment") or 0)
+
     result = []
 
     if pods_list:
@@ -915,7 +938,7 @@ def get_pods_with_kpis_fast(pod_pfees_map: dict, balance_hist: list[dict]) -> li
             pid     = pod["id"]
             agg     = pod_agg.get(pid, {"invested": 0.0, "pnl": 0.0})
             initial = sum(
-                net_deployed.get(s.get("brokerage_account") or "", 0.0)
+                _strat_initial_fast(s)
                 for s in strategies if s.get("pod_id") == pid
             )
             result.append({
