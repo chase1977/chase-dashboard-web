@@ -30,7 +30,7 @@ export function fmtMoney(val, compact = true) {
   const abs = Math.abs(val)
   const sign = val < 0 ? '-' : ''
   if (!compact || abs < 1000) return `${sign}£${Math.abs(val).toFixed(0)}`
-  if (abs < 1_000_000)        return `${sign}£${(abs / 1_000).toFixed(1)}K`
+  if (abs < 999_950)          return `${sign}£${(abs / 1_000).toFixed(1)}K`
   if (abs < 1_000_000_000)    return `${sign}£${(abs / 1_000_000).toFixed(2)}M`
   return `${sign}£${(abs / 1_000_000_000).toFixed(2)}B`
 }
@@ -91,15 +91,15 @@ function formatAnimValue(v, formatType) {
     case 'money': {
       const abs = Math.abs(v)
       const s   = v < 0 ? '-' : ''
-      if (abs >= 1_000_000) return `${s}£${(abs / 1_000_000).toFixed(2)}M`
-      if (abs >= 1_000)     return `${s}£${(abs / 1_000).toFixed(1)}K`
+      if (abs >= 999_950) return `${s}£${(abs / 1_000_000).toFixed(2)}M`
+      if (abs >= 1_000)   return `${s}£${(abs / 1_000).toFixed(1)}K`
       return `${s}£${abs.toFixed(0)}`
     }
     case 'signed_money': {
       const abs  = Math.abs(v)
       const sign = v < 0 ? '-£' : '+£'
-      if (abs >= 1_000_000) return `${sign}${(abs / 1_000_000).toFixed(2)}M`
-      if (abs >= 1_000)     return `${sign}${(abs / 1_000).toFixed(1)}K`
+      if (abs >= 999_950) return `${sign}${(abs / 1_000_000).toFixed(2)}M`
+      if (abs >= 1_000)   return `${sign}${(abs / 1_000).toFixed(1)}K`
       return `${sign}${abs.toFixed(0)}`
     }
     case 'signed_pct': {

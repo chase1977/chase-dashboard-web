@@ -27,8 +27,8 @@ import { ArrowUpDown, ArrowUp, ArrowDown, Search, X } from 'lucide-react'
 function fmtMoney(v) {
   if (v == null) return '—'
   const abs = Math.abs(v), s = v < 0 ? '-' : ''
-  if (abs >= 1_000_000) return `${s}£${(abs / 1_000_000).toFixed(2)}M`
-  if (abs >= 1_000)     return `${s}£${(abs / 1_000).toFixed(1)}K`
+  if (abs >= 999_950) return `${s}£${(abs / 1_000_000).toFixed(2)}M`
+  if (abs >= 1_000)   return `${s}£${(abs / 1_000).toFixed(1)}K`
   return `${s}£${abs.toFixed(0)}`
 }
 

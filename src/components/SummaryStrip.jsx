@@ -46,16 +46,16 @@ function formatCurrency(val) {
   if (val === null || val === undefined) return '—'
   const abs  = Math.abs(val)
   const sign = val < 0 ? '-' : val > 0 ? '+' : ''
-  if (abs >= 1_000_000) return `${sign}£${(abs / 1_000_000).toFixed(2)}M`
-  if (abs >= 1_000)     return `${sign}£${(abs / 1_000).toFixed(1)}K`
+  if (abs >= 999_950) return `${sign}£${(abs / 1_000_000).toFixed(2)}M`
+  if (abs >= 1_000)   return `${sign}£${(abs / 1_000).toFixed(1)}K`
   return `${sign}£${abs.toFixed(0)}`
 }
 
 function formatCurrencyAbs(val) {
   if (val === null || val === undefined) return '—'
   const abs = Math.abs(val)
-  if (abs >= 1_000_000) return `£${(abs / 1_000_000).toFixed(2)}M`
-  if (abs >= 1_000)     return `£${(abs / 1_000).toFixed(1)}K`
+  if (abs >= 999_950) return `£${(abs / 1_000_000).toFixed(2)}M`
+  if (abs >= 1_000)   return `£${(abs / 1_000).toFixed(1)}K`
   return `£${abs.toFixed(0)}`
 }
 

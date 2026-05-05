@@ -20,8 +20,8 @@ import { useMemo } from 'react'
 
 /** Format axis tick for equity values */
 function fmtEquityTick(v) {
-  if (Math.abs(v) >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`
-  if (Math.abs(v) >= 1_000)     return `${(v / 1_000).toFixed(0)}K`
+  if (Math.abs(v) >= 999_950) return `${(v / 1_000_000).toFixed(2)}M`
+  if (Math.abs(v) >= 1_000)   return `${(v / 1_000).toFixed(0)}K`
   return `${v}`
 }
 
