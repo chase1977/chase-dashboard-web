@@ -41,6 +41,21 @@ def _darwin_display(raw: str) -> str:
     return raw.split(".")[0].upper()
 
 
+def _sum_equity_by_date(history: list[dict]) -> dict[str, float]:
+    """
+    Sum investor_equity per date from balance_history rows.
+
+    balance_history may have multiple rows per date (one per Darwinex account).
+    A plain dict comprehension would overwrite — this correctly aggregates totals.
+    Returns { date_str: total_investor_equity_float }.
+    """
+    eq: dict[str, float] = {}
+    for r in history:
+        d = r["date"]
+        eq[d] = round(eq.get(d, 0.0) + r["investor_equity"], 2)
+    return eq
+
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -271,27 +286,11 @@ def get_balance_history() -> list[dict]:
 def get_period_return(days: int) -> float:
     """
     % change in investor equity over the last N days.
-    Uses balance_history sorted by date DESC.
+    Uses the latest date in balance_history as reference (not today's date),
+    so this works correctly even when data is not yet updated today.
     Returns 0.0 if insufficient data.
     """
-    history = get_balance_history()
-    if len(history) < 2:
-        return 0.0
-
-    # Latest equity
-    latest     = history[-1]["investor_equity"]
-    cutoff_str = (datetime.today() - timedelta(days=days)).strftime("%Y-%m-%d")
-
-    # Find the closest row at or before cutoff
-    past = [r for r in history if r["date"] <= cutoff_str]
-    if not past:
-        return 0.0
-
-    past_equity = past[-1]["investor_equity"]
-    if past_equity == 0:
-        return 0.0
-
-    return round((latest - past_equity) / past_equity, 6)
+    return _period_return_from_hist(get_balance_history(), days)
 
 
 # ---------------------------------------------------------------------------
@@ -359,10 +358,9 @@ def compute_fund_metrics() -> dict:
     current_aum = get_live_aum()
     total_pnl   = get_live_pnl()
 
-    # Index balance history by date string for fast lookup
-    equity_by_date: dict[str, float] = {
-        row["date"]: row["investor_equity"] for row in history
-    }
+    # Index balance history by date — sum multiple rows per date (multi-account rows)
+    equity_by_date: dict[str, float] = _sum_equity_by_date(history)
+    sorted_hist_dates = sorted(equity_by_date.keys())
 
     # Filter only external events (deposit/withdrawal) for sub-period boundaries
     external = [e for e in events if e["event_type"] in ("deposit", "withdrawal")]
@@ -390,21 +388,31 @@ def compute_fund_metrics() -> dict:
 
     for i, start_date in enumerate(sorted_dates):
         if i + 1 < len(sorted_dates):
-            end_date = sorted_dates[i + 1]
-            avail    = [d for d in equity_by_date if d < end_date]
+            end_date        = sorted_dates[i + 1]
+            avail           = [d for d in equity_by_date if d < end_date]
             end_date_equity = max(avail) if avail else None
         else:
-            avail           = list(equity_by_date.keys())
-            end_date_equity = max(avail) if avail else None
+            end_date_equity = sorted_hist_dates[-1] if sorted_hist_dates else None
             end_date        = end_date_equity or start_date
 
         cash_flow = cashflow_by_date.get(start_date, 0.0)
 
-        prev_dates    = [d for d in equity_by_date if d < start_date]
-        equity_before = equity_by_date[max(prev_dates)] if prev_dates else 0.0
-        start_aum     = round(equity_before + cash_flow, 2)
-        end_aum       = equity_by_date.get(end_date_equity, start_aum) if end_date_equity else start_aum
+        if i == 0:
+            # First period: ground-truth start_aum from balance_history at/after deployment.
+            # Handles incomplete internal_transfers where some Wallet→account flows are missing.
+            after_start = [d for d in sorted_hist_dates if d >= start_date]
+            if after_start:
+                start_aum = equity_by_date[after_start[0]]
+            else:
+                prev_dates    = [d for d in equity_by_date if d < start_date]
+                equity_before = equity_by_date[max(prev_dates)] if prev_dates else 0.0
+                start_aum     = round(equity_before + cash_flow, 2)
+        else:
+            prev_dates    = [d for d in equity_by_date if d < start_date]
+            equity_before = equity_by_date[max(prev_dates)] if prev_dates else 0.0
+            start_aum     = round(equity_before + cash_flow, 2)
 
+        end_aum       = equity_by_date.get(end_date_equity, start_aum) if end_date_equity else start_aum
         pnl           = round(end_aum - start_aum, 2)
         period_return = round(pnl / start_aum, 6) if start_aum != 0 else 0.0
 
@@ -1017,15 +1025,27 @@ def get_hierarchy_rows(entity_type: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def _period_return_from_hist(history: list[dict], days: int) -> float:
-    """Compute % equity change over N days from a pre-fetched balance history."""
-    if len(history) < 2:
+    """
+    Compute % equity change over last N days from pre-fetched balance history.
+
+    Uses the LATEST DATE IN BALANCE_HISTORY as the reference point — not today.
+    This is critical: if balance_history is not updated daily, using datetime.today()
+    makes cutoff_str land after all history rows, so past[-1] == history[-1]
+    and every period return equals 0.0.
+
+    Sums multiple rows per date (multi-account rows) before comparing.
+    """
+    eq_by_date = _sum_equity_by_date(history)
+    if len(eq_by_date) < 2:
         return 0.0
-    latest     = history[-1]["investor_equity"]
-    cutoff_str = (datetime.today() - timedelta(days=days)).strftime("%Y-%m-%d")
-    past = [r for r in history if r["date"] <= cutoff_str]
-    if not past:
+    sorted_dates = sorted(eq_by_date.keys())
+    latest_date  = sorted_dates[-1]
+    latest       = eq_by_date[latest_date]
+    cutoff_str   = (datetime.fromisoformat(latest_date) - timedelta(days=days)).strftime("%Y-%m-%d")
+    past_dates   = [d for d in sorted_dates if d <= cutoff_str]
+    if not past_dates:
         return 0.0
-    past_equity = past[-1]["investor_equity"]
+    past_equity = eq_by_date[past_dates[-1]]
     if past_equity == 0:
         return 0.0
     return round((latest - past_equity) / past_equity, 6)
@@ -1036,7 +1056,11 @@ def compute_fund_metrics_fast(events: list[dict], history: list[dict]) -> dict:
     current_aum = get_live_aum()   # single pfees query (cached)
     total_pnl   = get_live_pnl()   # single pfees query (cached)
 
-    equity_by_date: dict[str, float] = {r["date"]: r["investor_equity"] for r in history}
+    # Sum equity per date — balance_history may have multiple rows per date
+    # (one per Darwinex account). A plain dict comprehension overwrites and loses data.
+    equity_by_date: dict[str, float] = _sum_equity_by_date(history)
+    sorted_hist_dates = sorted(equity_by_date.keys())
+
     external = [e for e in events if e["event_type"] in ("deposit", "withdrawal")]
 
     total_deposited = round(sum(e["amount"]       for e in external if e["amount"] > 0), 2)
@@ -1061,14 +1085,31 @@ def compute_fund_metrics_fast(events: list[dict], history: list[dict]) -> dict:
             avail           = [d for d in equity_by_date if d < end_date]
             end_date_equity = max(avail) if avail else None
         else:
-            avail           = list(equity_by_date.keys())
-            end_date_equity = max(avail) if avail else None
+            end_date_equity = sorted_hist_dates[-1] if sorted_hist_dates else None
             end_date        = end_date_equity or start_date
 
-        cash_flow     = cashflow_by_date.get(start_date, 0.0)
-        prev_dates    = [d for d in equity_by_date if d < start_date]
-        equity_before = equity_by_date[max(prev_dates)] if prev_dates else 0.0
-        start_aum     = round(equity_before + cash_flow, 2)
+        cash_flow = cashflow_by_date.get(start_date, 0.0)
+
+        if i == 0:
+            # First period: use the first balance_history equity AT OR AFTER start_date
+            # as start_aum. This is the ground-truth total portfolio equity on deployment
+            # day and correctly handles the case where not all Wallet→account transfers
+            # are recorded in internal_transfers (e.g. Chase3xA funded from Chase1
+            # internally — equity_by_date already reflects both accounts, but
+            # darwinex_flows only sees the Wallet→Chase1 flow, understating cash_flow).
+            after_start = [d for d in sorted_hist_dates if d >= start_date]
+            if after_start:
+                start_aum = equity_by_date[after_start[0]]
+            else:
+                prev_dates    = [d for d in equity_by_date if d < start_date]
+                equity_before = equity_by_date[max(prev_dates)] if prev_dates else 0.0
+                start_aum     = round(equity_before + cash_flow, 2)
+        else:
+            # Subsequent periods: standard TWR — equity before the new cash inflow
+            prev_dates    = [d for d in equity_by_date if d < start_date]
+            equity_before = equity_by_date[max(prev_dates)] if prev_dates else 0.0
+            start_aum     = round(equity_before + cash_flow, 2)
+
         end_aum       = equity_by_date.get(end_date_equity, start_aum) if end_date_equity else start_aum
         pnl           = round(end_aum - start_aum, 2)
         period_return = round(pnl / start_aum, 6) if start_aum != 0 else 0.0
