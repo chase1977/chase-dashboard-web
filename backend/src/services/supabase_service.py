@@ -281,9 +281,21 @@ def compute_fund_metrics() -> dict:
     total_withdrawn = round(sum(abs(e["amount"])   for e in external if e["amount"] < 0), 2)
     bank_balance    = round(total_deposited - total_withdrawn, 2)
 
-    # ── Sub-period construction ──
-    periods     = []
-    sorted_dates = sorted(set(e["date"] for e in external))
+    # ── Sub-period construction — use Darwinex cash flows, not bank deposits ──
+    # capital_events are bank→wallet events.  The Darwinex balance_history only
+    # moves when money is actually deployed via internal_transfers (Wallet→account).
+    # Using internal_transfers as boundaries gives the correct TWR.
+    darwinex_flows   = _get_darwinex_cashflows()
+    cashflow_by_date = {f["date"]: f["amount"] for f in darwinex_flows}
+
+    periods      = []
+    sorted_dates = [f["date"] for f in darwinex_flows]
+
+    if not sorted_dates:
+        # No transfers recorded yet — fall back to capital_events for basic TWR
+        sorted_dates = sorted(set(e["date"] for e in external))
+        cashflow_by_date = {d: round(sum(e["amount"] for e in external if e["date"] == d), 2)
+                            for d in sorted_dates}
 
     for i, start_date in enumerate(sorted_dates):
         if i + 1 < len(sorted_dates):
@@ -295,8 +307,7 @@ def compute_fund_metrics() -> dict:
             end_date_equity = max(avail) if avail else None
             end_date        = end_date_equity or start_date
 
-        same_day  = [e for e in external if e["date"] == start_date]
-        cash_flow = round(sum(e["amount"] for e in same_day), 2)
+        cash_flow = cashflow_by_date.get(start_date, 0.0)
 
         prev_dates    = [d for d in equity_by_date if d < start_date]
         equity_before = equity_by_date[max(prev_dates)] if prev_dates else 0.0
@@ -324,7 +335,9 @@ def compute_fund_metrics() -> dict:
     ) if periods else 0.0
 
     initial_aum    = periods[0]["start_aum"] if periods else 0.0
-    inception_date = sorted_dates[0] if sorted_dates else str(date.today())
+    # inception_date = first bank deposit (shows in ledger header), not first Darwinex trade
+    cap_dates      = sorted(set(e["date"] for e in external))
+    inception_date = cap_dates[0] if cap_dates else (sorted_dates[0] if sorted_dates else str(date.today()))
 
     return {
         "twr":              twr,
@@ -363,9 +376,13 @@ def get_portfolio_kpis() -> dict:
 
     # TWR + initial AUM from fund metrics
     try:
-        metrics           = compute_fund_metrics()
-        initial_investment = metrics["initial_aum"]
-        performance        = metrics["twr"]
+        metrics     = compute_fund_metrics()
+        performance = metrics["twr"]
+        # initial_investment: use sum of strategy initial_investments when set,
+        # else fall back to initial_aum from first TWR sub-period
+        all_strategies     = list_strategies()
+        strategy_initial   = round(sum(float(s.get("initial_investment") or 0) for s in all_strategies), 2)
+        initial_investment = strategy_initial if strategy_initial > 0 else metrics["initial_aum"]
     except Exception:
         initial_investment = current_equity
         performance        = 0.0
@@ -424,12 +441,20 @@ def _build_pod_pfees_map() -> dict:
     strategies = list_strategies()         # may be empty
     pods_list  = list_pods()              # may be empty
 
-    # Darwin → pod_id mapping from strategies table
-    darwin_to_pod: dict[str, int] = {}
+    # Build dual mapping: account_id (primary) and strategy_code (fallback)
+    # account_id matches pfees.AccountId — most reliable when set
+    # strategy_code matches pfees.Darwin — fallback if account_id not set
+    account_to_pod: dict[int, int] = {}
+    darwin_to_pod:  dict[str, int] = {}
     for s in strategies:
+        pid = s.get("pod_id")
+        if pid is None:
+            continue
+        acct_id = s.get("account_id")
+        if acct_id is not None:
+            account_to_pod[int(acct_id)] = pid
         code = (s.get("strategy_code") or "").upper()
-        pid  = s.get("pod_id")
-        if code and pid is not None:
+        if code:
             darwin_to_pod[code] = pid
 
     # Aggregate pfees by pod_id
@@ -437,10 +462,15 @@ def _build_pod_pfees_map() -> dict:
     UNALLOCATED = -1
 
     for row in snapshot:
-        darwin  = (row.get("Darwin") or "").upper()
+        darwin   = (row.get("Darwin") or "").upper()
         invested = float(row.get("Invested") or 0)
         pnl      = float(row.get("Current PnL") or 0)
-        pod_id   = darwin_to_pod.get(darwin, UNALLOCATED)
+        # Prefer account_id mapping; fall back to strategy_code → Darwin match
+        raw_acct = row.get("AccountId")
+        if raw_acct is not None and int(raw_acct) in account_to_pod:
+            pod_id = account_to_pod[int(raw_acct)]
+        else:
+            pod_id = darwin_to_pod.get(darwin, UNALLOCATED)
 
         if pod_id not in pod_agg:
             pod_agg[pod_id] = {"invested": 0.0, "pnl": 0.0, "darwins": []}
@@ -771,8 +801,17 @@ def compute_fund_metrics_fast(events: list[dict], history: list[dict]) -> dict:
     total_withdrawn = round(sum(abs(e["amount"])   for e in external if e["amount"] < 0), 2)
     bank_balance    = round(total_deposited - total_withdrawn, 2)
 
+    # Use Darwinex internal_transfers net cash flows for accurate TWR periods
+    # (cached — no extra DB call)
+    darwinex_flows   = _get_darwinex_cashflows()
+    cashflow_by_date = {f["date"]: f["amount"] for f in darwinex_flows}
+
     periods      = []
-    sorted_dates = sorted(set(e["date"] for e in external))
+    sorted_dates = [f["date"] for f in darwinex_flows]
+    if not sorted_dates:
+        sorted_dates = sorted(set(e["date"] for e in external))
+        cashflow_by_date = {d: round(sum(e["amount"] for e in external if e["date"] == d), 2)
+                            for d in sorted_dates}
 
     for i, start_date in enumerate(sorted_dates):
         if i + 1 < len(sorted_dates):
@@ -784,8 +823,7 @@ def compute_fund_metrics_fast(events: list[dict], history: list[dict]) -> dict:
             end_date_equity = max(avail) if avail else None
             end_date        = end_date_equity or start_date
 
-        same_day      = [e for e in external if e["date"] == start_date]
-        cash_flow     = round(sum(e["amount"] for e in same_day), 2)
+        cash_flow     = cashflow_by_date.get(start_date, 0.0)
         prev_dates    = [d for d in equity_by_date if d < start_date]
         equity_before = equity_by_date[max(prev_dates)] if prev_dates else 0.0
         start_aum     = round(equity_before + cash_flow, 2)
@@ -810,7 +848,8 @@ def compute_fund_metrics_fast(events: list[dict], history: list[dict]) -> dict:
     ) if periods else 0.0
 
     initial_aum    = periods[0]["start_aum"] if periods else 0.0
-    inception_date = sorted_dates[0] if sorted_dates else str(date.today())
+    cap_dates      = sorted(set(e["date"] for e in external))
+    inception_date = cap_dates[0] if cap_dates else (sorted_dates[0] if sorted_dates else str(date.today()))
 
     return {
         "twr":              twr,
@@ -838,9 +877,11 @@ def get_portfolio_kpis_fast(pod_pfees_map: dict, balance_hist: list[dict],
     pct_7d  = _period_return_from_hist(balance_hist, 7)
     pct_30d = _period_return_from_hist(balance_hist, 30)
     try:
-        metrics            = compute_fund_metrics_fast(capital_evts, balance_hist)
-        initial_investment = metrics["initial_aum"]
-        performance        = metrics["twr"]
+        metrics          = compute_fund_metrics_fast(capital_evts, balance_hist)
+        performance      = metrics["twr"]
+        strategies_data  = pod_pfees_map.get("strategies", [])
+        strategy_initial = round(sum(float(s.get("initial_investment") or 0) for s in strategies_data), 2)
+        initial_investment = strategy_initial if strategy_initial > 0 else metrics["initial_aum"]
     except Exception:
         initial_investment = current_equity
         performance        = 0.0
@@ -1149,6 +1190,33 @@ def list_internal_transfers() -> list[dict]:
         return rows
 
     return _get_cached("internal_transfers", _fetch)
+
+
+def _get_darwinex_cashflows() -> list[dict]:
+    """
+    Compute net daily cash flows INTO Darwinex accounts from internal_transfers.
+
+    FROM Wallet  → positive  (deploying capital to a Darwinex account)
+    TO   Wallet  → negative  (withdrawing capital from a Darwinex account)
+    Account↔account (rebalancing inside Darwinex) → ignored (net 0 for total exposure)
+
+    Returns sorted list of { date: str, amount: float } for days with non-zero net.
+    Used as TWR sub-period boundaries instead of bank capital_events.
+    """
+    transfers = list_internal_transfers()
+    daily: dict[str, float] = {}
+    for t in transfers:
+        d   = t["transfer_date"]
+        amt = float(t["amount"])
+        if t["from_account"] == "Wallet":
+            daily[d] = round(daily.get(d, 0.0) + amt, 2)
+        elif t["to_account"] == "Wallet":
+            daily[d] = round(daily.get(d, 0.0) - amt, 2)
+        # Rebalance between non-Wallet accounts nets to zero — not a fund cash flow
+    return sorted(
+        [{"date": d, "amount": a} for d, a in daily.items() if a != 0],
+        key=lambda x: x["date"],
+    )
 
 
 def create_internal_transfer(transfer_date: str, from_account: str,
