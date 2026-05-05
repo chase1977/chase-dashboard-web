@@ -1125,3 +1125,96 @@ def get_account_ids() -> list[dict]:
             for r in (res.data or [])
         ]
     return _get_cached("account_ids", _fetch)
+
+
+# ---------------------------------------------------------------------------
+# Internal Transfers CRUD
+# ---------------------------------------------------------------------------
+
+def list_internal_transfers() -> list[dict]:
+    """All rows from internal_transfers ordered by transfer_date asc (cached 60s)."""
+    return _get_cached("internal_transfers", lambda: (
+        get_client()
+        .table("internal_transfers")
+        .select("*")
+        .order("transfer_date", desc=False)
+        .execute()
+        .data or []
+    ))
+
+
+def create_internal_transfer(transfer_date: str, from_account: str,
+                              to_account: str, amount: float,
+                              notes: str = "") -> dict:
+    sb  = get_client()
+    res = sb.table("internal_transfers").insert({
+        "transfer_date": transfer_date,
+        "from_account":  from_account,
+        "to_account":    to_account,
+        "amount":        round(abs(amount), 2),
+        "notes":         notes or None,
+    }).execute()
+    _invalidate("internal_transfers")
+    return res.data[0] if res.data else {}
+
+
+def update_internal_transfer(transfer_id: int, **fields) -> dict:
+    sb = get_client()
+    if "amount" in fields:
+        fields["amount"] = round(abs(float(fields["amount"])), 2)
+    res = sb.table("internal_transfers").update(fields).eq("id", transfer_id).execute()
+    _invalidate("internal_transfers")
+    return res.data[0] if res.data else {}
+
+
+def delete_internal_transfer(transfer_id: int) -> bool:
+    sb = get_client()
+    sb.table("internal_transfers").delete().eq("id", transfer_id).execute()
+    _invalidate("internal_transfers")
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Miscellaneous Events CRUD
+# ---------------------------------------------------------------------------
+
+def list_misc_events() -> list[dict]:
+    """All rows from misc_events ordered by event_date asc (cached 60s)."""
+    return _get_cached("misc_events", lambda: (
+        get_client()
+        .table("misc_events")
+        .select("*")
+        .order("event_date", desc=False)
+        .execute()
+        .data or []
+    ))
+
+
+def create_misc_event(event_date: str, event_type: str, direction: str,
+                      amount: float, notes: str = "") -> dict:
+    sb  = get_client()
+    res = sb.table("misc_events").insert({
+        "event_date": event_date,
+        "event_type": event_type,
+        "direction":  direction,
+        "amount":     round(abs(amount), 2),
+        "notes":      notes or None,
+    }).execute()
+    _invalidate("misc_events")
+    return res.data[0] if res.data else {}
+
+
+def update_misc_event(misc_id: int, **fields) -> dict:
+    sb = get_client()
+    if "amount" in fields:
+        fields["amount"] = round(abs(float(fields["amount"])), 2)
+    res = sb.table("misc_events").update(fields).eq("id", misc_id).execute()
+    _invalidate("misc_events")
+    return res.data[0] if res.data else {}
+
+
+def delete_misc_event(misc_id: int) -> bool:
+    sb = get_client()
+    sb.table("misc_events").delete().eq("id", misc_id).execute()
+    _invalidate("misc_events")
+    return True

@@ -1,10 +1,11 @@
 # backend/src/routers/management.py
 """
-/api/management  —  CRUD for capital events, pods and strategies.
+/api/management  —  CRUD for capital events, pods, strategies, internal transfers, misc events.
 
 Endpoints:
   GET  /api/management/capital-events            List all capital events
   POST /api/management/capital-events            Record deposit or withdrawal
+  PATCH /api/management/capital-events/{id}      Update capital event
   DELETE /api/management/capital-events/{id}     Delete a capital event
 
   GET  /api/management/pods                      List all pods
@@ -16,6 +17,16 @@ Endpoints:
   POST /api/management/strategies                Create strategy
   PATCH /api/management/strategies/{id}          Update strategy
   DELETE /api/management/strategies/{id}         Delete strategy
+
+  GET  /api/management/internal-transfers        List all internal transfers
+  POST /api/management/internal-transfers        Create internal transfer
+  PATCH /api/management/internal-transfers/{id}  Update internal transfer
+  DELETE /api/management/internal-transfers/{id} Delete internal transfer
+
+  GET  /api/management/misc-events               List all misc events
+  POST /api/management/misc-events               Create misc event
+  PATCH /api/management/misc-events/{id}         Update misc event
+  DELETE /api/management/misc-events/{id}        Delete misc event
 
   GET  /api/management/fund-metrics              Live AUM, PnL, TWR from Supabase
 """
@@ -258,5 +269,130 @@ def update_strategy(strategy_id: int, body: StrategyPatch):
 def delete_strategy(strategy_id: int):
     try:
         sb.delete_strategy(strategy_id)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Internal Transfers
+# ---------------------------------------------------------------------------
+
+_ACCOUNTS = {"Wallet", "Chase1", "Chase3xA", "XPF2026"}
+
+
+class InternalTransferIn(BaseModel):
+    transfer_date: str   = Field(..., description="ISO date YYYY-MM-DD")
+    from_account:  str   = Field(..., description="Wallet | Chase1 | Chase3xA | XPF2026")
+    to_account:    str   = Field(..., description="Wallet | Chase1 | Chase3xA | XPF2026")
+    amount:        float = Field(..., gt=0, description="Always positive")
+    notes:         Optional[str] = None
+
+
+class InternalTransferPatch(BaseModel):
+    transfer_date: Optional[str]   = None
+    from_account:  Optional[str]   = None
+    to_account:    Optional[str]   = None
+    amount:        Optional[float] = Field(None, gt=0)
+    notes:         Optional[str]   = None
+
+
+@router.get("/internal-transfers")
+def list_internal_transfers():
+    try:
+        return sb.list_internal_transfers()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/internal-transfers", status_code=201)
+def create_internal_transfer(body: InternalTransferIn):
+    try:
+        return sb.create_internal_transfer(
+            transfer_date = body.transfer_date,
+            from_account  = body.from_account,
+            to_account    = body.to_account,
+            amount        = body.amount,
+            notes         = body.notes or "",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.patch("/internal-transfers/{transfer_id}")
+def update_internal_transfer(transfer_id: int, body: InternalTransferPatch):
+    fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not fields:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    try:
+        return sb.update_internal_transfer(transfer_id, **fields)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.delete("/internal-transfers/{transfer_id}", status_code=204)
+def delete_internal_transfer(transfer_id: int):
+    try:
+        sb.delete_internal_transfer(transfer_id)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Miscellaneous Events
+# ---------------------------------------------------------------------------
+
+class MiscEventIn(BaseModel):
+    event_date: str   = Field(..., description="ISO date YYYY-MM-DD")
+    event_type: str   = Field(..., description="Rebate | Service Cost | Fee | Other")
+    direction:  str   = Field(..., pattern="^(credit|debit)$")
+    amount:     float = Field(..., gt=0, description="Always positive")
+    notes:      Optional[str] = None
+
+
+class MiscEventPatch(BaseModel):
+    event_date: Optional[str]   = None
+    event_type: Optional[str]   = None
+    direction:  Optional[str]   = Field(None, pattern="^(credit|debit)$")
+    amount:     Optional[float] = Field(None, gt=0)
+    notes:      Optional[str]   = None
+
+
+@router.get("/misc-events")
+def list_misc_events():
+    try:
+        return sb.list_misc_events()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/misc-events", status_code=201)
+def create_misc_event(body: MiscEventIn):
+    try:
+        return sb.create_misc_event(
+            event_date = body.event_date,
+            event_type = body.event_type,
+            direction  = body.direction,
+            amount     = body.amount,
+            notes      = body.notes or "",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.patch("/misc-events/{misc_id}")
+def update_misc_event(misc_id: int, body: MiscEventPatch):
+    fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not fields:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    try:
+        return sb.update_misc_event(misc_id, **fields)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.delete("/misc-events/{misc_id}", status_code=204)
+def delete_misc_event(misc_id: int):
+    try:
+        sb.delete_misc_event(misc_id)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

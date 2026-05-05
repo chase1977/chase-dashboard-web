@@ -165,3 +165,43 @@ export function updateStrategy(id, body) {
 export function deleteStrategy(id) {
   return _delete(`/api/management/strategies/${id}`)
 }
+
+// ---------------------------------------------------------------------------
+// Management — Internal Transfers
+// ---------------------------------------------------------------------------
+
+export function fetchInternalTransfers() {
+  return get('/api/management/internal-transfers')
+}
+
+export function createInternalTransfer(body) {
+  return _post('/api/management/internal-transfers', body)
+}
+
+export function updateInternalTransfer(id, body) {
+  return _patch(`/api/management/internal-transfers/${id}`, body)
+}
+
+export function deleteInternalTransfer(id) {
+  return _delete(`/api/management/internal-transfers/${id}`)
+}
+
+// ---------------------------------------------------------------------------
+// Management — Miscellaneous Events
+// ---------------------------------------------------------------------------
+
+export function fetchMiscEvents() {
+  return get('/api/management/misc-events')
+}
+
+export function createMiscEvent(body) {
+  return _post('/api/management/misc-events', body)
+}
+
+export function updateMiscEvent(id, body) {
+  return _patch(`/api/management/misc-events/${id}`, body)
+}
+
+export function deleteMiscEvent(id) {
+  return _delete(`/api/management/misc-events/${id}`)
+}
