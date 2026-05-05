@@ -504,7 +504,7 @@ function CapitalEventsTab({ data, queryClient }) {
 
 // ── Tab 2: Internal Transfers ─────────────────────────────────────────────
 
-function InternalTransfersTab({ queryClient }) {
+function InternalTransfersTab({ queryClient, capitalData }) {
   const { data: transfers = [], isLoading } = useQuery({
     queryKey: ['internal_transfers'],
     queryFn:  fetchInternalTransfers,
@@ -646,17 +646,33 @@ function InternalTransfersTab({ queryClient }) {
     )
   }
 
-  const totalOut = transfers.filter(t => t.from_account === 'Wallet').reduce((s,t) => s + t.amount, 0)
+  const totalOut    = transfers.filter(t => t.from_account === 'Wallet').reduce((s,t) => s + t.amount, 0)
+  const totalBack   = transfers.filter(t => t.to_account   === 'Wallet').reduce((s,t) => s + t.amount, 0)
+  const totalDeploy = totalOut - totalBack
+  const totalDep    = capitalData?.total_deposited ?? 0
+  const totalWith   = capitalData?.total_withdrawn ?? 0
+  const walletBal   = totalDep - totalWith - totalDeploy
 
   return (
     <>
-      {/* Summary */}
-      <div style={{ background: 'rgba(14,165,233,0.08)', border: '1px solid rgba(14,165,233,0.2)',
-        borderRadius: 10, padding: '10px 14px', marginBottom: 14 }}>
-        <p style={{ fontSize: 10, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.6px', marginBottom: 4 }}>
-          Total Deployed from Wallet</p>
-        <p style={{ fontSize: 16, fontWeight: 700, color: '#38bdf8', fontVariantNumeric: 'tabular-nums' }}>
-          {formatCurrencyAbs(totalOut)}</p>
+      {/* Summary cards */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
+        <div style={{ background: walletBal >= 0 ? 'rgba(52,211,153,0.08)' : 'rgba(248,113,113,0.08)',
+          border: `1px solid ${walletBal >= 0 ? 'rgba(52,211,153,0.2)' : 'rgba(248,113,113,0.2)'}`,
+          borderRadius: 10, padding: '10px 14px' }}>
+          <p style={{ fontSize: 10, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.6px', marginBottom: 4 }}>
+            Wallet Balance</p>
+          <p style={{ fontSize: 16, fontWeight: 700, fontVariantNumeric: 'tabular-nums',
+            color: walletBal >= 0 ? '#34d399' : '#f87171' }}>
+            {formatCurrencyAbs(walletBal)}</p>
+        </div>
+        <div style={{ background: 'rgba(14,165,233,0.08)', border: '1px solid rgba(14,165,233,0.2)',
+          borderRadius: 10, padding: '10px 14px' }}>
+          <p style={{ fontSize: 10, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.6px', marginBottom: 4 }}>
+            Total Deployed from Wallet</p>
+          <p style={{ fontSize: 16, fontWeight: 700, color: '#38bdf8', fontVariantNumeric: 'tabular-nums' }}>
+            {formatCurrencyAbs(totalDeploy)}</p>
+        </div>
       </div>
 
       {/* Add button */}
@@ -1003,7 +1019,7 @@ function LedgerModal({ data, onClose }) {
 
       {/* Tab content */}
       {activeTab === 'capital'   && <CapitalEventsTab    data={data}         queryClient={queryClient} />}
-      {activeTab === 'transfers' && <InternalTransfersTab                    queryClient={queryClient} />}
+      {activeTab === 'transfers' && <InternalTransfersTab capitalData={data}  queryClient={queryClient} />}
       {activeTab === 'misc'      && <MiscellaneousTab                        queryClient={queryClient} />}
     </Modal>
   )
