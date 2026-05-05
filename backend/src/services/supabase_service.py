@@ -1132,15 +1132,23 @@ def get_account_ids() -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def list_internal_transfers() -> list[dict]:
-    """All rows from internal_transfers ordered by transfer_date asc (cached 60s)."""
-    return _get_cached("internal_transfers", lambda: (
-        get_client()
-        .table("internal_transfers")
-        .select("*")
-        .order("transfer_date", desc=False)
-        .execute()
-        .data or []
-    ))
+    """
+    All rows from internal_transfers ordered by transfer_date ASC, id ASC.
+    Python-side sort used because postgrest-py chained .order() calls may
+    replace rather than compound — guarantees correct secondary sort by id.
+    """
+    def _fetch():
+        rows = (
+            get_client()
+            .table("internal_transfers")
+            .select("*")
+            .execute()
+            .data or []
+        )
+        rows.sort(key=lambda r: (r["transfer_date"], r["id"]))
+        return rows
+
+    return _get_cached("internal_transfers", _fetch)
 
 
 def create_internal_transfer(transfer_date: str, from_account: str,
