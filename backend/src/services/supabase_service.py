@@ -358,8 +358,11 @@ def compute_fund_metrics() -> dict:
     current_aum = get_live_aum()
     total_pnl   = get_live_pnl()
 
-    # Index balance history by date — sum multiple rows per date (multi-account rows)
-    equity_by_date: dict[str, float] = _sum_equity_by_date(history)
+    # Portfolio equity per date — prefer user_accounts_equity (deduplicated per-account
+    # source); fall back to balance_history if accounts table is empty.
+    equity_by_date: dict[str, float] = _portfolio_equity_by_date()
+    if not equity_by_date:
+        equity_by_date = _sum_equity_by_date(history)
     sorted_hist_dates = sorted(equity_by_date.keys())
 
     # Filter only external events (deposit/withdrawal) for sub-period boundaries
@@ -846,6 +849,20 @@ def get_hierarchy_rows(entity_type: str) -> list[dict]:
         acct_to_broker_s = _match_pfees_accounts_to_brokerage()   # { acct_int: "Chase1" }
         broker_to_acct_s = {v: k for k, v in acct_to_broker_s.items()}  # { "Chase1": acct_int }
 
+        # Per-account equity series from user_accounts_equity — used for per-strategy
+        # period returns (1D/7D/30D) and max drawdown
+        acct_eq_series = _per_account_equity_series()   # { account_id: [{ date, equity }] }
+
+        def _strat_account_id(s: dict) -> Optional[int]:
+            """Resolve AccountId for a strategy: direct > broker match > None."""
+            aid = s.get("account_id")
+            if aid is not None:
+                return int(aid)
+            broker = s.get("brokerage_account")
+            if broker:
+                return broker_to_acct_s.get(broker)   # may be None
+            return None
+
         if strategies:
             for s in strategies:
                 code    = (s.get("strategy_code") or "").upper()
@@ -865,13 +882,32 @@ def get_hierarchy_rows(entity_type: str) -> list[dict]:
 
                 pid        = s.get("pod_id")
                 pod        = pods_idx.get(pid, {}) if pid else {}
-                # Prefer joined pod data (.select("*,pods(...)")) — always present when pod_id set
                 pod_joined = s.get("pods") or {}
                 pod_color  = pod_joined.get("color") or pod.get("color") or "#6366f1"
                 pod_code_s = pod_joined.get("pod_code") or pod.get("pod_code") or ""
 
                 _acct      = s.get("brokerage_account")
                 initial    = strat_net_deployed.get(_acct, 0.0) if _acct else float(s.get("initial_investment") or 0)
+
+                # Per-strategy period returns from user_accounts_equity
+                resolved_aid = _strat_account_id(s)
+                acct_series  = acct_eq_series.get(resolved_aid, []) if resolved_aid else []
+                s_pct_1d     = _account_period_return(acct_series, 1)  if acct_series else pct_1d
+                s_pct_7d     = _account_period_return(acct_series, 7)  if acct_series else pct_7d
+                s_pct_30d    = _account_period_return(acct_series, 30) if acct_series else pct_30d
+
+                # Max drawdown from per-account equity series
+                s_drawdown = 0.0
+                if acct_series:
+                    peak = -float("inf")
+                    for pt in acct_series:
+                        eq = pt["equity"]
+                        if eq > peak:
+                            peak = eq
+                        if peak > 0:
+                            dd = (eq - peak) / peak
+                            if dd < s_drawdown:
+                                s_drawdown = dd
 
                 rows.append({
                     "entity_id":      f"strategy_{s['id']}",
@@ -880,10 +916,10 @@ def get_hierarchy_rows(entity_type: str) -> list[dict]:
                     "allocation_pct": round(agg["invested"] / total_aum * 100, 2),
                     "aum":            agg["invested"],
                     "pnl":            agg["pnl"],
-                    "pct_1d":         pct_1d,
-                    "pct_7d":         pct_7d,
-                    "pct_30d":        pct_30d,
-                    "drawdown":       0.0,
+                    "pct_1d":         s_pct_1d,
+                    "pct_7d":         s_pct_7d,
+                    "pct_30d":        s_pct_30d,
+                    "drawdown":       round(s_drawdown, 6),
                     "win_rate":       0.0,
                     "trading_style":  s.get("trading_style", None),
                     "status":         s.get("status", "Active"),
@@ -1028,14 +1064,15 @@ def _period_return_from_hist(history: list[dict], days: int) -> float:
     """
     Compute % equity change over last N days from pre-fetched balance history.
 
-    Uses the LATEST DATE IN BALANCE_HISTORY as the reference point — not today.
-    This is critical: if balance_history is not updated daily, using datetime.today()
-    makes cutoff_str land after all history rows, so past[-1] == history[-1]
-    and every period return equals 0.0.
-
-    Sums multiple rows per date (multi-account rows) before comparing.
+    Prefers user_accounts_equity (portfolio sum) as source of truth.
+    Falls back to summed balance_history rows if accounts table is empty.
+    Uses latest date in data as reference — not today — so stale data returns
+    real period returns rather than 0.0.
     """
-    eq_by_date = _sum_equity_by_date(history)
+    # Prefer accounts equity table
+    eq_by_date = _portfolio_equity_by_date()
+    if not eq_by_date:
+        eq_by_date = _sum_equity_by_date(history)
     if len(eq_by_date) < 2:
         return 0.0
     sorted_dates = sorted(eq_by_date.keys())
@@ -1056,9 +1093,11 @@ def compute_fund_metrics_fast(events: list[dict], history: list[dict]) -> dict:
     current_aum = get_live_aum()   # single pfees query (cached)
     total_pnl   = get_live_pnl()   # single pfees query (cached)
 
-    # Sum equity per date — balance_history may have multiple rows per date
-    # (one per Darwinex account). A plain dict comprehension overwrites and loses data.
-    equity_by_date: dict[str, float] = _sum_equity_by_date(history)
+    # Portfolio equity per date — prefer user_accounts_equity (deduplicated per-account
+    # source); fall back to summed balance_history if accounts table is empty.
+    equity_by_date: dict[str, float] = _portfolio_equity_by_date()
+    if not equity_by_date:
+        equity_by_date = _sum_equity_by_date(history)
     sorted_hist_dates = sorted(equity_by_date.keys())
 
     external = [e for e in events if e["event_type"] in ("deposit", "withdrawal")]
@@ -1253,7 +1292,20 @@ def get_pods_with_kpis_fast(pod_pfees_map: dict, balance_hist: list[dict]) -> li
 
 
 def get_equity_curve_data_fast(history: list[dict], days: Optional[int] = None) -> list[dict]:
-    """get_equity_curve_data() using pre-fetched history."""
+    """
+    Equity curve — prefers user_accounts_equity (summed per date) as source of truth.
+    Falls back to pre-fetched balance_history rows if accounts table is empty.
+    """
+    # Prefer accounts equity (more reliable, deduplicated per-account)
+    eq_by_date = _portfolio_equity_by_date()
+    if eq_by_date:
+        sorted_dates = sorted(eq_by_date.keys())
+        if days is not None:
+            cutoff       = (datetime.today() - timedelta(days=days)).strftime("%Y-%m-%d")
+            sorted_dates = [d for d in sorted_dates if d >= cutoff]
+        return [{"timestamp": d, "equity": eq_by_date[d]} for d in sorted_dates]
+
+    # Fallback: balance_history rows
     if not history:
         return []
     if days is not None:
@@ -1457,6 +1509,83 @@ def get_account_ids() -> list[dict]:
             for r in (res.data or [])
         ]
     return _get_cached("account_ids", _fetch)
+
+
+def get_accounts_equity_history() -> list[dict]:
+    """
+    Full history from user_accounts_equity ordered by Date asc (cached 60s).
+
+    Primary source of truth for:
+      - Portfolio equity curve (sum Equity per date across all AccountIds)
+      - TWR sub-period computation
+      - Per-account equity series for strategy period returns (1D/7D/30D)
+
+    Returns list of { date: str, account_id: int, equity: float }.
+    """
+    def _fetch():
+        sb  = get_client()
+        res = (
+            sb.table("user_accounts_equity")
+            .select('"Date","AccountId","Equity"')
+            .order('"Date"', desc=False)
+            .execute()
+        )
+        return [
+            {
+                "date":       str(r["Date"]),
+                "account_id": int(r["AccountId"]),
+                "equity":     float(r["Equity"] or 0),
+            }
+            for r in (res.data or [])
+        ]
+    return _get_cached("accounts_equity_history", _fetch)
+
+
+def _portfolio_equity_by_date() -> dict[str, float]:
+    """
+    Total portfolio equity per date: SUM(Equity) across all AccountIds per Date.
+    Sourced from user_accounts_equity — deduplicated at DB level via trigger.
+    Returns { date_str: total_equity_float } sorted keys.
+    """
+    history = get_accounts_equity_history()
+    eq: dict[str, float] = {}
+    for r in history:
+        d = r["date"]
+        eq[d] = round(eq.get(d, 0.0) + r["equity"], 2)
+    return eq
+
+
+def _per_account_equity_series() -> dict[int, list[dict]]:
+    """
+    Per-account equity time series from user_accounts_equity.
+    Returns { account_id: [{ date: str, equity: float }, ...] } sorted by date.
+    Used for per-strategy period returns in hierarchy table.
+    """
+    history = get_accounts_equity_history()
+    series: dict[int, list] = {}
+    for r in history:
+        aid = r["account_id"]
+        if aid not in series:
+            series[aid] = []
+        series[aid].append({"date": r["date"], "equity": r["equity"]})
+    # Already sorted by Date asc from DB query
+    return series
+
+
+def _account_period_return(series: list[dict], days: int) -> float:
+    """
+    % equity change over last N days for a single account equity series.
+    Uses latest date in the series as reference (not today).
+    """
+    if len(series) < 2:
+        return 0.0
+    latest_date  = series[-1]["date"]
+    latest       = series[-1]["equity"]
+    cutoff_str   = (datetime.fromisoformat(latest_date) - timedelta(days=days)).strftime("%Y-%m-%d")
+    past         = [p for p in series if p["date"] <= cutoff_str]
+    if not past or past[-1]["equity"] == 0:
+        return 0.0
+    return round((latest - past[-1]["equity"]) / abs(past[-1]["equity"]), 6)
 
 
 # ---------------------------------------------------------------------------
