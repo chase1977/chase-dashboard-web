@@ -9,8 +9,9 @@ import shutil
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from fastapi.responses import Response
 
-from src.services import report_service as rs
-from src.services import data_service   as ds
+from src.services import report_service  as rs
+from src.services import data_service    as ds
+from src.services import supabase_service as sb_svc
 
 router = APIRouter(tags=["reports"])
 
@@ -113,5 +114,6 @@ async def upload_csv(file: UploadFile = File(...)):
 
     # Clear all caches so next request picks up the new file
     ds.invalidate_cache()
+    sb_svc.invalidate_all_cache()
 
     return {"status": "ok", "saved": filename}

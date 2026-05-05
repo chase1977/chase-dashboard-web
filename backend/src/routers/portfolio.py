@@ -54,13 +54,25 @@ def get_portfolio(time_range: str = Query("SI")):
     """
     days = _days(time_range)
 
-    # KPIs
-    kpis_dict = sb_svc.get_portfolio_kpis()
-    kpis      = KpiData(**kpis_dict)
+    # ── Shared pre-fetched data — each DB table read exactly once ──────────
+    pod_pfees_map = sb_svc._build_pod_pfees_map()   # pods + strategies + pfees snapshot
+    balance_hist  = sb_svc.get_balance_history()    # balance_history
+    capital_evts  = sb_svc.get_capital_events()     # capital_events
 
-    # Pod strips
-    pod_data = sb_svc.get_pods_with_kpis()
-    pods     = [
+    # KPIs — build from pre-fetched data
+    kpis_dict = sb_svc.get_portfolio_kpis_fast(
+        pod_pfees_map=pod_pfees_map,
+        balance_hist=balance_hist,
+        capital_evts=capital_evts,
+    )
+    kpis = KpiData(**kpis_dict)
+
+    # Pod strips — reuse pod_pfees_map
+    pod_data = sb_svc.get_pods_with_kpis_fast(
+        pod_pfees_map=pod_pfees_map,
+        balance_hist=balance_hist,
+    )
+    pods = [
         PodSummary(
             entity_id = p["entity_id"],
             name      = p["name"],
@@ -71,15 +83,15 @@ def get_portfolio(time_range: str = Query("SI")):
         for p in pod_data
     ]
 
-    # Equity curve
+    # Equity curve — reuse balance_hist
     equity_curve = [
         EquityPoint(timestamp=pt["timestamp"], equity=pt["equity"])
-        for pt in sb_svc.get_equity_curve_data(days)
+        for pt in sb_svc.get_equity_curve_data_fast(balance_hist, days)
     ]
 
-    # Allocation donut + PnL bars
-    allocation       = [AllocationSlice(**a) for a in sb_svc.get_allocation_data()]
-    pnl_contribution = [PnlBar(**p)          for p in sb_svc.get_pnl_contribution_data()]
+    # Allocation donut + PnL bars — reuse pod_pfees_map
+    allocation       = [AllocationSlice(**a) for a in sb_svc.get_allocation_data_fast(pod_pfees_map)]
+    pnl_contribution = [PnlBar(**p)          for p in sb_svc.get_pnl_contribution_data_fast(pod_pfees_map)]
 
     last_updated = sb_svc.get_latest_pfees_date() or str(datetime.date.today())
 
