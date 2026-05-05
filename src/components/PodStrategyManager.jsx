@@ -83,6 +83,31 @@ function FormField({ label, children }) {
   )
 }
 
+// Comma-formatted amount input — stores raw numeric string, displays with separators
+function AmountInput({ value, onChange, style }) {
+  function toDisplay(raw) {
+    if (!raw && raw !== 0) return ''
+    const [intPart, decPart] = String(raw).split('.')
+    const formatted = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+    return decPart !== undefined ? `${formatted}.${decPart}` : formatted
+  }
+  function handleChange(e) {
+    let raw = e.target.value.replace(/,/g, '').replace(/[^0-9.]/g, '')
+    const dots = raw.split('.')
+    if (dots.length > 2) raw = dots[0] + '.' + dots.slice(1).join('')
+    onChange(raw)
+  }
+  function handleBlur() {
+    const n = parseFloat(value)
+    if (!isNaN(n) && n >= 0) onChange(n.toFixed(2))
+  }
+  return (
+    <input type="text" inputMode="decimal"
+      value={toDisplay(value)} onChange={handleChange} onBlur={handleBlur}
+      style={style} placeholder="0.00" />
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Color picker row
 // ---------------------------------------------------------------------------
@@ -235,10 +260,7 @@ function StrategyForm({ initial, pods, onSave, onCancel, saving, error }) {
     staleTime: 60_000,   // re-fetch if stale after 1 min — auto-picks up new accounts
   })
 
-  function handleBlur() {
-    const n = parseFloat(investment)
-    if (!isNaN(n)) setInvestment(n.toFixed(2))
-  }
+  // handleBlur now handled inside AmountInput
 
   function handleSubmit(e) {
     e.preventDefault()
@@ -281,13 +303,7 @@ function StrategyForm({ initial, pods, onSave, onCancel, saving, error }) {
           </select>
         </FormField>
         <FormField label="Initial Investment (£)">
-          <input
-            type="number" min="0" step="0.01"
-            style={INPUT} placeholder="0.00"
-            value={investment}
-            onChange={e => setInvestment(e.target.value)}
-            onBlur={handleBlur}
-          />
+          <AmountInput value={investment} onChange={setInvestment} style={INPUT} />
         </FormField>
         <FormField label="Date Created">
           <input type="date" style={INPUT} value={date} onChange={e => setDate(e.target.value)} />

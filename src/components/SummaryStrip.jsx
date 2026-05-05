@@ -181,6 +181,42 @@ const BTN_SM_STYLE = {
   fontSize: 11, fontWeight: 600, color: '#fff', transition: 'background 0.15s',
 }
 
+// Reusable comma-formatted amount input
+// Stores raw numeric string in state; displays with thousand separators
+function AmountInput({ value, onChange, style, required }) {
+  function toDisplay(raw) {
+    if (!raw && raw !== 0) return ''
+    const [intPart, decPart] = String(raw).split('.')
+    const formatted = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+    return decPart !== undefined ? `${formatted}.${decPart}` : formatted
+  }
+
+  function handleChange(e) {
+    let raw = e.target.value.replace(/,/g, '').replace(/[^0-9.]/g, '')
+    const dots = raw.split('.')
+    if (dots.length > 2) raw = dots[0] + '.' + dots.slice(1).join('')
+    onChange(raw)
+  }
+
+  function handleBlur() {
+    const n = parseFloat(value)
+    if (!isNaN(n) && n > 0) onChange(n.toFixed(2))
+  }
+
+  return (
+    <input
+      type="text"
+      inputMode="decimal"
+      value={toDisplay(value)}
+      onChange={handleChange}
+      onBlur={handleBlur}
+      style={style}
+      required={required}
+      placeholder="0.00"
+    />
+  )
+}
+
 // Reusable hidden date picker widget
 function DateField({ value, onChange, label }) {
   const ref = useRef(null)
@@ -353,10 +389,7 @@ function CapitalEventsTab({ data, queryClient }) {
           <div>
             <label style={{ fontSize: 10, color: '#64748B', textTransform: 'uppercase',
               letterSpacing: '0.5px', display: 'block', marginBottom: 5 }}>Amount (£)</label>
-            <input type="number" min="0.01" step="0.01" placeholder="0.00"
-              value={amount} onChange={e => setAmount(e.target.value)}
-              onBlur={() => { const n=parseFloat(amount); if(!isNaN(n)) setAmount(n.toFixed(2)) }}
-              style={INPUT_STYLE} required />
+            <AmountInput value={amount} onChange={setAmount} style={INPUT_STYLE} required />
           </div>
         </div>
         <div style={{ marginBottom: 12 }}>
@@ -578,10 +611,7 @@ function InternalTransfersTab({ queryClient }) {
           <div>
             <label style={{ fontSize: 10, color: '#64748B', textTransform: 'uppercase',
               letterSpacing: '0.5px', display: 'block', marginBottom: 5 }}>Amount (£)</label>
-            <input type="number" min="0.01" step="0.01" placeholder="0.00"
-              value={amount} onChange={e => setAmt(e.target.value)}
-              onBlur={() => { const n=parseFloat(amount); if(!isNaN(n)) setAmt(n.toFixed(2)) }}
-              style={INPUT_STYLE} required />
+            <AmountInput value={amount} onChange={setAmt} style={INPUT_STYLE} required />
           </div>
           <div>
             <label style={{ fontSize: 10, color: '#64748B', textTransform: 'uppercase',
@@ -799,10 +829,7 @@ function MiscellaneousTab({ queryClient }) {
           <div>
             <label style={{ fontSize: 10, color: '#64748B', textTransform: 'uppercase',
               letterSpacing: '0.5px', display: 'block', marginBottom: 5 }}>Amount (£)</label>
-            <input type="number" min="0.01" step="0.01" placeholder="0.00"
-              value={amount} onChange={e => setAmt(e.target.value)}
-              onBlur={() => { const n=parseFloat(amount); if(!isNaN(n)) setAmt(n.toFixed(2)) }}
-              style={INPUT_STYLE} required />
+            <AmountInput value={amount} onChange={setAmt} style={INPUT_STYLE} required />
           </div>
           <div>
             <label style={{ fontSize: 10, color: '#64748B', textTransform: 'uppercase',
