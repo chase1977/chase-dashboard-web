@@ -15,12 +15,12 @@
  */
 
 import { useState, useEffect, useRef } from 'react'
-import { X, ArrowDownLeft, ArrowUpRight, Calendar, ChevronRight, Info, Plus, Trash2 } from 'lucide-react'
+import { X, ArrowDownLeft, ArrowUpRight, Calendar, ChevronRight, Info, Plus, Trash2, Pencil } from 'lucide-react'
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
 } from 'recharts'
 import { useQueryClient } from '@tanstack/react-query'
-import { createCapitalEvent, deleteCapitalEvent } from '../services/api.js'
+import { createCapitalEvent, updateCapitalEvent, deleteCapitalEvent } from '../services/api.js'
 import ConfirmModal from './ConfirmModal.jsx'
 
 // ---------------------------------------------------------------------------
@@ -172,77 +172,6 @@ function LedgerModal({ data, onClose }) {
   const queryClient = useQueryClient()
   const events = data?.events ?? []
 
-  // ── Form state ──
-  const [showForm,   setShowForm]   = useState(false)
-  const [formType,   setFormType]   = useState('deposit') // 'deposit' | 'withdrawal'
-  const [formDate,   setFormDate]   = useState(todayISO)
-  const [formAmount, setFormAmount] = useState('')
-  const [formNotes,  setFormNotes]  = useState('')
-  const [formError,  setFormError]  = useState(null)
-  const [submitting, setSubmitting] = useState(false)
-  const dateInputRef                = useRef(null)
-
-  // ── Delete confirm state ──
-  const [deletingId,   setDeletingId]   = useState(null) // event id pending delete
-  const [deleting,     setDeleting]     = useState(false)
-
-  function openForm(type) {
-    setFormType(type)
-    setFormDate(todayISO())
-    setFormAmount('')
-    setFormNotes('')
-    setFormError(null)
-    setShowForm(true)
-  }
-
-  function closeForm() {
-    setShowForm(false)
-    setFormError(null)
-  }
-
-  // Enforce 2dp on blur
-  function handleAmountBlur() {
-    const n = parseFloat(formAmount)
-    if (!isNaN(n)) setFormAmount(n.toFixed(2))
-  }
-
-  async function handleSubmit(e) {
-    e.preventDefault()
-    setFormError(null)
-    const amt = parseFloat(formAmount)
-    if (isNaN(amt) || amt <= 0) { setFormError('Enter valid amount > 0'); return }
-    if (!formDate)               { setFormError('Select a date');          return }
-    setSubmitting(true)
-    try {
-      await createCapitalEvent({
-        event_date: formDate,
-        event_type: formType,
-        amount:     parseFloat(amt.toFixed(2)),
-        notes:      formNotes.trim(),
-      })
-      await queryClient.invalidateQueries({ queryKey: ['fund_ledger'] })
-      closeForm()
-    } catch (err) {
-      setFormError(err.message ?? 'Failed to save event')
-    } finally {
-      setSubmitting(false)
-    }
-  }
-
-  async function handleDelete() {
-    if (!deletingId) return
-    setDeleting(true)
-    try {
-      await deleteCapitalEvent(deletingId)
-      await queryClient.invalidateQueries({ queryKey: ['fund_ledger'] })
-    } catch (err) {
-      // silently handled — event list will not refresh if failed
-    } finally {
-      setDeleting(false)
-      setDeletingId(null)
-    }
-  }
-
   // ── Shared input style ──
   const INPUT = {
     width:        '100%',
@@ -256,17 +185,245 @@ function LedgerModal({ data, onClose }) {
     boxSizing:    'border-box',
   }
 
-  const BTN_SM = (bg, hbg) => ({
+  const BTN_SM = {
     padding:      '7px 14px',
     borderRadius: 7,
     border:       'none',
     cursor:       'pointer',
     fontSize:     11,
     fontWeight:   600,
-    background:   bg,
     color:        '#fff',
     transition:   'background 0.15s',
-  })
+  }
+
+  // ── Add form state ──
+  const [showForm,   setShowForm]   = useState(false)
+  const [formType,   setFormType]   = useState('deposit')
+  const [formDate,   setFormDate]   = useState(todayISO)
+  const [formAmount, setFormAmount] = useState('')
+  const [formNotes,  setFormNotes]  = useState('')
+  const [formError,  setFormError]  = useState(null)
+  const [submitting, setSubmitting] = useState(false)
+  const dateInputRef                = useRef(null)
+
+  // ── Edit form state ──
+  const [editingEvent, setEditingEvent] = useState(null) // event object being edited
+  const [editType,     setEditType]     = useState('deposit')
+  const [editDate,     setEditDate]     = useState('')
+  const [editAmount,   setEditAmount]   = useState('')
+  const [editNotes,    setEditNotes]    = useState('')
+  const [editError,    setEditError]    = useState(null)
+  const [editSaving,   setEditSaving]   = useState(false)
+  const editDateRef                     = useRef(null)
+
+  // ── Delete confirm state ──
+  const [deletingId, setDeletingId] = useState(null)
+  const [deleting,   setDeleting]   = useState(false)
+
+  // ── Add form handlers ──
+  function openForm(type) {
+    setEditingEvent(null)        // close edit if open
+    setFormType(type)
+    setFormDate(todayISO())
+    setFormAmount('')
+    setFormNotes('')
+    setFormError(null)
+    setShowForm(true)
+  }
+
+  function closeForm() { setShowForm(false); setFormError(null) }
+
+  function handleAmountBlur() {
+    const n = parseFloat(formAmount)
+    if (!isNaN(n)) setFormAmount(n.toFixed(2))
+  }
+
+  async function handleSubmit(e) {
+    e.preventDefault()
+    setFormError(null)
+    const amt = parseFloat(formAmount)
+    if (isNaN(amt) || amt <= 0) { setFormError('Enter valid amount > 0'); return }
+    if (!formDate)               { setFormError('Select a date');          return }
+    setSubmitting(true)
+    try {
+      await createCapitalEvent({ event_date: formDate, event_type: formType,
+        amount: parseFloat(amt.toFixed(2)), notes: formNotes.trim() })
+      await queryClient.invalidateQueries({ queryKey: ['fund_ledger'] })
+      closeForm()
+    } catch (err) {
+      setFormError(err.message ?? 'Failed to save event')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  // ── Edit form handlers ──
+  function openEdit(ev) {
+    setShowForm(false)           // close add form if open
+    setEditingEvent(ev)
+    setEditType(ev.event_type)
+    setEditDate(ev.date)
+    setEditAmount(String(Math.abs(ev.amount)))
+    setEditNotes(ev.notes ?? '')
+    setEditError(null)
+  }
+
+  function closeEdit() { setEditingEvent(null); setEditError(null) }
+
+  function handleEditAmountBlur() {
+    const n = parseFloat(editAmount)
+    if (!isNaN(n)) setEditAmount(n.toFixed(2))
+  }
+
+  async function handleEditSubmit(e) {
+    e.preventDefault()
+    setEditError(null)
+    const amt = parseFloat(editAmount)
+    if (isNaN(amt) || amt <= 0) { setEditError('Enter valid amount > 0'); return }
+    if (!editDate)               { setEditError('Select a date');          return }
+    setEditSaving(true)
+    try {
+      await updateCapitalEvent(editingEvent.event_id ?? editingEvent.id, {
+        event_date: editDate,
+        event_type: editType,
+        amount:     parseFloat(amt.toFixed(2)),
+        notes:      editNotes.trim(),
+      })
+      await queryClient.invalidateQueries({ queryKey: ['fund_ledger'] })
+      closeEdit()
+    } catch (err) {
+      setEditError(err.message ?? 'Failed to update event')
+    } finally {
+      setEditSaving(false)
+    }
+  }
+
+  // ── Delete handler ──
+  async function handleDelete() {
+    if (!deletingId) return
+    setDeleting(true)
+    try {
+      await deleteCapitalEvent(deletingId)
+      await queryClient.invalidateQueries({ queryKey: ['fund_ledger'] })
+    } finally {
+      setDeleting(false)
+      setDeletingId(null)
+    }
+  }
+
+  // ── Inline form renderer (shared for add + edit) ──
+  function renderForm({ isEdit }) {
+    const type      = isEdit ? editType     : formType
+    const date      = isEdit ? editDate     : formDate
+    const amount    = isEdit ? editAmount   : formAmount
+    const notes     = isEdit ? editNotes    : formNotes
+    const error     = isEdit ? editError    : formError
+    const saving    = isEdit ? editSaving   : submitting
+    const setType   = isEdit ? setEditType  : setFormType
+    const setDate   = isEdit ? setEditDate  : setFormDate
+    const setAmount = isEdit ? setEditAmount: setFormAmount
+    const setNotes  = isEdit ? setEditNotes : setFormNotes
+    const onBlur    = isEdit ? handleEditAmountBlur : handleAmountBlur
+    const onSubmit  = isEdit ? handleEditSubmit     : handleSubmit
+    const onCancel  = isEdit ? closeEdit            : closeForm
+    const ref       = isEdit ? editDateRef          : dateInputRef
+    const isDeposit = type === 'deposit'
+
+    return (
+      <form
+        onSubmit={onSubmit}
+        style={{
+          background:   isDeposit ? 'rgba(52,211,153,0.06)' : 'rgba(248,113,113,0.06)',
+          border:       `1px solid ${isDeposit ? 'rgba(52,211,153,0.2)' : 'rgba(248,113,113,0.2)'}`,
+          borderRadius: 10,
+          padding:      '14px 16px',
+          marginBottom: 16,
+        }}
+      >
+        {/* Title row */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+          <span style={{ fontSize: 11, fontWeight: 700,
+            color: isDeposit ? '#34d399' : '#f87171',
+            textTransform: 'uppercase', letterSpacing: '0.7px' }}>
+            {isEdit ? 'Edit Event' : `New ${isDeposit ? 'Deposit' : 'Withdrawal'}`}
+          </span>
+          {/* Type toggle — only for edit mode */}
+          {isEdit && (
+            <div style={{ display: 'flex', gap: 6 }}>
+              {['deposit', 'withdrawal'].map(t => (
+                <button key={t} type="button" onClick={() => setType(t)}
+                  style={{
+                    padding: '3px 10px', borderRadius: 6, border: 'none',
+                    fontSize: 10, fontWeight: 600, cursor: 'pointer',
+                    background: type === t
+                      ? (t === 'deposit' ? 'rgba(52,211,153,0.25)' : 'rgba(248,113,113,0.25)')
+                      : 'rgba(71,85,105,0.3)',
+                    color: type === t
+                      ? (t === 'deposit' ? '#34d399' : '#f87171')
+                      : '#64748B',
+                  }}>
+                  {t === 'deposit' ? 'Deposit' : 'Withdrawal'}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
+          {/* Date */}
+          <div>
+            <label style={{ fontSize: 10, color: '#64748B', textTransform: 'uppercase',
+              letterSpacing: '0.5px', display: 'block', marginBottom: 5 }}>Date (DD-MM-YYYY)</label>
+            <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+              <span style={{ flex: 1, ...INPUT, paddingRight: 34, display: 'block',
+                color: date ? '#E2E8F0' : '#475569' }}>
+                {date ? isoToDDMMYYYY(date) : 'DD-MM-YYYY'}
+              </span>
+              <div style={{ position: 'absolute', right: 8 }}>
+                <input ref={ref} type="date" value={date} onChange={e => setDate(e.target.value)}
+                  style={{ position: 'absolute', opacity: 0, width: 0, height: 0, pointerEvents: 'none' }} />
+                <button type="button" onClick={() => ref.current?.showPicker()}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer',
+                    padding: 2, display: 'flex', alignItems: 'center' }}>
+                  <Calendar size={14} color="#475569" />
+                </button>
+              </div>
+            </div>
+          </div>
+          {/* Amount */}
+          <div>
+            <label style={{ fontSize: 10, color: '#64748B', textTransform: 'uppercase',
+              letterSpacing: '0.5px', display: 'block', marginBottom: 5 }}>Amount (£)</label>
+            <input type="number" min="0.01" step="0.01" placeholder="0.00"
+              value={amount} onChange={e => setAmount(e.target.value)} onBlur={onBlur}
+              style={INPUT} required />
+          </div>
+        </div>
+
+        {/* Notes */}
+        <div style={{ marginBottom: 12 }}>
+          <label style={{ fontSize: 10, color: '#64748B', textTransform: 'uppercase',
+            letterSpacing: '0.5px', display: 'block', marginBottom: 5 }}>Notes (optional)</label>
+          <input type="text" placeholder="e.g. Monthly top-up"
+            value={notes} onChange={e => setNotes(e.target.value)} style={INPUT} />
+        </div>
+
+        {error && <p style={{ fontSize: 11, color: '#f87171', marginBottom: 10 }}>{error}</p>}
+
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button type="submit" disabled={saving}
+            style={{ ...BTN_SM, background: isDeposit ? '#22c55e' : '#ef4444',
+              opacity: saving ? 0.65 : 1, cursor: saving ? 'not-allowed' : 'pointer' }}>
+            {saving ? 'Saving…' : (isEdit ? 'Update Event' : `Save ${isDeposit ? 'Deposit' : 'Withdrawal'}`)}
+          </button>
+          <button type="button" onClick={onCancel} disabled={saving}
+            style={{ ...BTN_SM, background: '#374151', opacity: saving ? 0.5 : 1 }}>
+            Cancel
+          </button>
+        </div>
+      </form>
+    )
+  }
 
   return (
     <>
@@ -277,155 +434,30 @@ function LedgerModal({ data, onClose }) {
         wide
       >
         {/* ── Action buttons ── */}
-        <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-          <button
-            onClick={() => openForm('deposit')}
-            style={{
-              display:     'flex', alignItems: 'center', gap: 6,
-              padding:     '8px 14px', borderRadius: 8, border: 'none',
-              cursor:      'pointer', fontSize: 12, fontWeight: 600,
-              background:  'rgba(52,211,153,0.15)',
-              color:       '#34d399',
-              border:      '1px solid rgba(52,211,153,0.25)',
-            }}
-          >
-            <Plus size={13} /> Record Deposit
-          </button>
-          <button
-            onClick={() => openForm('withdrawal')}
-            style={{
-              display:     'flex', alignItems: 'center', gap: 6,
-              padding:     '8px 14px', borderRadius: 8, border: 'none',
-              cursor:      'pointer', fontSize: 12, fontWeight: 600,
-              background:  'rgba(248,113,113,0.12)',
-              color:       '#f87171',
-              border:      '1px solid rgba(248,113,113,0.25)',
-            }}
-          >
-            <Plus size={13} /> Record Withdrawal
-          </button>
-        </div>
-
-        {/* ── Inline form ── */}
-        {showForm && (
-          <form
-            onSubmit={handleSubmit}
-            style={{
-              background:    formType === 'deposit' ? 'rgba(52,211,153,0.06)' : 'rgba(248,113,113,0.06)',
-              border:        `1px solid ${formType === 'deposit' ? 'rgba(52,211,153,0.2)' : 'rgba(248,113,113,0.2)'}`,
-              borderRadius:  10,
-              padding:       '14px 16px',
-              marginBottom:  16,
-            }}
-          >
-            <div style={{ fontSize: 11, fontWeight: 700, color: formType === 'deposit' ? '#34d399' : '#f87171',
-              textTransform: 'uppercase', letterSpacing: '0.7px', marginBottom: 12 }}>
-              New {formType === 'deposit' ? 'Deposit' : 'Withdrawal'}
-            </div>
-
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
-              {/* Date field */}
-              <div>
-                <label style={{ fontSize: 10, color: '#64748B', textTransform: 'uppercase',
-                  letterSpacing: '0.5px', display: 'block', marginBottom: 5 }}>
-                  Date (DD-MM-YYYY)
-                </label>
-                <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
-                  <span style={{
-                    flex: 1, ...INPUT, paddingRight: 34, display: 'block',
-                    color: formDate ? '#E2E8F0' : '#475569',
-                  }}>
-                    {formDate ? isoToDDMMYYYY(formDate) : 'DD-MM-YYYY'}
-                  </span>
-                  {/* Hidden native date input behind the calendar icon */}
-                  <div style={{ position: 'absolute', right: 8 }}>
-                    <input
-                      ref={dateInputRef}
-                      type="date"
-                      value={formDate}
-                      onChange={e => setFormDate(e.target.value)}
-                      style={{
-                        position: 'absolute', opacity: 0,
-                        width: 0, height: 0, pointerEvents: 'none',
-                      }}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => dateInputRef.current?.showPicker()}
-                      style={{ background: 'none', border: 'none', cursor: 'pointer',
-                        padding: 2, display: 'flex', alignItems: 'center' }}
-                    >
-                      <Calendar size={14} color="#475569" />
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              {/* Amount field */}
-              <div>
-                <label style={{ fontSize: 10, color: '#64748B', textTransform: 'uppercase',
-                  letterSpacing: '0.5px', display: 'block', marginBottom: 5 }}>
-                  Amount (£)
-                </label>
-                <input
-                  type="number"
-                  min="0.01"
-                  step="0.01"
-                  placeholder="0.00"
-                  value={formAmount}
-                  onChange={e => setFormAmount(e.target.value)}
-                  onBlur={handleAmountBlur}
-                  style={INPUT}
-                  required
-                />
-              </div>
-            </div>
-
-            {/* Notes */}
-            <div style={{ marginBottom: 12 }}>
-              <label style={{ fontSize: 10, color: '#64748B', textTransform: 'uppercase',
-                letterSpacing: '0.5px', display: 'block', marginBottom: 5 }}>
-                Notes (optional)
-              </label>
-              <input
-                type="text"
-                placeholder="e.g. Monthly top-up"
-                value={formNotes}
-                onChange={e => setFormNotes(e.target.value)}
-                style={INPUT}
-              />
-            </div>
-
-            {/* Error */}
-            {formError && (
-              <p style={{ fontSize: 11, color: '#f87171', marginBottom: 10 }}>{formError}</p>
-            )}
-
-            {/* Submit / Cancel */}
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button
-                type="submit"
-                disabled={submitting}
-                style={{
-                  ...BTN_SM(),
-                  background: formType === 'deposit' ? '#22c55e' : '#ef4444',
-                  opacity: submitting ? 0.65 : 1,
-                  cursor: submitting ? 'not-allowed' : 'pointer',
-                }}
-              >
-                {submitting ? 'Saving…' : `Save ${formType === 'deposit' ? 'Deposit' : 'Withdrawal'}`}
-              </button>
-              <button
-                type="button"
-                onClick={closeForm}
-                disabled={submitting}
-                style={{ ...BTN_SM(), background: '#374151', opacity: submitting ? 0.5 : 1 }}
-              >
-                Cancel
-              </button>
-            </div>
-          </form>
+        {!editingEvent && (
+          <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+            <button onClick={() => openForm('deposit')}
+              style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px',
+                borderRadius: 8, cursor: 'pointer', fontSize: 12, fontWeight: 600,
+                background: 'rgba(52,211,153,0.15)', color: '#34d399',
+                border: '1px solid rgba(52,211,153,0.25)' }}>
+              <Plus size={13} /> Record Deposit
+            </button>
+            <button onClick={() => openForm('withdrawal')}
+              style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px',
+                borderRadius: 8, cursor: 'pointer', fontSize: 12, fontWeight: 600,
+                background: 'rgba(248,113,113,0.12)', color: '#f87171',
+                border: '1px solid rgba(248,113,113,0.25)' }}>
+              <Plus size={13} /> Record Withdrawal
+            </button>
+          </div>
         )}
+
+        {/* ── Add form ── */}
+        {showForm && !editingEvent && renderForm({ isEdit: false })}
+
+        {/* ── Edit form ── */}
+        {editingEvent && renderForm({ isEdit: true })}
 
         {/* ── Summary bar ── */}
         <div className="grid grid-cols-3 gap-3 mb-5">
@@ -493,22 +525,36 @@ function LedgerModal({ data, onClose }) {
                         ? formatCurrency(isWithdrawal ? -Math.abs(ev.amount) : ev.amount)
                         : formatCurrencyAbs(ev.amount)}
                     </span>
-                    {/* Delete button — only for user-managed events (deposit/withdrawal) */}
+                    {/* Edit + Delete — only for user-managed events (deposit/withdrawal) */}
                     {isExternal && (
-                      <button
-                        onClick={() => setDeletingId(ev.event_id ?? ev.id)}
-                        style={{
-                          background: 'none', border: 'none', cursor: 'pointer',
-                          padding: 3, borderRadius: 5, display: 'flex', alignItems: 'center',
-                          color: '#475569',
-                          transition: 'color 0.15s',
-                        }}
-                        onMouseEnter={e => { e.currentTarget.style.color = '#f87171' }}
-                        onMouseLeave={e => { e.currentTarget.style.color = '#475569' }}
-                        title="Delete event"
-                      >
-                        <Trash2 size={12} />
-                      </button>
+                      <>
+                        <button
+                          onClick={() => openEdit(ev)}
+                          style={{
+                            background: 'none', border: 'none', cursor: 'pointer',
+                            padding: 3, borderRadius: 5, display: 'flex', alignItems: 'center',
+                            color: '#475569', transition: 'color 0.15s',
+                          }}
+                          onMouseEnter={e => { e.currentTarget.style.color = '#38BDF8' }}
+                          onMouseLeave={e => { e.currentTarget.style.color = '#475569' }}
+                          title="Edit event"
+                        >
+                          <Pencil size={12} />
+                        </button>
+                        <button
+                          onClick={() => setDeletingId(ev.event_id ?? ev.id)}
+                          style={{
+                            background: 'none', border: 'none', cursor: 'pointer',
+                            padding: 3, borderRadius: 5, display: 'flex', alignItems: 'center',
+                            color: '#475569', transition: 'color 0.15s',
+                          }}
+                          onMouseEnter={e => { e.currentTarget.style.color = '#f87171' }}
+                          onMouseLeave={e => { e.currentTarget.style.color = '#475569' }}
+                          title="Delete event"
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      </>
                     )}
                   </div>
                 </div>

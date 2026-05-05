@@ -41,6 +41,13 @@ class CapitalEventIn(BaseModel):
     notes:       Optional[str] = None
 
 
+class CapitalEventPatch(BaseModel):
+    event_date:  Optional[str]   = None
+    event_type:  Optional[str]   = Field(None, pattern="^(deposit|withdrawal)$")
+    amount:      Optional[float] = Field(None, gt=0)
+    notes:       Optional[str]   = None
+
+
 class PodIn(BaseModel):
     name:         str
     pod_code:     str = Field(..., min_length=1, max_length=8)
@@ -122,12 +129,40 @@ def record_capital_event(body: CapitalEventIn):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@router.patch("/capital-events/{event_id}")
+def edit_capital_event(event_id: int, body: CapitalEventPatch):
+    fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not fields:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    try:
+        return sb.update_capital_event(event_id, **fields)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.delete("/capital-events/{event_id}", status_code=204)
 def remove_capital_event(event_id: int):
     try:
         sb.delete_capital_event(event_id)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Account IDs (from user_accounts_equity — live, auto-updated)
+# ---------------------------------------------------------------------------
+
+@router.get("/account-ids")
+def list_account_ids():
+    """
+    GET /api/management/account-ids
+    Returns distinct AccountIds from user_accounts_equity (latest snapshot).
+    Used to populate strategy Account ID dropdown.
+    """
+    try:
+        return sb.get_account_ids()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ---------------------------------------------------------------------------

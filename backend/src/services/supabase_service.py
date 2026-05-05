@@ -795,7 +795,46 @@ def create_capital_event(event_date: str, event_type: str,
     return res.data[0] if res.data else {}
 
 
+def update_capital_event(event_id: int, **fields) -> dict:
+    """Patch one or more fields on a capital event row."""
+    sb = get_client()
+    if "amount" in fields:
+        fields["amount"] = round(abs(float(fields["amount"])), 2)
+    res = sb.table("capital_events").update(fields).eq("id", event_id).execute()
+    return res.data[0] if res.data else {}
+
+
 def delete_capital_event(event_id: int) -> bool:
     sb = get_client()
     sb.table("capital_events").delete().eq("id", event_id).execute()
     return True
+
+
+def get_account_ids() -> list[dict]:
+    """
+    Distinct AccountIds from user_accounts_equity (latest date snapshot).
+    Returns list of { account_id: int, equity: float }.
+    Auto-updates as new accounts appear in the table.
+    """
+    sb = get_client()
+    latest_res = (
+        sb.table("user_accounts_equity")
+        .select('"Date"')
+        .order('"Date"', desc=True)
+        .limit(1)
+        .execute()
+    )
+    if not latest_res.data:
+        return []
+    latest_date = latest_res.data[0]["Date"]
+    res = (
+        sb.table("user_accounts_equity")
+        .select('"AccountId","Equity"')
+        .eq('"Date"', latest_date)
+        .order('"AccountId"')
+        .execute()
+    )
+    return [
+        {"account_id": r["AccountId"], "equity": float(r["Equity"] or 0)}
+        for r in (res.data or [])
+    ]

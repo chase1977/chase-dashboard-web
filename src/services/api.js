@@ -114,8 +114,16 @@ export function createCapitalEvent({ event_date, event_type, amount, notes = '' 
   return _post('/api/management/capital-events', { event_date, event_type, amount, notes })
 }
 
+export function updateCapitalEvent(id, body) {
+  return _patch(`/api/management/capital-events/${id}`, body)
+}
+
 export function deleteCapitalEvent(id) {
   return _delete(`/api/management/capital-events/${id}`)
+}
+
+export function fetchAccountIds() {
+  return get('/api/management/account-ids')
 }
 
 // ---------------------------------------------------------------------------

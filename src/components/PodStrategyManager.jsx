@@ -21,6 +21,7 @@ import { X, Plus, Pencil, Trash2, Check, XCircle } from 'lucide-react'
 import {
   fetchPods, createPod, updatePod, deletePod,
   fetchStrategies, createStrategy, updateStrategy, deleteStrategy,
+  fetchAccountIds,
 } from '../services/api.js'
 import ConfirmModal from './ConfirmModal.jsx'
 
@@ -223,7 +224,16 @@ function StrategyForm({ initial, pods, onSave, onCancel, saving, error }) {
   const [date,        setDate]       = useState(initial?.date_created       ?? todayISO())
   const [status,      setStatus]     = useState(initial?.status             ?? 'Active')
   const [notes,       setNotes]      = useState(initial?.notes              ?? '')
-  const [accountId,   setAccountId]  = useState(initial?.account_id        ?? '')
+  const [accountId,   setAccountId]  = useState(
+    initial?.account_id != null ? String(initial.account_id) : ''
+  )
+
+  // ── Live AccountIds from user_accounts_equity ──
+  const { data: accountIds = [], isLoading: loadingAccIds } = useQuery({
+    queryKey:  ['account_ids'],
+    queryFn:   fetchAccountIds,
+    staleTime: 60_000,   // re-fetch if stale after 1 min — auto-picks up new accounts
+  })
 
   function handleBlur() {
     const n = parseFloat(investment)
@@ -289,14 +299,27 @@ function StrategyForm({ initial, pods, onSave, onCancel, saving, error }) {
         </FormField>
       </div>
 
-      {/* Account ID — future Darwinex account linking */}
-      <FormField label="Account ID (Darwinex — optional)">
-        <input
-          type="number" style={INPUT}
-          placeholder="e.g. 1000012345"
+      {/* Account ID — live dropdown from user_accounts_equity */}
+      <FormField label="Darwinex Account ID">
+        <select
+          style={INPUT}
           value={accountId}
           onChange={e => setAccountId(e.target.value)}
-        />
+          disabled={loadingAccIds}
+        >
+          <option value="">— None —</option>
+          {accountIds.map(a => (
+            <option key={a.account_id} value={a.account_id}>
+              {a.account_id}
+              {a.equity > 0 ? `  ·  £${a.equity.toLocaleString('en-GB', { maximumFractionDigits: 0 })}` : '  ·  £0'}
+            </option>
+          ))}
+        </select>
+        <span style={{ fontSize: 10, color: '#334155', marginTop: 3, display: 'block' }}>
+          {loadingAccIds
+            ? 'Loading accounts…'
+            : `${accountIds.length} account${accountIds.length !== 1 ? 's' : ''} found in Supabase`}
+        </span>
       </FormField>
 
       <div style={{ marginTop: 10 }}>
