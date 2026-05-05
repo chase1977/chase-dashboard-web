@@ -378,11 +378,11 @@ def get_portfolio_kpis() -> dict:
     try:
         metrics     = compute_fund_metrics()
         performance = metrics["twr"]
-        # initial_investment: use sum of strategy initial_investments when set,
-        # else fall back to initial_aum from first TWR sub-period
-        all_strategies     = list_strategies()
-        strategy_initial   = round(sum(float(s.get("initial_investment") or 0) for s in all_strategies), 2)
-        initial_investment = strategy_initial if strategy_initial > 0 else metrics["initial_aum"]
+        # Portfolio initial_investment = total capital deposited from bank (capital_events).
+        # This is always correct and never double-counts internal reallocations.
+        # e.g. £500K + £500K deposits = £1M regardless of how many times money moves
+        #      between Chase1 ↔ Chase3xA internally.
+        initial_investment = metrics["total_deposited"]
     except Exception:
         initial_investment = current_equity
         performance        = 0.0
@@ -507,8 +507,9 @@ def get_pods_with_kpis() -> list[dict]:
     pct_7d  = get_period_return(7)
     pct_30d = get_period_return(30)
 
-    # Total AUM for initial_investment fallback
-    total_invested = sum(v["invested"] for v in pod_agg.values())
+    # Net deployed per brokerage account — pod initial = sum of net deployed
+    # for all strategies in that pod that have a brokerage_account set.
+    net_deployed = _get_net_deployed_per_account()
 
     result = []
 
@@ -518,7 +519,7 @@ def get_pods_with_kpis() -> list[dict]:
             pid   = pod["id"]
             agg   = pod_agg.get(pid, {"invested": 0.0, "pnl": 0.0})
             initial = sum(
-                float(s.get("initial_investment") or 0)
+                net_deployed.get(s.get("brokerage_account") or "", 0.0)
                 for s in data["strategies"]
                 if s.get("pod_id") == pid
             )
@@ -656,8 +657,9 @@ def get_hierarchy_rows(entity_type: str) -> list[dict]:
         UNALLOCATED = data["UNALLOCATED"]
         pods_idx    = {p["id"]: p for p in pods_list}
 
-        total_aum = sum(v["invested"] for v in pod_agg.values()) or 1.0
-        rows      = []
+        total_aum    = sum(v["invested"] for v in pod_agg.values()) or 1.0
+        net_deployed = _get_net_deployed_per_account()
+        rows         = []
 
         for pid, agg in pod_agg.items():
             if pid == UNALLOCATED:
@@ -666,7 +668,7 @@ def get_hierarchy_rows(entity_type: str) -> list[dict]:
                 pod = pods_idx.get(pid, {"name": f"Pod {pid}", "pod_code": "", "color": "#6366f1", "id": pid})
 
             initial = sum(
-                float(s.get("initial_investment") or 0)
+                net_deployed.get(s.get("brokerage_account") or "", 0.0)
                 for s in data["strategies"]
                 if s.get("pod_id") == pid
             ) if pid != UNALLOCATED else agg["invested"]
@@ -877,11 +879,9 @@ def get_portfolio_kpis_fast(pod_pfees_map: dict, balance_hist: list[dict],
     pct_7d  = _period_return_from_hist(balance_hist, 7)
     pct_30d = _period_return_from_hist(balance_hist, 30)
     try:
-        metrics          = compute_fund_metrics_fast(capital_evts, balance_hist)
-        performance      = metrics["twr"]
-        strategies_data  = pod_pfees_map.get("strategies", [])
-        strategy_initial = round(sum(float(s.get("initial_investment") or 0) for s in strategies_data), 2)
-        initial_investment = strategy_initial if strategy_initial > 0 else metrics["initial_aum"]
+        metrics            = compute_fund_metrics_fast(capital_evts, balance_hist)
+        performance        = metrics["twr"]
+        initial_investment = metrics["total_deposited"]   # always £total bank deposits
     except Exception:
         initial_investment = current_equity
         performance        = 0.0
@@ -907,6 +907,7 @@ def get_pods_with_kpis_fast(pod_pfees_map: dict, balance_hist: list[dict]) -> li
     pct_7d  = _period_return_from_hist(balance_hist, 7)
     pct_30d = _period_return_from_hist(balance_hist, 30)
 
+    net_deployed = _get_net_deployed_per_account()
     result = []
 
     if pods_list:
@@ -914,7 +915,7 @@ def get_pods_with_kpis_fast(pod_pfees_map: dict, balance_hist: list[dict]) -> li
             pid     = pod["id"]
             agg     = pod_agg.get(pid, {"invested": 0.0, "pnl": 0.0})
             initial = sum(
-                float(s.get("initial_investment") or 0)
+                net_deployed.get(s.get("brokerage_account") or "", 0.0)
                 for s in strategies if s.get("pod_id") == pid
             )
             result.append({
@@ -1073,7 +1074,8 @@ def list_strategies(pod_id: Optional[int] = None) -> list[dict]:
 
 def create_strategy(name: str, strategy_code: str, pod_id: Optional[int],
                     initial_investment: float, date_created: str,
-                    status: str = "Active", notes: str = "") -> dict:
+                    status: str = "Active", notes: str = "",
+                    brokerage_account: Optional[str] = None) -> dict:
     sb  = get_client()
     res = sb.table("strategies").insert({
         "name":               name,
@@ -1083,6 +1085,7 @@ def create_strategy(name: str, strategy_code: str, pod_id: Optional[int],
         "date_created":       date_created,
         "status":             status,
         "notes":              notes or None,
+        "brokerage_account":  brokerage_account or None,
     }).execute()
     _invalidate("strategies_all")
     return res.data[0] if res.data else {}
@@ -1217,6 +1220,41 @@ def _get_darwinex_cashflows() -> list[dict]:
         [{"date": d, "amount": a} for d, a in daily.items() if a != 0],
         key=lambda x: x["date"],
     )
+
+
+def _get_net_deployed_per_account() -> dict[str, float]:
+    """
+    Net capital deployed per brokerage account from internal_transfers.
+
+    Only counts Wallet↔account flows — account-to-account rebalances are excluded
+    because they represent internal reallocations, not new capital deployment.
+
+      Wallet → account  : positive (deploying capital)
+      account → Wallet  : negative (returning capital)
+
+    Returns { account_name: net_deployed_float }
+    e.g. { "Chase1": 899950.0, "Chase3xA": 100000.0, "XPF2026": 50.0 }
+    """
+    transfers = list_internal_transfers()
+    net: dict[str, float] = {}
+    for t in transfers:
+        amt = float(t["amount"])
+        frm = t["from_account"]
+        to  = t["to_account"]
+        if frm == "Wallet" and to != "Wallet":
+            net[to]  = round(net.get(to, 0.0) + amt, 2)
+        elif to == "Wallet" and frm != "Wallet":
+            net[frm] = round(net.get(frm, 0.0) - amt, 2)
+        # account↔account: ignored — same capital, different location
+    return net
+
+
+def get_net_deployed() -> dict[str, float]:
+    """
+    Public wrapper — returns net deployed per brokerage account (cached via
+    internal_transfers cache). Used by /api/management/net-deployed endpoint.
+    """
+    return _get_net_deployed_per_account()
 
 
 def create_internal_transfer(transfer_date: str, from_account: str,

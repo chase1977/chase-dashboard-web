@@ -126,6 +126,10 @@ export function fetchAccountIds() {
   return get('/api/management/account-ids')
 }
 
+export function fetchNetDeployed() {
+  return get('/api/management/net-deployed')
+}
+
 // ---------------------------------------------------------------------------
 // Management — Pods
 // ---------------------------------------------------------------------------

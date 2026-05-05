@@ -21,7 +21,7 @@ import { X, Plus, Pencil, Trash2, Check, XCircle } from 'lucide-react'
 import {
   fetchPods, createPod, updatePod, deletePod,
   fetchStrategies, createStrategy, updateStrategy, deleteStrategy,
-  fetchAccountIds,
+  fetchAccountIds, fetchNetDeployed,
 } from '../services/api.js'
 import ConfirmModal from './ConfirmModal.jsx'
 
@@ -30,6 +30,9 @@ import ConfirmModal from './ConfirmModal.jsx'
 // ---------------------------------------------------------------------------
 
 const STATUSES = ['Active', 'Inactive', 'Paused']
+
+// Known brokerage accounts — must match internal_transfers account names
+const BROKERAGE_ACCOUNTS = ['Chase1', 'Chase3xA', 'XPF2026']
 
 const POD_COLORS_PRESET = [
   '#0EA5E9', '#F59E0B', '#34D399', '#A78BFA', '#F472B6',
@@ -242,36 +245,43 @@ function PodForm({ initial, onSave, onCancel, saving, error }) {
 // ---------------------------------------------------------------------------
 
 function StrategyForm({ initial, pods, onSave, onCancel, saving, error }) {
-  const [name,        setName]       = useState(initial?.name               ?? '')
-  const [code,        setCode]       = useState(initial?.strategy_code      ?? '')
-  const [podId,       setPodId]      = useState(initial?.pod_id             ?? '')
-  const [investment,  setInvestment] = useState(initial?.initial_investment ?? '')
-  const [date,        setDate]       = useState(initial?.date_created       ?? todayISO())
-  const [status,      setStatus]     = useState(initial?.status             ?? 'Active')
-  const [notes,       setNotes]      = useState(initial?.notes              ?? '')
-  const [accountId,   setAccountId]  = useState(
+  const [name,             setName]            = useState(initial?.name               ?? '')
+  const [code,             setCode]            = useState(initial?.strategy_code      ?? '')
+  const [podId,            setPodId]           = useState(initial?.pod_id             ?? '')
+  const [date,             setDate]            = useState(initial?.date_created       ?? todayISO())
+  const [status,           setStatus]          = useState(initial?.status             ?? 'Active')
+  const [notes,            setNotes]           = useState(initial?.notes              ?? '')
+  const [accountId,        setAccountId]       = useState(
     initial?.account_id != null ? String(initial.account_id) : ''
   )
+  const [brokerageAccount, setBrokerageAccount] = useState(initial?.brokerage_account ?? '')
 
   // ── Live AccountIds from user_accounts_equity ──
   const { data: accountIds = [], isLoading: loadingAccIds } = useQuery({
     queryKey:  ['account_ids'],
     queryFn:   fetchAccountIds,
-    staleTime: 60_000,   // re-fetch if stale after 1 min — auto-picks up new accounts
+    staleTime: 60_000,
   })
 
-  // handleBlur now handled inside AmountInput
+  // ── Net deployed per brokerage account (from internal_transfers) ──
+  const { data: netDeployed = {} } = useQuery({
+    queryKey:  ['net_deployed'],
+    queryFn:   fetchNetDeployed,
+    staleTime: 60_000,
+  })
+
+  const computedInitial = netDeployed[brokerageAccount] ?? null
 
   function handleSubmit(e) {
     e.preventDefault()
     onSave({
       name,
-      strategy_code:      code.toUpperCase(),
-      pod_id:             podId !== '' ? parseInt(podId, 10) : null,
-      initial_investment: parseFloat(investment) || 0,
-      date_created:       date,
+      strategy_code:     code.toUpperCase(),
+      pod_id:            podId !== '' ? parseInt(podId, 10) : null,
+      date_created:      date,
       status,
       notes,
+      brokerage_account: brokerageAccount || null,
       ...(accountId !== '' ? { account_id: parseInt(accountId, 10) } : {}),
     })
   }
@@ -302,8 +312,25 @@ function StrategyForm({ initial, pods, onSave, onCancel, saving, error }) {
             ))}
           </select>
         </FormField>
-        <FormField label="Initial Investment (£)">
-          <AmountInput value={investment} onChange={setInvestment} style={INPUT} />
+        <FormField label="Brokerage Account">
+          <select
+            style={INPUT}
+            value={brokerageAccount}
+            onChange={e => setBrokerageAccount(e.target.value)}
+          >
+            <option value="">— None —</option>
+            {BROKERAGE_ACCOUNTS.map(a => (
+              <option key={a} value={a}>{a}</option>
+            ))}
+          </select>
+          {/* Show computed net deployed for selected account */}
+          {brokerageAccount && (
+            <div style={{ marginTop: 4, fontSize: 10, color: computedInitial != null ? '#34D399' : '#475569' }}>
+              {computedInitial != null
+                ? `Net deployed: ${fmtMoney(computedInitial)} (auto-computed from transfers)`
+                : 'No transfers recorded for this account yet'}
+            </div>
+          )}
         </FormField>
         <FormField label="Date Created">
           <input type="date" style={INPUT} value={date} onChange={e => setDate(e.target.value)} />
@@ -584,6 +611,11 @@ function StrategiesTab({ queryClient, onSaved }) {
     queryFn:  () => fetchStrategies(),
     staleTime: 30_000,
   })
+  const { data: netDeployed = {} } = useQuery({
+    queryKey:  ['net_deployed'],
+    queryFn:   fetchNetDeployed,
+    staleTime: 60_000,
+  })
 
   const [mode,     setMode]     = useState(null)
   const [saving,   setSaving]   = useState(false)
@@ -673,11 +705,11 @@ function StrategiesTab({ queryClient, onSaved }) {
           {/* Header */}
           <div style={{
             display: 'grid',
-            gridTemplateColumns: '1fr 90px 120px 100px 90px 70px 80px',
+            gridTemplateColumns: '1fr 90px 110px 110px 90px 70px 72px',
             gap: 8, padding: '8px 12px',
             background: '#0D1B2E', borderBottom: '1px solid #1E3A5F',
           }}>
-            {['Name', 'Code', 'Pod', 'Initial', 'Date', 'Status', ''].map((h, i) => (
+            {['Name', 'Code', 'Pod', 'Account / Net', 'Date', 'Status', ''].map((h, i) => (
               <span key={i} style={{ fontSize: 10, fontWeight: 600, color: '#475569',
                 textTransform: 'uppercase', letterSpacing: '0.4px' }}>
                 {h}
@@ -686,19 +718,21 @@ function StrategiesTab({ queryClient, onSaved }) {
           </div>
 
           {strategies.map((strat, i) => {
-            const pod = podMap[strat.pod_id]
+            const pod         = podMap[strat.pod_id]
+            const acct        = strat.brokerage_account
+            const netAmt      = acct ? (netDeployed[acct] ?? null) : null
             return (
               <div
                 key={strat.id}
                 style={{
                   display: 'grid',
-                  gridTemplateColumns: '1fr 90px 120px 100px 90px 70px 80px',
+                  gridTemplateColumns: '1fr 90px 110px 110px 90px 70px 72px',
                   gap: 8, padding: '9px 12px', alignItems: 'center',
                   background: i % 2 === 0 ? '#0D1728' : 'transparent',
                   borderBottom: i < strategies.length - 1 ? '1px solid #162032' : 'none',
                 }}
               >
-                {/* Name */}
+                {/* Name + Darwinex account ID badge */}
                 <div>
                   <span style={{ fontSize: 12, color: '#E2E8F0', fontWeight: 500 }}>
                     {strat.name}
@@ -731,10 +765,25 @@ function StrategiesTab({ queryClient, onSaved }) {
                   <span style={{ fontSize: 11, color: '#334155' }}>—</span>
                 )}
 
-                {/* Initial investment */}
-                <span style={{ fontSize: 11, color: '#94A3B8', fontFamily: 'ui-monospace, monospace' }}>
-                  {fmtMoney(strat.initial_investment)}
-                </span>
+                {/* Brokerage account + computed net deployed */}
+                <div>
+                  {acct ? (
+                    <>
+                      <span style={{
+                        fontSize: 10, fontWeight: 600, color: '#38BDF8',
+                        letterSpacing: '0.3px',
+                      }}>
+                        {acct}
+                      </span>
+                      <div style={{ fontSize: 10, color: netAmt != null ? '#34D399' : '#475569',
+                        fontFamily: 'ui-monospace, monospace', marginTop: 1 }}>
+                        {netAmt != null ? fmtMoney(netAmt) : '—'}
+                      </div>
+                    </>
+                  ) : (
+                    <span style={{ fontSize: 11, color: '#334155' }}>—</span>
+                  )}
+                </div>
 
                 {/* Date */}
                 <span style={{ fontSize: 11, color: '#64748B' }}>{strat.date_created}</span>

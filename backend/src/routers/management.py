@@ -80,11 +80,12 @@ class PodPatch(BaseModel):
 class StrategyIn(BaseModel):
     name:               str
     strategy_code:      str   = Field(..., min_length=1, max_length=12)
-    pod_id:             Optional[int] = None
-    initial_investment: float = Field(default=0.0, ge=0)
-    date_created:       str   = Field(default_factory=lambda: str(date.today()))
-    status:             str   = Field(default="Active")
-    notes:              Optional[str] = None
+    pod_id:             Optional[int]  = None
+    initial_investment: float          = Field(default=0.0, ge=0)
+    date_created:       str            = Field(default_factory=lambda: str(date.today()))
+    status:             str            = Field(default="Active")
+    notes:              Optional[str]  = None
+    brokerage_account:  Optional[str]  = None  # e.g. "Chase1", "Chase3xA", "XPF2026"
 
 
 class StrategyPatch(BaseModel):
@@ -96,6 +97,7 @@ class StrategyPatch(BaseModel):
     status:             Optional[str]   = None
     notes:              Optional[str]   = None
     account_id:         Optional[int]   = None
+    brokerage_account:  Optional[str]   = None  # e.g. "Chase1", "Chase3xA", "XPF2026"
 
 
 # ---------------------------------------------------------------------------
@@ -157,6 +159,24 @@ def remove_capital_event(event_id: int):
         sb.delete_capital_event(event_id)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Net deployed per brokerage account (computed from internal_transfers)
+# ---------------------------------------------------------------------------
+
+@router.get("/net-deployed")
+def get_net_deployed():
+    """
+    GET /api/management/net-deployed
+    Returns net capital deployed per brokerage account from internal_transfers.
+    { "Chase1": 899950.0, "Chase3xA": 100000.0, "XPF2026": 50.0 }
+    Used by PodStrategyManager to show computed initial investment per strategy.
+    """
+    try:
+        return sb.get_net_deployed()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ---------------------------------------------------------------------------
@@ -247,6 +267,7 @@ def create_strategy(body: StrategyIn):
             date_created       = body.date_created,
             status             = body.status,
             notes              = body.notes or "",
+            brokerage_account  = body.brokerage_account,
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
