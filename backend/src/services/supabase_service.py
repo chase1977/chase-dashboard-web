@@ -34,6 +34,13 @@ from typing import Optional
 from supabase import create_client, Client
 
 
+def _darwin_display(raw: str) -> str:
+    """Strip Darwinex version suffix: 'CFZ.5.18' → 'CFZ', 'DRW.1.2' → 'DRW'."""
+    if not raw:
+        return "—"
+    return raw.split(".")[0].upper()
+
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -462,9 +469,10 @@ def _build_pod_pfees_map() -> dict:
     UNALLOCATED = -1
 
     for row in snapshot:
-        darwin   = (row.get("Darwin") or "").upper()
-        invested = float(row.get("Invested") or 0)
-        pnl      = float(row.get("Current PnL") or 0)
+        darwin_raw = (row.get("Darwin") or "")
+        darwin     = _darwin_display(darwin_raw)   # CFZ.5.18 → CFZ
+        invested   = float(row.get("Invested") or 0)
+        pnl        = float(row.get("Current PnL") or 0)
         # Prefer account_id mapping; fall back to strategy_code → Darwin match
         raw_acct = row.get("AccountId")
         if raw_acct is not None and int(raw_acct) in account_to_pod:
@@ -549,10 +557,11 @@ def get_pods_with_kpis() -> list[dict]:
 
     else:
         # Mode B: no pods table — one card per Darwin (raw pfees grouping)
+        # Group by display name (prefix only: CFZ.5.18 → CFZ)
         snapshot = get_pfees_latest_snapshot()
         darwin_agg: dict = {}
         for row in snapshot:
-            darwin   = (row.get("Darwin") or "Unknown").upper()
+            darwin   = _darwin_display(row.get("Darwin") or "")
             invested = float(row.get("Invested") or 0)
             pnl      = float(row.get("Current PnL") or 0)
             if darwin not in darwin_agg:
@@ -715,10 +724,10 @@ def get_hierarchy_rows(entity_type: str) -> list[dict]:
         pods_list  = list_pods()
         pods_idx   = {p["id"]: p for p in pods_list}
 
-        # Aggregate pfees by Darwin
+        # Aggregate pfees by Darwin display name (prefix only: CFZ.5.18 → CFZ)
         darwin_agg: dict = {}
         for row in snapshot:
-            darwin   = (row.get("Darwin") or "").upper()
+            darwin   = _darwin_display(row.get("Darwin") or "")
             invested = float(row.get("Invested") or 0)
             pnl      = float(row.get("Current PnL") or 0)
             if darwin not in darwin_agg:
@@ -783,7 +792,67 @@ def get_hierarchy_rows(entity_type: str) -> list[dict]:
         rows.sort(key=lambda x: x["aum"], reverse=True)
         return rows
 
-    # trader / venue — return empty until data available
+    elif entity_type == "trader":
+        snapshot   = get_pfees_latest_snapshot()
+        strategies = list_strategies()
+        pods_list  = list_pods()
+        pods_idx   = {p["id"]: p for p in pods_list}
+
+        # account_id → strategy (primary mapping)
+        acct_to_strat: dict[int, dict] = {}
+        for s in strategies:
+            aid = s.get("account_id")
+            if aid is not None:
+                acct_to_strat[int(aid)] = s
+
+        # Total invested per AccountId — denominator for allocation % within strategy
+        acct_total: dict[int, float] = {}
+        for row in snapshot:
+            acct     = int(row.get("AccountId") or 0)
+            invested = float(row.get("Invested") or 0)
+            acct_total[acct] = round(acct_total.get(acct, 0.0) + invested, 2)
+
+        rows = []
+        for row in snapshot:
+            darwin_raw = (row.get("Darwin") or "").strip()
+            # Display only ticker prefix: "CFZ.5.18" → "CFZ"
+            darwin_display = _darwin_display(darwin_raw)
+            acct           = int(row.get("AccountId") or 0)
+            invested       = float(row.get("Invested") or 0)
+            pnl            = float(row.get("Current PnL") or 0)
+
+            strat    = acct_to_strat.get(acct, {})
+            pid      = strat.get("pod_id")
+            pod      = pods_idx.get(pid, {}) if pid else {}
+
+            # Allocation % = Darwin invested / total invested in that AccountId
+            acct_tot  = acct_total.get(acct, 0.0)
+            alloc_pct = round(invested / acct_tot * 100, 2) if acct_tot else 0.0
+
+            rows.append({
+                "entity_id":      f"trader_{darwin_raw.lower().replace('.', '_')}_{acct}",
+                "name":           darwin_display,
+                "darwin_full":    darwin_raw,
+                "entity_type":    "trader",
+                "allocation_pct": alloc_pct,
+                "aum":            invested,
+                "pnl":            pnl,
+                "pct_1d":         pct_1d,
+                "pct_7d":         pct_7d,
+                "pct_30d":        pct_30d,
+                "drawdown":       0.0,
+                "win_rate":       0.0,
+                "trading_style":  None,
+                "status":         "Active",
+                "pod_code":       pod.get("pod_code", ""),
+                "strategy_code":  strat.get("strategy_code", ""),
+                "pod_color":      pod.get("color", "#6366f1"),
+            })
+
+        rows.sort(key=lambda x: x["aum"], reverse=True)
+        return rows
+
+    # venue — return empty until venue-level data available
     return []
 
 
@@ -957,10 +1026,10 @@ def get_pods_with_kpis_fast(pod_pfees_map: dict, balance_hist: list[dict]) -> li
                 },
             })
     else:
-        # Mode B: no pods — one card per Darwin
+        # Mode B: no pods — one card per Darwin (display prefix only)
         darwin_agg: dict = {}
         for row in pod_pfees_map.get("_snapshot", get_pfees_latest_snapshot()):
-            darwin   = (row.get("Darwin") or "Unknown").upper()
+            darwin   = _darwin_display(row.get("Darwin") or "")
             invested = float(row.get("Invested") or 0)
             pnl      = float(row.get("Current PnL") or 0)
             if darwin not in darwin_agg:
