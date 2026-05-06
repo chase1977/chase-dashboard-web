@@ -215,6 +215,28 @@ def get_diagnostics():
             for pid, v in pod_preview.items()
         ]
 
+        # TWR debug — show exactly what periods are computed and why
+        twr_debug = {}
+        try:
+            darwinex_flows = sb._get_darwinex_cashflows()
+            equity_by_date = sb._portfolio_equity_by_date()
+            sorted_hist    = sorted(equity_by_date.keys())
+            metrics        = sb.compute_fund_metrics()
+            twr_debug = {
+                "twr":               metrics["twr"],
+                "num_periods":       metrics["num_periods"],
+                "darwinex_flows":    darwinex_flows,
+                "equity_first_3":    [{d: equity_by_date[d]} for d in sorted_hist[:3]],
+                "equity_last_3":     [{d: equity_by_date[d]} for d in sorted_hist[-3:]],
+                "equity_date_count": len(equity_by_date),
+                "periods":           metrics["periods"],
+                "live_aum_pfees":    sb.get_live_aum(),
+                "live_pnl_pfees":    sb.get_live_pnl(),
+                "total_deposited":   metrics["total_deposited"],
+            }
+        except Exception as twr_err:
+            twr_debug = {"error": str(twr_err)}
+
         return {
             "pfees_snapshot":     snapshot,
             "account_ids":        acct_ids,
@@ -225,6 +247,7 @@ def get_diagnostics():
             "acct_to_pod_resolved": resolved,
             "unmatched_accts":    list({u["account_id"]: u for u in unmatched}.values()),
             "pod_agg_preview":    pod_preview_named,
+            "twr_debug":          twr_debug,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

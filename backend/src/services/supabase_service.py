@@ -358,9 +358,12 @@ def compute_fund_metrics() -> dict:
     current_aum = get_live_aum()
     total_pnl   = get_live_pnl()
 
-    # Portfolio equity per date — prefer user_accounts_equity (deduplicated per-account
-    # source); fall back to balance_history if accounts table is empty.
-    equity_by_date: dict[str, float] = _portfolio_equity_by_date()
+    # Portfolio equity per date — prefer pfees historical Invested (same source as
+    # get_live_aum so end_aum always matches the AUM card).  Fall back chain:
+    # pfees → user_accounts_equity → summed balance_history.
+    equity_by_date: dict[str, float] = _pfees_equity_by_date()
+    if not equity_by_date:
+        equity_by_date = _portfolio_equity_by_date()
     if not equity_by_date:
         equity_by_date = _sum_equity_by_date(history)
     sorted_hist_dates = sorted(equity_by_date.keys())
@@ -389,31 +392,46 @@ def compute_fund_metrics() -> dict:
         cashflow_by_date = {d: round(sum(e["amount"] for e in external if e["date"] == d), 2)
                             for d in sorted_dates}
 
+    last_equity_date = sorted_hist_dates[-1] if sorted_hist_dates else None
+
     for i, start_date in enumerate(sorted_dates):
+        # ── Skip future periods — no equity data yet ──
+        if last_equity_date and start_date > last_equity_date:
+            continue
+
         if i + 1 < len(sorted_dates):
             end_date        = sorted_dates[i + 1]
             avail           = [d for d in equity_by_date if d < end_date]
             end_date_equity = max(avail) if avail else None
         else:
-            end_date_equity = sorted_hist_dates[-1] if sorted_hist_dates else None
+            end_date_equity = last_equity_date
             end_date        = end_date_equity or start_date
 
         cash_flow = cashflow_by_date.get(start_date, 0.0)
 
         if i == 0:
-            # First period: ground-truth start_aum from balance_history at/after deployment.
-            # Handles incomplete internal_transfers where some Wallet→account flows are missing.
-            after_start = [d for d in sorted_hist_dates if d >= start_date]
-            if after_start:
+            # First period: use first equity date STRICTLY INSIDE this period
+            # (before the next boundary) as start_aum.
+            # If the first equity date falls on or after the next boundary, we
+            # have no intra-period data → use cash_flow as best estimate.
+            next_boundary = sorted_dates[i + 1] if i + 1 < len(sorted_dates) else None
+            after_start   = [d for d in sorted_hist_dates if d >= start_date]
+            if after_start and (next_boundary is None or after_start[0] < next_boundary):
                 start_aum = equity_by_date[after_start[0]]
             else:
-                prev_dates    = [d for d in equity_by_date if d < start_date]
-                equity_before = equity_by_date[max(prev_dates)] if prev_dates else 0.0
-                start_aum     = round(equity_before + cash_flow, 2)
+                # No equity data within period 1 — use cash_flow as start_aum
+                start_aum = cash_flow
         else:
-            prev_dates    = [d for d in equity_by_date if d < start_date]
-            equity_before = equity_by_date[max(prev_dates)] if prev_dates else 0.0
-            start_aum     = round(equity_before + cash_flow, 2)
+            prev_dates = [d for d in equity_by_date if d < start_date]
+            if prev_dates:
+                equity_before = equity_by_date[max(prev_dates)]
+            elif start_date in equity_by_date:
+                # Equity data exists AT start_date (post-inflow) but not before.
+                # Estimate pre-inflow equity = post-inflow equity − cash_flow.
+                equity_before = max(0.0, equity_by_date[start_date] - cash_flow)
+            else:
+                equity_before = 0.0
+            start_aum = round(equity_before + cash_flow, 2)
 
         end_aum       = equity_by_date.get(end_date_equity, start_aum) if end_date_equity else start_aum
         pnl           = round(end_aum - start_aum, 2)
@@ -1082,13 +1100,14 @@ def _period_return_from_hist(history: list[dict], days: int) -> float:
     """
     Compute % equity change over last N days from pre-fetched balance history.
 
-    Prefers user_accounts_equity (portfolio sum) as source of truth.
-    Falls back to summed balance_history rows if accounts table is empty.
+    Prefers pfees historical Invested (consistent with AUM card).
+    Falls back: pfees → user_accounts_equity → summed balance_history.
     Uses latest date in data as reference — not today — so stale data returns
     real period returns rather than 0.0.
     """
-    # Prefer accounts equity table
-    eq_by_date = _portfolio_equity_by_date()
+    eq_by_date = _pfees_equity_by_date()
+    if not eq_by_date:
+        eq_by_date = _portfolio_equity_by_date()
     if not eq_by_date:
         eq_by_date = _sum_equity_by_date(history)
     if len(eq_by_date) < 2:
@@ -1111,9 +1130,12 @@ def compute_fund_metrics_fast(events: list[dict], history: list[dict]) -> dict:
     current_aum = get_live_aum()   # single pfees query (cached)
     total_pnl   = get_live_pnl()   # single pfees query (cached)
 
-    # Portfolio equity per date — prefer user_accounts_equity (deduplicated per-account
-    # source); fall back to summed balance_history if accounts table is empty.
-    equity_by_date: dict[str, float] = _portfolio_equity_by_date()
+    # Portfolio equity per date — prefer pfees historical Invested (same source as
+    # get_live_aum so end_aum always matches the AUM card).  Fall back chain:
+    # pfees → user_accounts_equity → summed balance_history.
+    equity_by_date: dict[str, float] = _pfees_equity_by_date()
+    if not equity_by_date:
+        equity_by_date = _portfolio_equity_by_date()
     if not equity_by_date:
         equity_by_date = _sum_equity_by_date(history)
     sorted_hist_dates = sorted(equity_by_date.keys())
@@ -1136,36 +1158,46 @@ def compute_fund_metrics_fast(events: list[dict], history: list[dict]) -> dict:
         cashflow_by_date = {d: round(sum(e["amount"] for e in external if e["date"] == d), 2)
                             for d in sorted_dates}
 
+    last_equity_date = sorted_hist_dates[-1] if sorted_hist_dates else None
+
     for i, start_date in enumerate(sorted_dates):
+        # ── Skip future periods — no equity data yet ──
+        if last_equity_date and start_date > last_equity_date:
+            continue
+
         if i + 1 < len(sorted_dates):
             end_date        = sorted_dates[i + 1]
             avail           = [d for d in equity_by_date if d < end_date]
             end_date_equity = max(avail) if avail else None
         else:
-            end_date_equity = sorted_hist_dates[-1] if sorted_hist_dates else None
+            end_date_equity = last_equity_date
             end_date        = end_date_equity or start_date
 
         cash_flow = cashflow_by_date.get(start_date, 0.0)
 
         if i == 0:
-            # First period: use the first balance_history equity AT OR AFTER start_date
-            # as start_aum. This is the ground-truth total portfolio equity on deployment
-            # day and correctly handles the case where not all Wallet→account transfers
-            # are recorded in internal_transfers (e.g. Chase3xA funded from Chase1
-            # internally — equity_by_date already reflects both accounts, but
-            # darwinex_flows only sees the Wallet→Chase1 flow, understating cash_flow).
-            after_start = [d for d in sorted_hist_dates if d >= start_date]
-            if after_start:
+            # First period: use first equity date STRICTLY INSIDE this period
+            # (before the next boundary) as start_aum.
+            # If the first equity date falls on or after the next boundary, we
+            # have no intra-period data → use cash_flow as best estimate.
+            next_boundary = sorted_dates[i + 1] if i + 1 < len(sorted_dates) else None
+            after_start   = [d for d in sorted_hist_dates if d >= start_date]
+            if after_start and (next_boundary is None or after_start[0] < next_boundary):
                 start_aum = equity_by_date[after_start[0]]
             else:
-                prev_dates    = [d for d in equity_by_date if d < start_date]
-                equity_before = equity_by_date[max(prev_dates)] if prev_dates else 0.0
-                start_aum     = round(equity_before + cash_flow, 2)
+                start_aum = cash_flow
         else:
-            # Subsequent periods: standard TWR — equity before the new cash inflow
-            prev_dates    = [d for d in equity_by_date if d < start_date]
-            equity_before = equity_by_date[max(prev_dates)] if prev_dates else 0.0
-            start_aum     = round(equity_before + cash_flow, 2)
+            # Subsequent periods: standard TWR — equity before the new cash inflow.
+            prev_dates = [d for d in equity_by_date if d < start_date]
+            if prev_dates:
+                equity_before = equity_by_date[max(prev_dates)]
+            elif start_date in equity_by_date:
+                # Equity data exists AT start_date (post-inflow) but not before.
+                # Estimate pre-inflow equity = post-inflow equity − cash_flow.
+                equity_before = max(0.0, equity_by_date[start_date] - cash_flow)
+            else:
+                equity_before = 0.0
+            start_aum = round(equity_before + cash_flow, 2)
 
         end_aum       = equity_by_date.get(end_date_equity, start_aum) if end_date_equity else start_aum
         pnl           = round(end_aum - start_aum, 2)
@@ -1571,6 +1603,32 @@ def _portfolio_equity_by_date() -> dict[str, float]:
         d = r["date"]
         eq[d] = round(eq.get(d, 0.0) + r["equity"], 2)
     return eq
+
+
+def _pfees_equity_by_date() -> dict[str, float]:
+    """
+    SUM(Invested) per Date from ALL historical user_pfees_estimation rows.
+
+    Primary equity series for TWR computation.  Consistent with get_live_aum()
+    (which uses the same table / column), so end_aum always matches the AUM
+    card shown in the UI.  Falls back to _portfolio_equity_by_date() if empty.
+
+    Returns { date_str: total_invested_float } ordered by date asc.
+    """
+    def _fetch():
+        sb  = get_client()
+        res = (
+            sb.table("user_pfees_estimation")
+            .select('"Date","Invested"')
+            .order('"Date"', desc=False)
+            .execute()
+        )
+        eq: dict[str, float] = {}
+        for r in (res.data or []):
+            d = str(r["Date"])
+            eq[d] = round(eq.get(d, 0.0) + float(r.get("Invested") or 0), 2)
+        return eq
+    return _get_cached("pfees_all_equity", _fetch, ttl=_TTL)
 
 
 def _per_account_equity_series() -> dict[int, list[dict]]:
