@@ -53,7 +53,7 @@ function CustomTooltip({ active, payload, label }) {
           <span style={{ color: p.color, fontWeight: 500 }}>
             {p.dataKey === 'drawdown'
               ? `${(p.value * 100).toFixed(2)}%`
-              : `$${Number(p.value).toLocaleString('en-US', { maximumFractionDigits: 0 })}`
+              : `£${Number(p.value).toLocaleString('en-GB', { maximumFractionDigits: 0 })}`
             }
           </span>
         </div>
@@ -77,6 +77,19 @@ export default function EquityChart({ data = [], height = 320 }) {
       const dd = peak > 0 ? (pt.equity - peak) / peak : 0
       return { ...pt, drawdown: parseFloat(dd.toFixed(5)) }
     })
+  }, [data])
+
+  // Auto-scale Y-axis: tight bounds around data range with padding
+  const equityDomain = useMemo(() => {
+    if (!data.length) return ['auto', 'auto']
+    const vals = data.map(d => d.equity).filter(v => v != null && isFinite(v))
+    if (!vals.length) return ['auto', 'auto']
+    const mn  = Math.min(...vals)
+    const mx  = Math.max(...vals)
+    const rng = mx - mn || mn * 0.01          // fallback if flat line
+    const pad = rng * 0.15                    // 15% of range as bottom padding
+    const lower = Math.floor((mn - pad) / 1000) * 1000
+    return [lower, 'auto']
   }, [data])
 
   const equityHeight  = Math.round(height * 0.65)
@@ -117,6 +130,7 @@ export default function EquityChart({ data = [], height = 320 }) {
             minTickGap={60}
           />
           <YAxis
+            domain={equityDomain}
             tickFormatter={fmtEquityTick}
             tick={{ fill: '#475569', fontSize: 10 }}
             axisLine={false}
