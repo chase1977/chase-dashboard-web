@@ -543,11 +543,17 @@ def _build_pod_pfees_map() -> dict:
     strategies = list_strategies()         # may be empty
     pods_list  = list_pods()              # may be empty
 
-    # Build dual mapping: account_id (primary) and strategy_code (fallback)
-    # account_id matches pfees.AccountId — most reliable when set
-    # strategy_code matches pfees.Darwin — fallback if account_id not set
-    account_to_pod: dict[int, int] = {}
-    darwin_to_pod:  dict[str, int] = {}
+    # ── 3-level pod mapping (mirrors hierarchy trader/strategy lookup chain) ──
+    #
+    # Level 1: account_id (integer) on strategy → pod_id   (most precise)
+    # Level 2: brokerage_account on strategy → AccountId via ratio matching → pod_id
+    #          Uses _match_pfees_accounts_to_brokerage() — works without account_id column
+    # Level 3: strategy_code → Darwin display prefix → pod_id  (last resort)
+
+    account_to_pod: dict[int, int] = {}   # pfees AccountId int → pod_id
+    darwin_to_pod:  dict[str, int] = {}   # Darwin prefix str  → pod_id
+    broker_to_pod:  dict[str, int] = {}   # brokerage_account  → pod_id
+
     for s in strategies:
         pid = s.get("pod_id")
         if pid is None:
@@ -555,9 +561,15 @@ def _build_pod_pfees_map() -> dict:
         acct_id = s.get("account_id")
         if acct_id is not None:
             account_to_pod[int(acct_id)] = pid
+        broker = s.get("brokerage_account")
+        if broker:
+            broker_to_pod[broker] = pid
         code = (s.get("strategy_code") or "").upper()
         if code:
             darwin_to_pod[code] = pid
+
+    # Resolve broker→AccountId mapping once (cached)
+    acct_broker_map: dict[int, str] = _match_pfees_accounts_to_brokerage()   # {acct_int: "Chase1"}
 
     # Aggregate pfees by pod_id
     pod_agg: dict = {}   # pod_id → { invested, pnl, darwins }
@@ -568,10 +580,16 @@ def _build_pod_pfees_map() -> dict:
         darwin     = _darwin_display(darwin_raw)   # CFZ.5.18 → CFZ
         invested   = float(row.get("Invested") or 0)
         pnl        = float(row.get("Current PnL") or 0)
-        # Prefer account_id mapping; fall back to strategy_code → Darwin match
-        raw_acct = row.get("AccountId")
-        if raw_acct is not None and int(raw_acct) in account_to_pod:
-            pod_id = account_to_pod[int(raw_acct)]
+        raw_acct   = row.get("AccountId")
+        acct       = int(raw_acct) if raw_acct is not None else None
+
+        # Level 1: direct account_id match
+        if acct is not None and acct in account_to_pod:
+            pod_id = account_to_pod[acct]
+        # Level 2: brokerage_account → AccountId ratio match → pod
+        elif acct is not None and acct in acct_broker_map and acct_broker_map[acct] in broker_to_pod:
+            pod_id = broker_to_pod[acct_broker_map[acct]]
+        # Level 3: Darwin display name matches strategy_code
         else:
             pod_id = darwin_to_pod.get(darwin, UNALLOCATED)
 

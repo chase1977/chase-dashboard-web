@@ -104,6 +104,132 @@ class StrategyPatch(BaseModel):
 # Fund metrics (live from Supabase)
 # ---------------------------------------------------------------------------
 
+@router.get("/diagnostics")
+def get_diagnostics():
+    """
+    GET /api/management/diagnostics
+
+    Returns full mapping state so you can see exactly how pfees data flows
+    into strategies and pods. Use this to identify unmatched AccountIds,
+    missing strategy configs, or broken pod wiring.
+
+    Response:
+      pfees_snapshot     — latest pfees rows (AccountId, Darwin, Invested, PnL)
+      account_ids        — accounts from user_accounts_equity (latest date)
+      strategies         — all configured strategies
+      pods               — all configured pods
+      broker_map         — AccountId → brokerage_account computed by ratio matching
+      acct_to_pod        — AccountId → pod_id resolved from strategies (all 3 levels)
+      unmatched_accts    — AccountIds in pfees not mapped to any pod
+      pod_agg_preview    — preview of how pfees data aggregates per pod
+    """
+    try:
+        snapshot   = sb.get_pfees_latest_snapshot()
+        strategies = sb.list_strategies()
+        pods       = sb.list_pods()
+        acct_ids   = sb.get_account_ids()
+        broker_map = sb.get_net_deployed()        # brokerage → net deployed £
+        acct_broker = {}
+        try:
+            acct_broker = sb._match_pfees_accounts_to_brokerage()   # { acct_int: broker_name }
+        except Exception:
+            pass
+
+        # Build resolved acct→pod from all 3 levels
+        account_to_pod: dict = {}
+        broker_to_pod:  dict = {}
+        darwin_to_pod:  dict = {}
+        for s in strategies:
+            pid = s.get("pod_id")
+            if pid is None:
+                continue
+            aid = s.get("account_id")
+            if aid is not None:
+                account_to_pod[int(aid)] = pid
+            broker = s.get("brokerage_account")
+            if broker:
+                broker_to_pod[broker] = pid
+            code = (s.get("strategy_code") or "").upper()
+            if code:
+                darwin_to_pod[code] = pid
+
+        # Resolve each pfees AccountId
+        resolved: list = []
+        unmatched: list = []
+        seen_accts: set = set()
+        darwin_to_pod_resolved: dict = {}
+
+        def _d(raw): return raw.split(".")[0].upper() if raw else "—"
+
+        for row in snapshot:
+            acct   = int(row.get("AccountId") or 0)
+            darwin = _d(row.get("Darwin") or "")
+            broker = acct_broker.get(acct)
+            level  = None
+            pod_id = None
+
+            if acct in account_to_pod:
+                pod_id, level = account_to_pod[acct], "account_id"
+            elif broker and broker in broker_to_pod:
+                pod_id, level = broker_to_pod[broker], "brokerage_account"
+            elif darwin in darwin_to_pod:
+                pod_id, level = darwin_to_pod[darwin], "strategy_code"
+            else:
+                unmatched.append({"account_id": acct, "darwin": darwin, "broker": broker})
+
+            if acct not in seen_accts:
+                seen_accts.add(acct)
+                resolved.append({
+                    "account_id":        acct,
+                    "broker":            broker,
+                    "pod_id":            pod_id,
+                    "mapped_via":        level,
+                    "example_darwin":    darwin,
+                })
+
+        # Pod aggregate preview
+        pod_preview: dict = {}
+        for row in snapshot:
+            acct   = int(row.get("AccountId") or 0)
+            darwin = _d(row.get("Darwin") or "")
+            inv    = float(row.get("Invested") or 0)
+            pnl    = float(row.get("Current PnL") or 0)
+            broker = acct_broker.get(acct)
+            if acct in account_to_pod:
+                pid = account_to_pod[acct]
+            elif broker and broker in broker_to_pod:
+                pid = broker_to_pod[broker]
+            elif darwin in darwin_to_pod:
+                pid = darwin_to_pod[darwin]
+            else:
+                pid = -1
+            pod_preview[pid] = {
+                "invested": round(pod_preview.get(pid, {}).get("invested", 0) + inv, 2),
+                "pnl":      round(pod_preview.get(pid, {}).get("pnl", 0) + pnl, 2),
+            }
+
+        pods_idx = {p["id"]: p["name"] for p in pods}
+        pod_preview_named = [
+            {"pod_id": pid, "pod_name": pods_idx.get(pid, "Unallocated" if pid == -1 else f"Pod {pid}"),
+             **v}
+            for pid, v in pod_preview.items()
+        ]
+
+        return {
+            "pfees_snapshot":     snapshot,
+            "account_ids":        acct_ids,
+            "strategies":         strategies,
+            "pods":               pods,
+            "broker_map":         broker_map,
+            "acct_broker_map":    {str(k): v for k, v in acct_broker.items()},
+            "acct_to_pod_resolved": resolved,
+            "unmatched_accts":    list({u["account_id"]: u for u in unmatched}.values()),
+            "pod_agg_preview":    pod_preview_named,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/fund-metrics")
 def get_fund_metrics():
     """
