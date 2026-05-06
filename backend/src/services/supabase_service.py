@@ -431,13 +431,30 @@ def compute_fund_metrics() -> dict:
         if p0_end and p0_end in equity_by_date:
             _s  = pre_start or (sorted_dates[0] if sorted_dates else str(date.today()))
             _ea = equity_by_date[p0_end]
-            _pnl = round(_ea - pre_cash, 2)
-            _pr  = round(_pnl / pre_cash, 6) if pre_cash else 0.0
+
+            # ── start_aum for the base period ─────────────────────────────
+            # When no mid-equity boundaries exist, all cash flows predate the
+            # equity series.  Using total bank deposits as start_aum produces
+            # a wrong negative return (wallet cash sits outside Darwinex).
+            # Instead derive original deployed capital from pfees:
+            #   original_deployed = current_pfees_equity − pfees_total_pnl
+            # This guarantees TWR = total_pnl / original_deployed, consistent
+            # with the PnL card.  Fall back to pre_cash if pfees data absent.
+            if not mid_dates:
+                _implied = round(_ea - total_pnl, 2)
+                _start   = _implied if _implied > 0 else pre_cash
+            else:
+                # Mid boundaries exist — use first equity date as the base
+                # period starting value (closest proxy to initial deployment).
+                _start = equity_by_date[sorted_hist_dates[0]] if sorted_hist_dates else pre_cash
+
+            _pnl = round(_ea - _start, 2)
+            _pr  = round(_pnl / _start, 6) if _start else 0.0
             periods.append({
                 "period_num":         1,
                 "start_date":         _s,
                 "end_date":           p0_end,
-                "start_aum":          pre_cash,
+                "start_aum":          _start,
                 "cash_flow_at_start": pre_cash,
                 "end_aum":            _ea,
                 "pnl":                _pnl,
@@ -1213,13 +1230,18 @@ def compute_fund_metrics_fast(events: list[dict], history: list[dict]) -> dict:
         if p0_end and p0_end in equity_by_date:
             _s   = pre_start or (sorted_dates[0] if sorted_dates else str(date.today()))
             _ea  = equity_by_date[p0_end]
-            _pnl = round(_ea - pre_cash, 2)
-            _pr  = round(_pnl / pre_cash, 6) if pre_cash else 0.0
+            if not mid_dates:
+                _implied = round(_ea - total_pnl, 2)
+                _start   = _implied if _implied > 0 else pre_cash
+            else:
+                _start = equity_by_date[sorted_hist_dates[0]] if sorted_hist_dates else pre_cash
+            _pnl = round(_ea - _start, 2)
+            _pr  = round(_pnl / _start, 6) if _start else 0.0
             periods.append({
                 "period_num":         1,
                 "start_date":         _s,
                 "end_date":           p0_end,
-                "start_aum":          pre_cash,
+                "start_aum":          _start,
                 "cash_flow_at_start": pre_cash,
                 "end_aum":            _ea,
                 "pnl":                _pnl,
