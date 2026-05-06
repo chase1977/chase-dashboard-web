@@ -416,7 +416,7 @@ export default function BreakdownTable({ rows = [], onRowClick, title }) {
       </div>
 
       {/* ── Table ── */}
-      <div style={{ overflowX: 'auto' }}>
+      <div style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: 'calc(100vh - 220px)' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
           <thead>
             <tr style={{ borderBottom: '1px solid #1E3A5F' }}>
@@ -436,6 +436,10 @@ export default function BreakdownTable({ rows = [], onRowClick, title }) {
                     cursor:        col.sortable ? 'pointer' : 'default',
                     whiteSpace:    'nowrap',
                     userSelect:    'none',
+                    position:      'sticky',
+                    top:           0,
+                    zIndex:        2,
+                    boxShadow:     '0 1px 0 #1E3A5F',
                   }}
                 >
                   <span style={{ display: 'inline-flex', alignItems: 'center' }}>

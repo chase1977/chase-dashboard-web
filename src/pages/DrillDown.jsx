@@ -479,7 +479,7 @@ function TraderBreakdownPanel({ entityId, ctx, navigate }) {
         ))}
       </div>
 
-      <div style={{ background: '#111C2B', border: '1px solid #1E3A5F', borderRadius: 8, overflow: 'hidden' }}>
+      <div style={{ background: '#111C2B', border: '1px solid #1E3A5F', borderRadius: 8, overflow: 'clip' }}>
         <BreakdownTable
           key={activeTab}
           rows={ctx?.[activeTab] ?? []}
@@ -644,7 +644,7 @@ export default function DrillDown({ timeRange }) {
           {breakdown.length > 0 && (
             <div>
               <SectionLabel>Breakdown — {childLabel}s</SectionLabel>
-              <div style={{ background: '#111C2B', border: '1px solid #1E3A5F', borderRadius: 8, overflow: 'hidden' }}>
+              <div style={{ background: '#111C2B', border: '1px solid #1E3A5F', borderRadius: 8, overflow: 'clip' }}>
                 <BreakdownTable
                   rows={breakdown}
                   onRowClick={id => navigate(`/drilldown/${id}`)}
