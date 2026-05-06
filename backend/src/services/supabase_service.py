@@ -392,61 +392,85 @@ def compute_fund_metrics() -> dict:
         cashflow_by_date = {d: round(sum(e["amount"] for e in external if e["date"] == d), 2)
                             for d in sorted_dates}
 
-    last_equity_date = sorted_hist_dates[-1] if sorted_hist_dates else None
+    last_eq  = sorted_hist_dates[-1] if sorted_hist_dates else None
+    first_eq = sorted_hist_dates[0]  if sorted_hist_dates else None
 
-    for i, start_date in enumerate(sorted_dates):
-        # ── Skip future periods — no equity data yet ──
-        if last_equity_date and start_date > last_equity_date:
-            continue
+    # ── Classify boundaries ─────────────────────────────────────────────────
+    # pre_equity : boundary date has NO equity data before it
+    #              → lump into a single inception period with cumulative cash
+    # mid_equity : equity data exists before this boundary
+    #              → proper TWR sub-period boundary
+    # future     : boundary after last equity date → skip entirely
+    pre_cash  = 0.0   # cumulative deployed before first equity data
+    pre_start = None  # earliest pre-equity boundary date
+    mid_dates: list[str] = []
 
-        if i + 1 < len(sorted_dates):
-            end_date        = sorted_dates[i + 1]
-            avail           = [d for d in equity_by_date if d < end_date]
-            end_date_equity = max(avail) if avail else None
+    for d in sorted_dates:
+        if last_eq and d > last_eq:
+            continue  # future — skip
+        cf       = cashflow_by_date.get(d, 0.0)
+        before_d = [x for x in sorted_hist_dates if x < d]
+        if before_d:
+            mid_dates.append(d)
         else:
-            end_date_equity = last_equity_date
-            end_date        = end_date_equity or start_date
+            pre_cash += cf
+            if pre_start is None:
+                pre_start = d
 
-        cash_flow = cashflow_by_date.get(start_date, 0.0)
-
-        if i == 0:
-            # First period: use first equity date STRICTLY INSIDE this period
-            # (before the next boundary) as start_aum.
-            # If the first equity date falls on or after the next boundary, we
-            # have no intra-period data → use cash_flow as best estimate.
-            next_boundary = sorted_dates[i + 1] if i + 1 < len(sorted_dates) else None
-            after_start   = [d for d in sorted_hist_dates if d >= start_date]
-            if after_start and (next_boundary is None or after_start[0] < next_boundary):
-                start_aum = equity_by_date[after_start[0]]
-            else:
-                # No equity data within period 1 — use cash_flow as start_aum
-                start_aum = cash_flow
+    # ── Build periods ────────────────────────────────────────────────────────
+    # Period 0 — inception to first mid-boundary (or to last equity date):
+    #   start_aum = all pre-equity cash deployed; end_aum = equity just before
+    #   the first mid-boundary (or the last available equity date if none).
+    if pre_cash > 0 and last_eq:
+        if mid_dates:
+            avail_before = [d for d in sorted_hist_dates if d < mid_dates[0]]
+            p0_end       = max(avail_before) if avail_before else None
         else:
-            prev_dates = [d for d in equity_by_date if d < start_date]
-            if prev_dates:
-                equity_before = equity_by_date[max(prev_dates)]
-            elif start_date in equity_by_date:
-                # Equity data exists AT start_date (post-inflow) but not before.
-                # Estimate pre-inflow equity = post-inflow equity − cash_flow.
-                equity_before = max(0.0, equity_by_date[start_date] - cash_flow)
-            else:
-                equity_before = 0.0
-            start_aum = round(equity_before + cash_flow, 2)
+            p0_end = last_eq
 
-        end_aum       = equity_by_date.get(end_date_equity, start_aum) if end_date_equity else start_aum
+        if p0_end and p0_end in equity_by_date:
+            _s  = pre_start or (sorted_dates[0] if sorted_dates else str(date.today()))
+            _ea = equity_by_date[p0_end]
+            _pnl = round(_ea - pre_cash, 2)
+            _pr  = round(_pnl / pre_cash, 6) if pre_cash else 0.0
+            periods.append({
+                "period_num":         1,
+                "start_date":         _s,
+                "end_date":           p0_end,
+                "start_aum":          pre_cash,
+                "cash_flow_at_start": pre_cash,
+                "end_aum":            _ea,
+                "pnl":                _pnl,
+                "period_return":      _pr,
+                "annualised_return":  _annualised(_pr, _s, p0_end),
+            })
+
+    # Mid-equity sub-periods — proper TWR chain
+    for j, bd in enumerate(mid_dates):
+        if j + 1 < len(mid_dates):
+            avail_before = [d for d in sorted_hist_dates if d < mid_dates[j + 1]]
+            p_end        = max(avail_before) if avail_before else None
+        else:
+            p_end = last_eq
+
+        cf            = cashflow_by_date.get(bd, 0.0)
+        before_bd     = [d for d in sorted_hist_dates if d < bd]
+        equity_before = equity_by_date[max(before_bd)] if before_bd else 0.0
+        start_aum     = round(equity_before + cf, 2)
+        end_aum       = equity_by_date.get(p_end, start_aum) if p_end else start_aum
         pnl           = round(end_aum - start_aum, 2)
-        period_return = round(pnl / start_aum, 6) if start_aum != 0 else 0.0
-
+        pr            = round(pnl / start_aum, 6) if start_aum else 0.0
+        pnum          = len(periods) + 1
         periods.append({
-            "period_num":         i + 1,
-            "start_date":         start_date,
-            "end_date":           end_date_equity or end_date,
+            "period_num":         pnum,
+            "start_date":         bd,
+            "end_date":           p_end or bd,
             "start_aum":          start_aum,
-            "cash_flow_at_start": cash_flow,
+            "cash_flow_at_start": cf,
             "end_aum":            end_aum,
             "pnl":                pnl,
-            "period_return":      period_return,
-            "annualised_return":  _annualised(period_return, start_date, end_date_equity or end_date),
+            "period_return":      pr,
+            "annualised_return":  _annualised(pr, bd, p_end or bd),
         })
 
     twr = round(
@@ -454,7 +478,7 @@ def compute_fund_metrics() -> dict:
         6
     ) if periods else 0.0
 
-    initial_aum    = periods[0]["start_aum"] if periods else 0.0
+    initial_aum = periods[0]["start_aum"] if periods else 0.0
     # inception_date = first bank deposit (shows in ledger header), not first Darwinex trade
     cap_dates      = sorted(set(e["date"] for e in external))
     inception_date = cap_dates[0] if cap_dates else (sorted_dates[0] if sorted_dates else str(date.today()))
@@ -1158,68 +1182,83 @@ def compute_fund_metrics_fast(events: list[dict], history: list[dict]) -> dict:
         cashflow_by_date = {d: round(sum(e["amount"] for e in external if e["date"] == d), 2)
                             for d in sorted_dates}
 
-    last_equity_date = sorted_hist_dates[-1] if sorted_hist_dates else None
+    last_eq  = sorted_hist_dates[-1] if sorted_hist_dates else None
+    first_eq = sorted_hist_dates[0]  if sorted_hist_dates else None
 
-    for i, start_date in enumerate(sorted_dates):
-        # ── Skip future periods — no equity data yet ──
-        if last_equity_date and start_date > last_equity_date:
-            continue
+    # ── Classify boundaries ─────────────────────────────────────────────────
+    pre_cash  = 0.0
+    pre_start = None
+    mid_dates: list[str] = []
 
-        if i + 1 < len(sorted_dates):
-            end_date        = sorted_dates[i + 1]
-            avail           = [d for d in equity_by_date if d < end_date]
-            end_date_equity = max(avail) if avail else None
+    for d in sorted_dates:
+        if last_eq and d > last_eq:
+            continue  # future — skip
+        cf       = cashflow_by_date.get(d, 0.0)
+        before_d = [x for x in sorted_hist_dates if x < d]
+        if before_d:
+            mid_dates.append(d)
         else:
-            end_date_equity = last_equity_date
-            end_date        = end_date_equity or start_date
+            pre_cash += cf
+            if pre_start is None:
+                pre_start = d
 
-        cash_flow = cashflow_by_date.get(start_date, 0.0)
-
-        if i == 0:
-            # First period: use first equity date STRICTLY INSIDE this period
-            # (before the next boundary) as start_aum.
-            # If the first equity date falls on or after the next boundary, we
-            # have no intra-period data → use cash_flow as best estimate.
-            next_boundary = sorted_dates[i + 1] if i + 1 < len(sorted_dates) else None
-            after_start   = [d for d in sorted_hist_dates if d >= start_date]
-            if after_start and (next_boundary is None or after_start[0] < next_boundary):
-                start_aum = equity_by_date[after_start[0]]
-            else:
-                start_aum = cash_flow
+    # ── Build periods ────────────────────────────────────────────────────────
+    if pre_cash > 0 and last_eq:
+        if mid_dates:
+            avail_before = [d for d in sorted_hist_dates if d < mid_dates[0]]
+            p0_end       = max(avail_before) if avail_before else None
         else:
-            # Subsequent periods: standard TWR — equity before the new cash inflow.
-            prev_dates = [d for d in equity_by_date if d < start_date]
-            if prev_dates:
-                equity_before = equity_by_date[max(prev_dates)]
-            elif start_date in equity_by_date:
-                # Equity data exists AT start_date (post-inflow) but not before.
-                # Estimate pre-inflow equity = post-inflow equity − cash_flow.
-                equity_before = max(0.0, equity_by_date[start_date] - cash_flow)
-            else:
-                equity_before = 0.0
-            start_aum = round(equity_before + cash_flow, 2)
+            p0_end = last_eq
 
-        end_aum       = equity_by_date.get(end_date_equity, start_aum) if end_date_equity else start_aum
+        if p0_end and p0_end in equity_by_date:
+            _s   = pre_start or (sorted_dates[0] if sorted_dates else str(date.today()))
+            _ea  = equity_by_date[p0_end]
+            _pnl = round(_ea - pre_cash, 2)
+            _pr  = round(_pnl / pre_cash, 6) if pre_cash else 0.0
+            periods.append({
+                "period_num":         1,
+                "start_date":         _s,
+                "end_date":           p0_end,
+                "start_aum":          pre_cash,
+                "cash_flow_at_start": pre_cash,
+                "end_aum":            _ea,
+                "pnl":                _pnl,
+                "period_return":      _pr,
+                "annualised_return":  _annualised(_pr, _s, p0_end),
+            })
+
+    for j, bd in enumerate(mid_dates):
+        if j + 1 < len(mid_dates):
+            avail_before = [d for d in sorted_hist_dates if d < mid_dates[j + 1]]
+            p_end        = max(avail_before) if avail_before else None
+        else:
+            p_end = last_eq
+
+        cf            = cashflow_by_date.get(bd, 0.0)
+        before_bd     = [d for d in sorted_hist_dates if d < bd]
+        equity_before = equity_by_date[max(before_bd)] if before_bd else 0.0
+        start_aum     = round(equity_before + cf, 2)
+        end_aum       = equity_by_date.get(p_end, start_aum) if p_end else start_aum
         pnl           = round(end_aum - start_aum, 2)
-        period_return = round(pnl / start_aum, 6) if start_aum != 0 else 0.0
-
+        pr            = round(pnl / start_aum, 6) if start_aum else 0.0
+        pnum          = len(periods) + 1
         periods.append({
-            "period_num":         i + 1,
-            "start_date":         start_date,
-            "end_date":           end_date_equity or end_date,
+            "period_num":         pnum,
+            "start_date":         bd,
+            "end_date":           p_end or bd,
             "start_aum":          start_aum,
-            "cash_flow_at_start": cash_flow,
+            "cash_flow_at_start": cf,
             "end_aum":            end_aum,
             "pnl":                pnl,
-            "period_return":      period_return,
-            "annualised_return":  _annualised(period_return, start_date, end_date_equity or end_date),
+            "period_return":      pr,
+            "annualised_return":  _annualised(pr, bd, p_end or bd),
         })
 
     twr = round(
         reduce(lambda acc, p: acc * (1.0 + p["period_return"]), periods, 1.0) - 1.0, 6
     ) if periods else 0.0
 
-    initial_aum    = periods[0]["start_aum"] if periods else 0.0
+    initial_aum = periods[0]["start_aum"] if periods else 0.0
     cap_dates      = sorted(set(e["date"] for e in external))
     inception_date = cap_dates[0] if cap_dates else (sorted_dates[0] if sorted_dates else str(date.today()))
 
