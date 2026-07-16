@@ -7,6 +7,7 @@ import Portfolio from './pages/Portfolio.jsx'
 import DrillDown from './pages/DrillDown.jsx'
 import Reports   from './pages/Reports.jsx'
 import Analysis  from './pages/Analysis.jsx'
+import SharedAnalysis from './pages/SharedAnalysis.jsx'
 
 // ---------------------------------------------------------------------------
 // App — global time range state lives here so Navbar and pages stay in sync
@@ -41,6 +42,9 @@ export default function App() {
 
           {/* Analysis — AXIA Trade Analysis Dashboard */}
           <Route path="/analysis" element={<Analysis />} />
+
+          {/* Shared read-only analysis (GBP view) — public link, no upload */}
+          <Route path="/analysis/shared/:shareId" element={<SharedAnalysis />} />
 
           {/* Fallback */}
           <Route path="*" element={<Navigate to="/" replace />} />

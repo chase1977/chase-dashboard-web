@@ -623,9 +623,12 @@ async function exportAllGraphs(setExportingGraphs) {
 }
 
 // ─── Main Dashboard ───────────────────────────────────────────────────────────
-export default function AxiaAnalysisDashboard({ data, trader, account, onNewUpload, onExport, exporting, onGbpRetry, gbpRetrying }) {
+export default function AxiaAnalysisDashboard({
+  data, trader, account, onNewUpload, onExport, exporting, onGbpRetry, gbpRetrying,
+  readOnly = false, forceGbp = false, onSaveShare, saving = false,
+}) {
   const [exportingGraphs, setExportingGraphs] = useState(false)
-  const [gbpMode, setGbpMode]                 = useState(false)
+  const [gbpMode, setGbpMode]                 = useState(forceGbp)
 
   // Switch between native multi-currency view and unified GBP view
   const activeData = useMemo(() => {
@@ -665,6 +668,11 @@ export default function AxiaAnalysisDashboard({ data, trader, account, onNewUplo
                 GBP VIEW
               </div>
             )}
+            {readOnly && (
+              <div style={{ padding:'3px 10px', borderRadius:20, background:'rgba(56,189,248,0.1)', border:'1px solid rgba(56,189,248,0.3)', fontSize:11, fontWeight:700, color:C.accent, letterSpacing:'0.6px' }}>
+                SHARED · READ-ONLY
+              </div>
+            )}
           </div>
           <div style={{ display:'flex', gap:20, fontSize:13, color:C.muted, marginTop:6, flexWrap:'wrap' }}>
             <span>Trader: <span style={{ color:C.accent, fontWeight:600 }}>{trader}</span></span>
@@ -675,12 +683,14 @@ export default function AxiaAnalysisDashboard({ data, trader, account, onNewUplo
         </div>
 
         <div style={{ display:'flex', gap:10, flexWrap:'wrap', alignItems:'center' }}>
-          <button onClick={onNewUpload} style={{ padding:'9px 18px', borderRadius:8, cursor:'pointer', border:`1px solid ${C.border}`, background:'transparent', color:C.dim, fontSize:13, transition:'all 0.15s' }}>
-            ↑ New Upload
-          </button>
+          {!readOnly && (
+            <button onClick={onNewUpload} style={{ padding:'9px 18px', borderRadius:8, cursor:'pointer', border:`1px solid ${C.border}`, background:'transparent', color:C.dim, fontSize:13, transition:'all 0.15s' }}>
+              ↑ New Upload
+            </button>
+          )}
 
-          {/* GBP Toggle — active when rates ok, warning when failed */}
-          {hasGbpData ? (
+          {/* GBP Toggle — locked to GBP on the shared read-only view */}
+          {forceGbp ? null : hasGbpData ? (
             <div style={{ display:'flex', borderRadius:8, border:`1px solid ${C.border}`, overflow:'hidden' }}>
               <button
                 onClick={() => setGbpMode(false)}
@@ -729,6 +739,17 @@ export default function AxiaAnalysisDashboard({ data, trader, account, onNewUplo
           <button onClick={() => onExport(gbpMode)} disabled={exporting} style={{ padding:'9px 22px', borderRadius:8, cursor:'pointer', border:'none', background:C.navy, color:C.accent, fontSize:13, fontWeight:700, opacity:exporting?0.7:1, transition:'all 0.15s' }}>
             {exporting ? 'Generating…' : `⬇ Export Excel${gbpMode ? ' (GBP)' : ''}`}
           </button>
+
+          {!readOnly && onSaveShare && (
+            <button
+              onClick={onSaveShare}
+              disabled={saving || !hasGbpData}
+              title={!hasGbpData ? 'GBP rates unavailable — fetch GBP rates before sharing (boss view is GBP-only)' : 'Save this analysis and get a shareable read-only link (GBP view)'}
+              style={{ padding:'9px 22px', borderRadius:8, cursor:(saving||!hasGbpData)?'not-allowed':'pointer', border:`1px solid ${C.pos}`, background:'rgba(52,211,153,0.12)', color:C.pos, fontSize:13, fontWeight:700, opacity:(saving||!hasGbpData)?0.5:1, transition:'all 0.15s' }}
+            >
+              {saving ? 'Saving…' : '🔗 Save & Share'}
+            </button>
+          )}
         </div>
       </div>
 

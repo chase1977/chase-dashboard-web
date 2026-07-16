@@ -6,13 +6,17 @@ Upload AXIA statement Excel -> deep quantitative analysis -> Excel report export
 
 import io
 
-from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Body, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 
 from src.services.analysis_service import (
+    delete_saved_analysis,
     generate_excel_report,
     get_analysis,
+    get_saved_analysis,
+    list_saved_analyses,
     parse_statement,
+    persist_analysis,
     refresh_gbp_rates,
     store_analysis,
 )
@@ -106,5 +110,75 @@ def export_analysis(
     return StreamingResponse(
         io.BytesIO(xlsx_bytes),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'}, 
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+# ---------------------------------------------------------------------------
+# Save / Share -- persists an analysis to Supabase so it survives backend
+# restarts, can be reopened without re-uploading, and can be shared via a
+# public read-only link (frontend route: /analysis/shared/{analysis_id}).
+# No auth layer -- consistent with the rest of this app; the link itself
+# (an unguessable UUID) is the access control.
+# ---------------------------------------------------------------------------
+
+@router.post("/{analysis_id}/save")
+def save_analysis(analysis_id: str, body: dict = Body(...)):
+    """
+    Persist the cached analysis for `analysis_id` to Supabase.
+    Body: { trader: str, account: str, label?: str }
+    Returns { analysis_id, share_path } -- share_path is the frontend route
+    to append to the site origin for the shareable link.
+    """
+    trader  = (body.get("trader")  or "Unknown Trader").strip()
+    account = (body.get("account") or "--").strip()
+    label   = (body.get("label") or "").strip() or None
+
+    try:
+        saved_id = persist_analysis(analysis_id, trader, account, label)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Save error: {exc}") from exc
+
+    return {"analysis_id": saved_id, "share_path": f"/analysis/shared/{saved_id}"}
+
+
+@router.get("/saved")
+def list_saved():
+    """Lightweight list of all saved analyses (no jsonb payload) for the Saved Analyses panel."""
+    try:
+        return list_saved_analyses()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"List error: {exc}") from exc
+
+
+@router.get("/saved/{analysis_id}")
+def get_saved(analysis_id: str):
+    """
+    Fetch a saved analysis by id -- used both to reopen your own saved work
+    and to serve the public /analysis/shared/{id} read-only page.
+    """
+    try:
+        result = get_saved_analysis(analysis_id)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Fetch error: {exc}") from exc
+
+    if not result:
+        raise HTTPException(status_code=404, detail="Saved analysis not found -- it may have been deleted")
+
+    result["data"] = _strip_internal(result["data"])
+    return result
+
+
+@router.delete("/saved/{analysis_id}")
+def delete_saved(analysis_id: str):
+    """Delete a saved analysis (revokes its share link permanently)."""
+    try:
+        ok = delete_saved_analysis(analysis_id)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Delete error: {exc}") from exc
+
+    if not ok:
+        raise HTTPException(status_code=404, detail="Saved analysis not found")
+    return {"deleted": True}

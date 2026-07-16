@@ -540,6 +540,94 @@ def get_analysis(analysis_id: str) -> Optional[dict]:
     return entry['data'] if entry else None
 
 
+def _strip_internal(data: dict) -> dict:
+    """Remove server-only keys before persisting/returning analysis data."""
+    return {k: v for k, v in data.items() if k not in {"_raw"}}
+
+
+def persist_analysis(analysis_id: str, trader: str, account: str, label: Optional[str] = None) -> str:
+    """
+    Persist a cached analysis to Supabase so it survives backend restarts and
+    can be reopened later or shared via a public read-only link.
+    Reuses `analysis_id` as the row's primary key -- the share link is just
+    that UUID, and export/refresh-gbp keep working against the same id.
+    Raises ValueError if the analysis is not in the in-memory cache.
+    """
+    from src.services.supabase_service import get_client
+
+    data = get_analysis(analysis_id)
+    if not data:
+        raise ValueError("Analysis not found or expired -- please re-upload the file")
+
+    clean = _strip_internal(data)
+    row = {
+        "id":         analysis_id,
+        "trader":     trader,
+        "account":    account,
+        "label":      label or f"{trader} · {account} · {data['date_range']['from']} to {data['date_range']['to']}",
+        "date_from":  data["date_range"]["from"],
+        "date_to":    data["date_range"]["to"],
+        "currencies": data["summary"]["currencies"],
+        "data":       clean,
+    }
+    sb = get_client()
+    sb.table("axia_saved_analyses").upsert(row, on_conflict="id").execute()
+    return analysis_id
+
+
+def get_saved_analysis(analysis_id: str) -> Optional[dict]:
+    """
+    Fetch a saved analysis from Supabase by id and re-warm the in-memory
+    cache so subsequent /export and /refresh-gbp calls work without
+    hitting Supabase again. Returns None if not found.
+    """
+    from src.services.supabase_service import get_client
+
+    sb  = get_client()
+    res = sb.table("axia_saved_analyses").select("*").eq("id", analysis_id).limit(1).execute()
+    if not res.data:
+        return None
+
+    row  = res.data[0]
+    data = row["data"]
+    _cache[analysis_id] = {"data": data, "created_at": datetime.utcnow()}
+    return {
+        "analysis_id": analysis_id,
+        "trader":      row["trader"],
+        "account":     row["account"],
+        "label":       row["label"],
+        "created_at":  row["created_at"],
+        "data":        data,
+    }
+
+
+def list_saved_analyses() -> list[dict]:
+    """
+    Lightweight listing for the "Saved Analyses" panel -- excludes the
+    (potentially large) jsonb data column.
+    """
+    from src.services.supabase_service import get_client
+
+    sb  = get_client()
+    res = (
+        sb.table("axia_saved_analyses")
+        .select("id,trader,account,label,date_from,date_to,currencies,created_at")
+        .order("created_at", desc=True)
+        .execute()
+    )
+    return res.data or []
+
+
+def delete_saved_analysis(analysis_id: str) -> bool:
+    """Delete a saved analysis row and drop it from the in-memory cache."""
+    from src.services.supabase_service import get_client
+
+    sb  = get_client()
+    res = sb.table("axia_saved_analyses").delete().eq("id", analysis_id).execute()
+    _cache.pop(analysis_id, None)
+    return bool(res.data)
+
+
 def refresh_gbp_rates(analysis_id: str) -> dict:
     """
     Re-fetch OANDA GBP rates for a cached analysis and update the cache.

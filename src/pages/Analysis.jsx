@@ -4,7 +4,7 @@
  * Flow: Upload zone → Trader/Account modal → Dashboard.
  */
 
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useRef, useEffect } from 'react'
 import AxiaAnalysisDashboard from '../components/AxiaAnalysisDashboard.jsx'
 
 const API = import.meta.env.VITE_API_BASE ?? ''
@@ -29,8 +29,123 @@ const inputStyle = {
   transition: 'border-color 0.15s',
 }
 
+const fmtWhen = iso => {
+  if (!iso) return ''
+  try {
+    return new Date(iso).toLocaleString('en-GB', { day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit' })
+  } catch { return iso }
+}
+
+// ─── Saved Analyses Panel ──────────────────────────────────────────────────────
+function SavedAnalysesPanel({ items, loading, onOpen, onDelete }) {
+  if (loading) {
+    return (
+      <div style={{ marginTop: 40, fontSize: 12, color: C.muted, textAlign: 'center' }}>
+        Loading saved analyses…
+      </div>
+    )
+  }
+  if (!items || items.length === 0) return null
+
+  return (
+    <div style={{ marginTop: 44, textAlign: 'left' }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, letterSpacing: '0.8px', textTransform: 'uppercase', marginBottom: 12 }}>
+        Saved Analyses ({items.length})
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 320, overflowY: 'auto' }}>
+        {items.map(it => (
+          <div key={it.id} style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            background: C.card, border: `1px solid ${C.border}`, borderRadius: 10,
+            padding: '12px 16px', gap: 12,
+          }}>
+            <div style={{ flex: 1, minWidth: 0, cursor: 'pointer' }} onClick={() => onOpen(it.id)}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {it.label || `${it.trader} · ${it.account}`}
+              </div>
+              <div style={{ fontSize: 11, color: C.muted, marginTop: 3 }}>
+                {it.trader} · {it.account} · {it.date_from} → {it.date_to} · saved {fmtWhen(it.created_at)}
+              </div>
+            </div>
+            <button
+              onClick={() => onOpen(it.id)}
+              style={{ padding: '6px 12px', borderRadius: 6, border: `1px solid ${C.accent}`, background: 'transparent', color: C.accent, fontSize: 12, fontWeight: 600, cursor: 'pointer', flexShrink: 0 }}
+            >
+              Open
+            </button>
+            <button
+              onClick={() => onDelete(it.id)}
+              title="Delete saved analysis"
+              style={{ padding: '6px 10px', borderRadius: 6, border: `1px solid ${C.border}`, background: 'transparent', color: C.neg, fontSize: 12, cursor: 'pointer', flexShrink: 0 }}
+            >
+              🗑
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ─── Share Link Modal ───────────────────────────────────────────────────────────
+function ShareLinkModal({ url, onClose }) {
+  const [copied, setCopied] = useState(false)
+  const inputRef = useRef()
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(url)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      inputRef.current?.select()
+    }
+  }
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, background: 'rgba(2,8,18,0.7)', zIndex: 1000,
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24,
+    }}>
+      <div style={{
+        background: C.card, border: `1px solid ${C.border}`, borderRadius: 16,
+        padding: 36, maxWidth: 520, width: '100%',
+      }}>
+        <div style={{ fontSize: 18, fontWeight: 700, color: C.text, marginBottom: 6 }}>
+          🔗 Analysis Saved & Shareable
+        </div>
+        <div style={{ fontSize: 13, color: C.muted, marginBottom: 22, lineHeight: 1.5 }}>
+          Send this link to view the GBP-converted analysis — no upload needed on their end.
+          It stays available until you delete it from your Saved Analyses list.
+        </div>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 20 }}>
+          <input
+            ref={inputRef}
+            readOnly
+            value={url}
+            onClick={e => e.target.select()}
+            style={{ ...inputStyle, fontSize: 13, color: C.accent }}
+          />
+          <button
+            onClick={copy}
+            style={{ padding: '11px 18px', borderRadius: 8, border: 'none', background: C.navy, color: C.accent, fontSize: 13, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}
+          >
+            {copied ? '✓ Copied' : 'Copy Link'}
+          </button>
+        </div>
+        <button
+          onClick={onClose}
+          style={{ width: '100%', padding: 12, borderRadius: 8, border: `1px solid ${C.border}`, background: 'transparent', color: C.dim, fontSize: 13, cursor: 'pointer' }}
+        >
+          Done
+        </button>
+      </div>
+    </div>
+  )
+}
+
 // ─── Upload Zone ──────────────────────────────────────────────────────────────
-function UploadZone({ onFile, error }) {
+function UploadZone({ onFile, error, savedAnalyses, savedLoading, onOpenSaved, onDeleteSaved }) {
   const [dragging, setDragging] = useState(false)
   const ref = useRef()
 
@@ -122,6 +237,13 @@ function UploadZone({ onFile, error }) {
             </span>
           ))}
         </div>
+
+        <SavedAnalysesPanel
+          items={savedAnalyses}
+          loading={savedLoading}
+          onOpen={onOpenSaved}
+          onDelete={onDeleteSaved}
+        />
       </div>
     </div>
   )
@@ -229,6 +351,87 @@ export default function Analysis() {
   const [gbpRetrying, setGbpRetrying] = useState(false)
   const [error, setError]             = useState(null)
 
+  const [savedAnalyses, setSavedAnalyses] = useState([])
+  const [savedLoading, setSavedLoading]   = useState(true)
+  const [savingShare, setSavingShare]     = useState(false)
+  const [shareUrl, setShareUrl]           = useState(null)
+
+  // ── Load saved analyses list (upload screen) ──────────────────────────────
+  const loadSavedList = useCallback(async () => {
+    setSavedLoading(true)
+    try {
+      const res = await fetch(`${API}/api/analysis/saved`)
+      if (res.ok) setSavedAnalyses(await res.json())
+    } catch {
+      // Non-fatal — panel just stays empty
+    } finally {
+      setSavedLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (phase === 'upload') loadSavedList()
+  }, [phase, loadSavedList])
+
+  // ── Open a previously saved analysis (reopen, full private view) ──────────
+  const handleOpenSaved = async id => {
+    setLoading(true)
+    setError(null)
+    try {
+      const res = await fetch(`${API}/api/analysis/saved/${id}`)
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error(body.detail || `Failed to load saved analysis (${res.status})`)
+      }
+      const payload = await res.json()
+      setAnalysisId(payload.analysis_id)
+      setAnalysisData(payload.data)
+      setTrader(payload.trader)
+      setAccount(payload.account)
+      setPhase('dashboard')
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // ── Delete a saved analysis ────────────────────────────────────────────────
+  const handleDeleteSaved = async id => {
+    if (!window.confirm('Delete this saved analysis? Its shared link will stop working.')) return
+    try {
+      await fetch(`${API}/api/analysis/saved/${id}`, { method: 'DELETE' })
+      setSavedAnalyses(prev => prev.filter(it => it.id !== id))
+    } catch {
+      setError('Failed to delete saved analysis')
+    }
+  }
+
+  // ── Save & Share current analysis (GBP view link for managers) ────────────
+  const handleSaveShare = async () => {
+    if (!analysisId) return
+    setSavingShare(true)
+    setError(null)
+    try {
+      const res = await fetch(`${API}/api/analysis/${analysisId}/save`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ trader, account }),
+      })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error(body.detail || `Save failed (${res.status})`)
+      }
+      const { share_path } = await res.json()
+      setShareUrl(`${window.location.origin}${share_path}`)
+      loadSavedList()
+    } catch (err) {
+      setError('Save & Share failed: ' + err.message)
+    } finally {
+      setSavingShare(false)
+    }
+  }
+
   // ── Handle file pick ──────────────────────────────────────────────────────
   const handleFile = f => {
     if (!f) return
@@ -324,11 +527,21 @@ export default function Analysis() {
     setAnalysisData(null)
     setAnalysisId(null)
     setError(null)
+    setShareUrl(null)
   }
 
   // ── Render ────────────────────────────────────────────────────────────────
   if (phase === 'upload') {
-    return <UploadZone onFile={handleFile} error={error} />
+    return (
+      <UploadZone
+        onFile={handleFile}
+        error={error}
+        savedAnalyses={savedAnalyses}
+        savedLoading={savedLoading}
+        onOpenSaved={handleOpenSaved}
+        onDeleteSaved={handleDeleteSaved}
+      />
+    )
   }
 
   if (phase === 'modal') {
@@ -347,16 +560,21 @@ export default function Analysis() {
 
   if (phase === 'dashboard' && analysisData) {
     return (
-      <AxiaAnalysisDashboard
-        data={analysisData}
-        trader={trader}
-        account={account}
-        onNewUpload={reset}
-        onExport={handleExport}
-        exporting={exporting}
-        onGbpRetry={handleGbpRetry}
-        gbpRetrying={gbpRetrying}
-      />
+      <>
+        <AxiaAnalysisDashboard
+          data={analysisData}
+          trader={trader}
+          account={account}
+          onNewUpload={reset}
+          onExport={handleExport}
+          exporting={exporting}
+          onGbpRetry={handleGbpRetry}
+          gbpRetrying={gbpRetrying}
+          onSaveShare={handleSaveShare}
+          saving={savingShare}
+        />
+        {shareUrl && <ShareLinkModal url={shareUrl} onClose={() => setShareUrl(null)} />}
+      </>
     )
   }
 
