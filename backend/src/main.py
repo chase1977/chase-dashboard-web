@@ -7,18 +7,22 @@ Start with:
     python -m uvicorn src.main:app --reload --port 8000
 """
 
+# Load .env BEFORE any other imports — supabase_service reads env vars at module level
 import os
+from dotenv import load_dotenv
+load_dotenv()
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from dotenv import load_dotenv
 
 from src.routers import portfolio, reports, management
+from src.routers.statement    import router as statement_router
+from src.routers.axia_equity  import router as axia_router
+from src.routers.axia_analysis import router as analysis_router
 
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-
-load_dotenv()
 
 DATA_DIR = os.environ.get("DATA_DIR") or os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "data"
@@ -65,6 +69,9 @@ async def startup_event():
 app.include_router(portfolio.router)
 app.include_router(reports.router)
 app.include_router(management.router)
+app.include_router(statement_router)
+app.include_router(axia_router)
+app.include_router(analysis_router)
 
 
 # ---------------------------------------------------------------------------

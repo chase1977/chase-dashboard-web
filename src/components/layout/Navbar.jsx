@@ -23,6 +23,7 @@ const NAV_LINKS = [
   { label: 'Traders',     path: '/traders'      },
   { label: 'Venues',      path: '/venues'       },
   { label: 'Reports',     path: '/reports'      },
+  { label: 'Analysis',    path: '/analysis'     },
 ]
 
 const TIME_RANGES = ['1D', '7D', '30D', 'YTD', 'SI']

@@ -5,3 +5,8 @@ dist/
 .env.local
 .DS_Store
 *.log
+__pycache__/
+*.pyc
+*.pyo
+*.bak
+vite.config.js.timestamp-*.mjs

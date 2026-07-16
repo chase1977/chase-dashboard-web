@@ -31,7 +31,11 @@ import time
 from functools import lru_cache, reduce
 from datetime import date, datetime, timedelta
 from typing import Optional
+from dotenv import load_dotenv
 from supabase import create_client, Client
+
+# Ensure .env is loaded even if this module is imported before main.py calls load_dotenv()
+load_dotenv()
 
 
 def _darwin_display(raw: str) -> str:

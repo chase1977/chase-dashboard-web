@@ -1,25 +1,29 @@
 // frontend/vite.config.js
-import { defineConfig } from 'vite'
+import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 
-// ---------------------------------------------------------------------------
-// Config — change BACKEND_PORT if you run FastAPI on a different port
-// ---------------------------------------------------------------------------
-const BACKEND_PORT = 8000
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, process.cwd(), '')
 
-export default defineConfig({
-  plugins: [react()],
-  server: {
-    port: 5173,
-    proxy: {
-      // All /api requests in dev are proxied to the FastAPI backend
-      '/api': {
-        target:      `http://localhost:${BACKEND_PORT}`,
-        changeOrigin: true,
+  // Backend target:
+  //   VITE_BACKEND_URL in .env.local → Railway (or any remote)
+  //   fallback                       → localhost:8000 (local FastAPI dev)
+  const BACKEND_TARGET = env.VITE_BACKEND_URL || 'http://localhost:8000'
+
+  return {
+    plugins: [react()],
+    server: {
+      port: 5173,
+      proxy: {
+        '/api': {
+          target:       BACKEND_TARGET,
+          changeOrigin: true,
+          secure:       BACKEND_TARGET.startsWith('https'),
+        },
       },
     },
-  },
-  build: {
-    outDir: 'dist',
-  },
+    build: {
+      outDir: 'dist',
+    },
+  }
 })
