@@ -92,17 +92,27 @@ function KpiCard({ label, value, sub, color=C.accent }) {
 function PnlTooltip({ active, payload, label }) {
   if (!active || !payload?.length) return null
   const val = payload[0]?.value ?? 0
+  const ccy = payload[0]?.payload?.ccy ?? ''
   return (
     <div style={{ background:'#0F2236', border:'1px solid #1E3A5F', borderRadius:8, padding:'8px 14px', fontSize:12 }}>
       <div style={{ color:'#94A3B8', marginBottom:4 }}>{label}</div>
-      <div style={{ color:val >= 0 ? C.pos : C.neg, fontWeight:700, fontSize:13 }}>{fmt(val)}</div>
+      <div style={{ color:val >= 0 ? C.pos : C.neg, fontWeight:700, fontSize:13 }}>
+        {ccy && <span style={{ fontSize:10, fontWeight:600, marginRight:4, opacity:0.75 }}>{ccy}</span>}
+        {fmt(val)}
+      </div>
     </div>
   )
 }
 
 // ─── P&L by Instrument ────────────────────────────────────────────────────────
-function AssetPnlChart({ assets }) {
-  const data = [...assets].sort((a,b) => a.net_pnl - b.net_pnl).map(a => ({ name:`${a.instrument} (${a.currency})`, pnl:Math.round(a.net_pnl*100)/100 }))
+function AssetPnlChart({ assets, gbpMode }) {
+  const data = [...assets].sort((a,b) => a.net_pnl - b.net_pnl).map(a => ({
+    name: gbpMode
+      ? `${a.instrument} [${a.original_currency || a.currency}]`
+      : `${a.instrument} (${a.currency})`,
+    pnl: Math.round(a.net_pnl*100)/100,
+    ccy: gbpMode ? 'GBP' : a.currency,
+  }))
   const h    = Math.max(320, assets.length * 38 + 60)
   return (
     <ResponsiveContainer width="99%" height={h}>
@@ -211,8 +221,10 @@ function VolumeChart({ assets }) {
 }
 
 // ─── Commission drag chart ────────────────────────────────────────────────────
-function CommDragChart({ assets }) {
+function CommDragChart({ assets, gbpMode }) {
   const data = [...assets].sort((a,b) => Math.abs(b.total_comms)-Math.abs(a.total_comms)).slice(0,12).map(a => ({ name:a.instrument, gross:Math.round(a.realized_pnl*100)/100, comms:Math.round(Math.abs(a.total_comms)*100)/100 }))
+  const grossLabel = gbpMode ? 'Gross P&L (GBP)' : 'Gross P&L'
+  const commsLabel = gbpMode ? 'Total Comms (GBP)' : 'Total Comms'
   return (
     <ResponsiveContainer width="99%" height={260}>
       <BarChart data={data} layout="vertical" margin={{ top:5, right:60, bottom:5, left:165 }}>
@@ -222,8 +234,8 @@ function CommDragChart({ assets }) {
         <Tooltip {...CHART_TIP} formatter={(v,n) => [fmt(v),n]} />
         <Legend wrapperStyle={{ color:C.text, fontSize:11 }} />
         <ReferenceLine x={0} stroke={C.border} strokeWidth={2} />
-        <Bar dataKey="gross" name="Gross P&L"  fill={C.accent} radius={[0,4,4,0]} isAnimationActive={false} />
-        <Bar dataKey="comms" name="Total Comms" fill={C.neg}   radius={[0,4,4,0]} isAnimationActive={false} />
+        <Bar dataKey="gross" name={grossLabel} fill={C.accent} radius={[0,4,4,0]} isAnimationActive={false} />
+        <Bar dataKey="comms" name={commsLabel} fill={C.neg}    radius={[0,4,4,0]} isAnimationActive={false} />
       </BarChart>
     </ResponsiveContainer>
   )
@@ -611,14 +623,34 @@ async function exportAllGraphs(setExportingGraphs) {
 }
 
 // ─── Main Dashboard ───────────────────────────────────────────────────────────
-export default function AxiaAnalysisDashboard({ data, trader, account, onNewUpload, onExport, exporting }) {
+export default function AxiaAnalysisDashboard({ data, trader, account, onNewUpload, onExport, exporting, onGbpRetry, gbpRetrying }) {
   const [exportingGraphs, setExportingGraphs] = useState(false)
-  const currencies = data.summary.currencies
+  const [gbpMode, setGbpMode]                 = useState(false)
+
+  // Switch between native multi-currency view and unified GBP view
+  const activeData = useMemo(() => {
+    if (!gbpMode || !data.gbp_assets) return data
+    return {
+      ...data,
+      by_asset:             data.gbp_assets,
+      by_date:              data.gbp_by_date,
+      by_currency:          data.gbp_by_currency,
+      commission_breakdown: data.gbp_commission_breakdown,
+      portfolio_daily_detail: data.gbp_portfolio_daily,
+      summary: { ...data.summary, currencies: ['GBP'] },
+    }
+  }, [data, gbpMode])
+
+  const currencies = activeData.summary.currencies
   const totalLots  = data.summary.total_long_lots + data.summary.total_short_lots
-  const topWinners = useMemo(() => [...data.by_asset].sort((a,b) => b.net_pnl - a.net_pnl).slice(0,5), [data])
-  const topLosers  = useMemo(() => [...data.by_asset].sort((a,b) => a.net_pnl - b.net_pnl).slice(0,5), [data])
+  const topWinners = useMemo(() => [...activeData.by_asset].sort((a,b) => b.net_pnl - a.net_pnl).slice(0,5), [activeData])
+  const topLosers  = useMemo(() => [...activeData.by_asset].sort((a,b) => a.net_pnl - b.net_pnl).slice(0,5), [activeData])
   const bestAsset  = topWinners[0]
   const worstAsset = topLosers[0]
+
+  const gbpRatesOk      = data.gbp_rates_ok === true
+  const gbpRatesFailed  = data.gbp_rates_failed || []
+  const hasGbpData      = gbpRatesOk && !!data.gbp_assets
 
   return (
     <div style={{ background:C.bg, minHeight:'calc(100vh - 56px)', padding:'28px 36px', color:C.text }}>
@@ -626,7 +658,14 @@ export default function AxiaAnalysisDashboard({ data, trader, account, onNewUplo
       {/* ── Header ─────────────────────────────────────────────────────────── */}
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:28 }}>
         <div>
-          <div style={{ fontSize:22, fontWeight:700, color:C.text, letterSpacing:'-0.3px' }}>AXIA Strategy — Trade Analysis</div>
+          <div style={{ display:'flex', alignItems:'center', gap:12 }}>
+            <div style={{ fontSize:22, fontWeight:700, color:C.text, letterSpacing:'-0.3px' }}>AXIA Strategy — Trade Analysis</div>
+            {gbpMode && (
+              <div style={{ padding:'3px 10px', borderRadius:20, background:'rgba(52,211,153,0.15)', border:'1px solid rgba(52,211,153,0.4)', fontSize:11, fontWeight:700, color:C.pos, letterSpacing:'0.6px' }}>
+                GBP VIEW
+              </div>
+            )}
+          </div>
           <div style={{ display:'flex', gap:20, fontSize:13, color:C.muted, marginTop:6, flexWrap:'wrap' }}>
             <span>Trader: <span style={{ color:C.accent, fontWeight:600 }}>{trader}</span></span>
             <span>Account: <span style={{ color:C.accent, fontWeight:600 }}>{account}</span></span>
@@ -635,10 +674,51 @@ export default function AxiaAnalysisDashboard({ data, trader, account, onNewUplo
           </div>
         </div>
 
-        <div style={{ display:'flex', gap:10, flexWrap:'wrap' }}>
+        <div style={{ display:'flex', gap:10, flexWrap:'wrap', alignItems:'center' }}>
           <button onClick={onNewUpload} style={{ padding:'9px 18px', borderRadius:8, cursor:'pointer', border:`1px solid ${C.border}`, background:'transparent', color:C.dim, fontSize:13, transition:'all 0.15s' }}>
             ↑ New Upload
           </button>
+
+          {/* GBP Toggle — active when rates ok, warning when failed */}
+          {hasGbpData ? (
+            <div style={{ display:'flex', borderRadius:8, border:`1px solid ${C.border}`, overflow:'hidden' }}>
+              <button
+                onClick={() => setGbpMode(false)}
+                style={{ padding:'9px 14px', border:'none', cursor:'pointer', fontSize:12, fontWeight:600, transition:'all 0.15s',
+                  background: !gbpMode ? C.navy : 'transparent',
+                  color: !gbpMode ? C.accent : C.muted,
+                }}
+              >Native</button>
+              <button
+                onClick={() => setGbpMode(true)}
+                style={{ padding:'9px 14px', border:'none', cursor:'pointer', fontSize:12, fontWeight:600, transition:'all 0.15s',
+                  background: gbpMode ? 'rgba(52,211,153,0.15)' : 'transparent',
+                  color: gbpMode ? C.pos : C.muted,
+                  borderLeft:`1px solid ${C.border}`,
+                }}
+              >GBP</button>
+            </div>
+          ) : (
+            <div style={{ display:'flex', alignItems:'center', gap:8, padding:'7px 12px', borderRadius:8, border:'1px solid rgba(245,158,11,0.35)', background:'rgba(245,158,11,0.07)' }}>
+              <span style={{ fontSize:11, color:C.warn }}>
+                {gbpRetrying
+                  ? '⏳ Fetching rates…'
+                  : gbpRatesFailed.length > 0
+                    ? `GBP rates unavailable (${gbpRatesFailed.join(', ')})`
+                    : 'GBP rates unavailable'
+                }
+              </span>
+              {!gbpRetrying && onGbpRetry && (
+                <button
+                  onClick={onGbpRetry}
+                  style={{ padding:'3px 10px', borderRadius:6, border:`1px solid ${C.warn}`, background:'transparent', color:C.warn, fontSize:11, fontWeight:700, cursor:'pointer' }}
+                >
+                  ↺ Retry
+                </button>
+              )}
+            </div>
+          )}
+
           <button
             onClick={() => exportAllGraphs(setExportingGraphs)}
             disabled={exportingGraphs}
@@ -646,27 +726,29 @@ export default function AxiaAnalysisDashboard({ data, trader, account, onNewUplo
           >
             {exportingGraphs ? '⏳ Capturing…' : '🖼 Export Graphs'}
           </button>
-          <button onClick={onExport} disabled={exporting} style={{ padding:'9px 22px', borderRadius:8, cursor:'pointer', border:'none', background:C.navy, color:C.accent, fontSize:13, fontWeight:700, opacity:exporting?0.7:1, transition:'all 0.15s' }}>
-            {exporting ? 'Generating…' : '⬇ Export Excel'}
+          <button onClick={() => onExport(gbpMode)} disabled={exporting} style={{ padding:'9px 22px', borderRadius:8, cursor:'pointer', border:'none', background:C.navy, color:C.accent, fontSize:13, fontWeight:700, opacity:exporting?0.7:1, transition:'all 0.15s' }}>
+            {exporting ? 'Generating…' : `⬇ Export Excel${gbpMode ? ' (GBP)' : ''}`}
           </button>
         </div>
       </div>
 
       {/* ── KPI Cards ──────────────────────────────────────────────────────── */}
       <div style={{ display:'flex', gap:12, marginBottom:20, flexWrap:'wrap' }}>
-        <KpiCard label="Instruments" value={data.summary.total_instruments} sub={currencies.join(' · ')} />
+        <KpiCard label="Instruments" value={data.summary.total_instruments} sub={data.summary.currencies.join(' · ')} />
         <KpiCard label="Total Lots"  value={fmt(totalLots,0)} sub={`${fmt(data.summary.total_long_lots,0)} long  ·  ${fmt(data.summary.total_short_lots,0)} short`} />
         <KpiCard label="Trading Days" value={data.date_range.trading_days} sub={`${data.date_range.from} – ${data.date_range.to}`} />
-        <KpiCard label="Best Instrument"  value={bestAsset?.instrument}  sub={`${fmt(bestAsset?.net_pnl)} ${bestAsset?.currency}`}  color={C.pos} />
-        <KpiCard label="Worst Instrument" value={worstAsset?.instrument} sub={`${fmt(worstAsset?.net_pnl)} ${worstAsset?.currency}`} color={C.neg} />
-        <KpiCard label="Total Commissions" value={fmt(data.commission_breakdown.total)} sub="broker + exchange + NFA" color={C.warn} />
+        <KpiCard label="Best Instrument"  value={bestAsset?.instrument}  sub={`${fmt(bestAsset?.net_pnl)} ${gbpMode ? 'GBP' : bestAsset?.currency}`}  color={C.pos} />
+        <KpiCard label="Worst Instrument" value={worstAsset?.instrument} sub={`${fmt(worstAsset?.net_pnl)} ${gbpMode ? 'GBP' : worstAsset?.currency}`} color={C.neg} />
+        <KpiCard label={gbpMode ? 'Total Comms (GBP)' : 'Total Commissions'} value={fmt(activeData.commission_breakdown.total)} sub="broker + exchange + NFA" color={C.warn} />
       </div>
 
       {/* ── Currency P&L Strip ─────────────────────────────────────────────── */}
       <div style={{ display:'flex', gap:10, marginBottom:24, flexWrap:'wrap' }}>
-        {Object.entries(data.by_currency).map(([ccy,vals]) => (
-          <div key={ccy} style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:10, padding:'14px 22px', flex:1, minWidth:140 }}>
-            <div style={{ fontSize:10, color:ccyColor(ccy), fontWeight:700, letterSpacing:'0.8px', marginBottom:8 }}>{ccy} BOOK</div>
+        {Object.entries(activeData.by_currency).map(([ccy,vals]) => (
+          <div key={ccy} style={{ background:C.card, border:`1px solid ${gbpMode ? 'rgba(52,211,153,0.3)' : C.border}`, borderRadius:10, padding:'14px 22px', flex:1, minWidth:140 }}>
+            <div style={{ fontSize:10, color:gbpMode ? C.pos : ccyColor(ccy), fontWeight:700, letterSpacing:'0.8px', marginBottom:8 }}>
+              {gbpMode ? 'GBP TOTAL' : `${ccy} BOOK`}
+            </div>
             <div style={{ fontSize:20, fontWeight:700, color:pnlColor(vals.net_pnl), lineHeight:1 }}>{fmt(vals.net_pnl)}</div>
             <div style={{ fontSize:10, color:C.muted, marginTop:6 }}>Gross: {fmt(vals.realized_pnl)}</div>
             <div style={{ fontSize:10, color:C.muted }}>Comms: {fmt(vals.total_comms)}</div>
@@ -677,13 +759,13 @@ export default function AxiaAnalysisDashboard({ data, trader, account, onNewUplo
       {/* ── Row 1: P&L by Instrument + Right column ───────────────────────── */}
       <div style={{ display:'grid', gridTemplateColumns:'1fr 320px', gap:16, marginBottom:20 }}>
         <Card id="chart-asset-pnl">
-          <SectionLabel>Net P&L by Instrument — sorted worst → best</SectionLabel>
-          <AssetPnlChart assets={data.by_asset} />
+          <SectionLabel>Net P&L by Instrument{gbpMode ? ' — converted to GBP' : ' — sorted worst → best'}</SectionLabel>
+          <AssetPnlChart assets={activeData.by_asset} gbpMode={gbpMode} />
         </Card>
         <div style={{ display:'flex', flexDirection:'column', gap:16 }}>
           <Card id="chart-comm-pie">
-            <SectionLabel>Commission Breakdown</SectionLabel>
-            <CommPie breakdown={data.commission_breakdown} />
+            <SectionLabel>Commission Breakdown{gbpMode ? ' (GBP)' : ''}</SectionLabel>
+            <CommPie breakdown={activeData.commission_breakdown} />
           </Card>
           <Card>
             <SectionLabel>Top 5 Winners</SectionLabel>
@@ -699,59 +781,59 @@ export default function AxiaAnalysisDashboard({ data, trader, account, onNewUplo
       {/* ── Row 2: Daily P&L + Cumulative ─────────────────────────────────── */}
       <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16, marginBottom:20 }}>
         <Card id="chart-daily-pnl">
-          <SectionLabel>Daily Net P&L by Currency</SectionLabel>
-          <DailyPnlChart byDate={data.by_date} currencies={currencies} />
+          <SectionLabel>Daily Net P&L{gbpMode ? ' — GBP' : ' by Currency'}</SectionLabel>
+          <DailyPnlChart byDate={activeData.by_date} currencies={currencies} />
         </Card>
         <Card id="chart-cumulative">
-          <SectionLabel>Cumulative P&L — Equity Curves by Currency</SectionLabel>
-          <CumulativeChart byDate={data.by_date} currencies={currencies} />
+          <SectionLabel>Cumulative P&L — Equity Curve{gbpMode ? ' (GBP)' : 's by Currency'}</SectionLabel>
+          <CumulativeChart byDate={activeData.by_date} currencies={currencies} />
         </Card>
       </div>
 
       {/* ── P&L Heatmap ────────────────────────────────────────────────────── */}
       <Card id="chart-heatmap" style={{ marginBottom:20 }}>
-        <SectionLabel>P&L Heatmap — Currency × Date (green = win · red = loss · intensity = magnitude)</SectionLabel>
-        <PnlHeatmap byDate={data.by_date} currencies={currencies} />
+        <SectionLabel>P&L Heatmap — {gbpMode ? 'All Books in GBP' : 'Currency × Date'} (green = win · red = loss · intensity = magnitude)</SectionLabel>
+        <PnlHeatmap byDate={activeData.by_date} currencies={currencies} />
       </Card>
 
       {/* ── Equity Curve Explorer ──────────────────────────────────────────── */}
       <Card id="chart-equity-explorer" style={{ marginBottom:20 }}>
-        <SectionLabel>Instrument Equity Curve Explorer — single · compare · all</SectionLabel>
-        <EquityCurveExplorer assets={data.by_asset} />
+        <SectionLabel>Instrument Equity Curve Explorer{gbpMode ? ' — GBP' : ' — single · compare · all'}</SectionLabel>
+        <EquityCurveExplorer assets={activeData.by_asset} />
       </Card>
 
       {/* ── Row 3: Volume + Commission Drag ───────────────────────────────── */}
       <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16, marginBottom:20 }}>
         <Card id="chart-volume">
           <SectionLabel>Trade Volume by Instrument (Total Lots)</SectionLabel>
-          <VolumeChart assets={data.by_asset} />
+          <VolumeChart assets={activeData.by_asset} />
         </Card>
         <Card id="chart-comm-drag">
-          <SectionLabel>Gross P&L vs Commission Drag — Top Commission Payers</SectionLabel>
-          <CommDragChart assets={data.by_asset} />
+          <SectionLabel>Gross P&L vs Commission Drag{gbpMode ? ' (GBP)' : ' — Top Commission Payers'}</SectionLabel>
+          <CommDragChart assets={activeData.by_asset} gbpMode={gbpMode} />
         </Card>
       </div>
 
       {/* ── Top winners mini curves ────────────────────────────────────────── */}
       <Card id="chart-winners-curves" style={{ marginBottom:20 }}>
-        <SectionLabel>Top 5 Winners — Equity Curves</SectionLabel>
+        <SectionLabel>Top 5 Winners — Equity Curves{gbpMode ? ' (GBP)' : ''}</SectionLabel>
         <div style={{ display:'grid', gridTemplateColumns:`repeat(${Math.min(topWinners.length,5)},1fr)`, gap:12 }}>
-          {topWinners.map(a => <MiniCurve key={`${a.instrument}-${a.currency}`} asset={a} />)}
+          {topWinners.map(a => <MiniCurve key={`${a.instrument}-${a.original_currency || a.currency}`} asset={a} />)}
         </div>
       </Card>
 
       {/* ── Top losers mini curves ─────────────────────────────────────────── */}
       <Card id="chart-losers-curves" style={{ marginBottom:20 }}>
-        <SectionLabel>Top 5 Losers — Equity Curves</SectionLabel>
+        <SectionLabel>Top 5 Losers — Equity Curves{gbpMode ? ' (GBP)' : ''}</SectionLabel>
         <div style={{ display:'grid', gridTemplateColumns:`repeat(${Math.min(topLosers.length,5)},1fr)`, gap:12 }}>
-          {topLosers.map(a => <MiniCurve key={`${a.instrument}-${a.currency}`} asset={a} />)}
+          {topLosers.map(a => <MiniCurve key={`${a.instrument}-${a.original_currency || a.currency}`} asset={a} />)}
         </div>
       </Card>
 
       {/* ── Full Asset Table ───────────────────────────────────────────────── */}
       <Card>
-        <SectionLabel>Full Instrument Breakdown — click headers to sort</SectionLabel>
-        <AssetTable assets={data.by_asset} />
+        <SectionLabel>Full Instrument Breakdown{gbpMode ? ' — All values in GBP' : ' — click headers to sort'}</SectionLabel>
+        <AssetTable assets={activeData.by_asset} />
       </Card>
 
     </div>

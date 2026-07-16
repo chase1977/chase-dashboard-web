@@ -224,9 +224,10 @@ export default function Analysis() {
   const [account, setAccount]     = useState('47511')
   const [analysisId, setAnalysisId]   = useState(null)
   const [analysisData, setAnalysisData] = useState(null)
-  const [loading, setLoading]     = useState(false)
-  const [exporting, setExporting] = useState(false)
-  const [error, setError]         = useState(null)
+  const [loading, setLoading]         = useState(false)
+  const [exporting, setExporting]     = useState(false)
+  const [gbpRetrying, setGbpRetrying] = useState(false)
+  const [error, setError]             = useState(null)
 
   // ── Handle file pick ──────────────────────────────────────────────────────
   const handleFile = f => {
@@ -272,11 +273,12 @@ export default function Analysis() {
   }
 
   // ── Export Excel report ───────────────────────────────────────────────────
-  const handleExport = async () => {
+  const handleExport = async (gbpMode = false) => {
     if (!analysisId) return
     setExporting(true)
     try {
       const params = new URLSearchParams({ trader, account })
+      if (gbpMode) params.set('gbp', 'true')
       const res = await fetch(`${API}/api/analysis/${analysisId}/export?${params}`)
       if (!res.ok) throw new Error('Export failed')
       const blob = await res.blob()
@@ -284,13 +286,34 @@ export default function Analysis() {
       const link = document.createElement('a')
       link.href = url
       const dr = analysisData?.date_range
-      link.download = `AXIA-Analysis-${account}_${dr?.from || 'report'}_to_${dr?.to || ''}.xlsx`
+      const suffix = gbpMode ? '_GBP' : ''
+      link.download = `AXIA-Analysis-${account}_${dr?.from || 'report'}_to_${dr?.to || ''}${suffix}.xlsx`
       link.click()
       URL.revokeObjectURL(url)
     } catch (err) {
       setError('Export failed: ' + err.message)
     } finally {
       setExporting(false)
+    }
+  }
+
+  // ── Retry GBP rate fetch ──────────────────────────────────────────────────
+  const handleGbpRetry = async () => {
+    if (!analysisId) return
+    setGbpRetrying(true)
+    try {
+      const res = await fetch(`${API}/api/analysis/${analysisId}/refresh-gbp`, { method: 'POST' })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error(body.detail || `GBP refresh failed (${res.status})`)
+      }
+      const gbpView = await res.json()
+      // Merge GBP fields into existing analysis data
+      setAnalysisData(prev => ({ ...prev, ...gbpView }))
+    } catch (err) {
+      setError('GBP rate refresh: ' + err.message)
+    } finally {
+      setGbpRetrying(false)
     }
   }
 
@@ -331,6 +354,8 @@ export default function Analysis() {
         onNewUpload={reset}
         onExport={handleExport}
         exporting={exporting}
+        onGbpRetry={handleGbpRetry}
+        gbpRetrying={gbpRetrying}
       />
     )
   }
