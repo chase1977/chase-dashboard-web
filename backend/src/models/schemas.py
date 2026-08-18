@@ -180,6 +180,7 @@ class CapitalEvent(BaseModel):
     amount:     float                   # positive = inflow, negative = outflow
     pod_id:     Optional[str] = None    # None for portfolio-level events
     notes:      Optional[str] = None
+    reference:  Optional[str] = None    # statement reference, e.g. bank/broker txn ref
 
 
 # ---------------------------------------------------------------------------

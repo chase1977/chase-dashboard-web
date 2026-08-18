@@ -25,17 +25,17 @@ function fmtEquityTick(v) {
   return `${v}`
 }
 
-/** Format timestamp for axis ticks — show "Feb 8" style */
+/** Format timestamp for axis ticks — compact DD-MM (space-constrained) */
 function fmtDateTick(ts) {
   const d = new Date(ts)
-  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+  return d.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit' }).replace(/\//g, '-')
 }
 
-/** Custom tooltip */
+/** Custom tooltip — UK convention: DD-MM-YYYY */
 function CustomTooltip({ active, payload, label }) {
   if (!active || !payload?.length) return null
   const d = new Date(label)
-  const dateStr = d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+  const dateStr = d.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }).replace(/\//g, '-')
 
   return (
     <div style={{
@@ -53,7 +53,7 @@ function CustomTooltip({ active, payload, label }) {
           <span style={{ color: p.color, fontWeight: 500 }}>
             {p.dataKey === 'drawdown'
               ? `${(p.value * 100).toFixed(2)}%`
-              : `£${Number(p.value).toLocaleString('en-GB', { maximumFractionDigits: 0 })}`
+              : `£${Number(p.value).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
             }
           </span>
         </div>

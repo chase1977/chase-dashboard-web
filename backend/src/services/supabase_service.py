@@ -310,7 +310,7 @@ def get_capital_events() -> list[dict]:
         sb  = get_client()
         res = (
             sb.table("capital_events")
-            .select("id,event_date,event_type,amount,notes,created_at")
+            .select("id,event_date,event_type,amount,notes,reference,created_at")
             .order("event_date", desc=False)
             .execute()
         )
@@ -324,6 +324,7 @@ def get_capital_events() -> list[dict]:
                 "amount":     amt if r["event_type"] == "deposit" else -amt,
                 "pod_id":     None,
                 "notes":      r.get("notes") or "",
+                "reference":  r.get("reference") or "",
             })
         return events
     return _get_cached("capital_events", _fetch)
@@ -591,6 +592,75 @@ def get_equity_curve_data(days: Optional[int] = None) -> list[dict]:
 # Pod-level aggregates (from pfees + strategies + pods tables)
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# AXIA daily-equity aggregation — feeds pod/strategy breakdown alongside pfees
+#
+# AXIA clients (axia_clients / axia_daily_equity) are manually-entered broker
+# NLV snapshots, GBP only — a separate data source from Darwinex pfees.
+# A strategy links to one AXIA client via strategies.axia_client_id.
+# Baseline (start of PnL/return calc) = that client's FIRST equity entry —
+# NOT the manual "Initial Investment" field (confirmed with Nish 2026-08-18).
+# ---------------------------------------------------------------------------
+
+def _axia_clients_by_id() -> dict[str, dict]:
+    """id -> {client, account, label} map, cached 60s."""
+    def _fetch():
+        rows = get_client().table("axia_clients").select("*").execute().data or []
+        return {r["id"]: r for r in rows}
+    return _get_cached("axia_clients_by_id", _fetch)
+
+
+def _axia_equity_series(client: str, account: str) -> list[dict]:
+    """
+    GBP-only axia_daily_equity rows for a client/account, sorted by date asc.
+    Cached 60s. Returns [{ "date": "YYYY-MM-DD", "equity": float }, ...]
+    """
+    def _fetch():
+        rows = (
+            get_client()
+            .table("axia_daily_equity")
+            .select("trade_date,equity,currency")
+            .eq("client", client)
+            .eq("account", account)
+            .eq("currency", "GBP")
+            .order("trade_date", desc=False)
+            .execute()
+            .data or []
+        )
+        return [{"date": r["trade_date"], "equity": float(r["equity"])} for r in rows]
+    return _get_cached(f"axia_equity_{client}_{account}", _fetch)
+
+
+def _axia_strategy_agg(strategies: list[dict]) -> dict[int, dict]:
+    """
+    strategy_id -> { invested, pnl, baseline, series } for strategies with
+    axia_client_id set. invested = latest GBP equity. baseline = first GBP
+    equity entry for that client/account. pnl = latest − baseline.
+    """
+    clients_idx = _axia_clients_by_id()
+    out: dict[int, dict] = {}
+    for s in strategies:
+        cid = s.get("axia_client_id")
+        if not cid:
+            continue
+        cl = clients_idx.get(cid)
+        if not cl:
+            continue
+        series = _axia_equity_series(cl["client"], cl["account"])
+        if not series:
+            out[s["id"]] = {"invested": 0.0, "pnl": 0.0, "baseline": 0.0, "series": []}
+            continue
+        baseline = series[0]["equity"]
+        latest   = series[-1]["equity"]
+        out[s["id"]] = {
+            "invested": latest,
+            "pnl":      round(latest - baseline, 2),
+            "baseline": baseline,
+            "series":   series,
+        }
+    return out
+
+
 def _build_pod_pfees_map() -> dict:
     """
     Returns { pod_id: { "invested": float, "pnl": float, "darwins": [str] } }
@@ -663,12 +733,27 @@ def _build_pod_pfees_map() -> dict:
         if darwin:
             pod_agg[pod_id]["darwins"].append(darwin)
 
+    # ── AXIA-linked strategies — add their equity into pod_agg alongside pfees ──
+    axia_agg = _axia_strategy_agg(strategies)
+    for s in strategies:
+        contrib = axia_agg.get(s["id"])
+        if not contrib:
+            continue
+        pid = s.get("pod_id")
+        if pid is None:
+            pid = UNALLOCATED
+        if pid not in pod_agg:
+            pod_agg[pid] = {"invested": 0.0, "pnl": 0.0, "darwins": []}
+        pod_agg[pid]["invested"] = round(pod_agg[pid]["invested"] + contrib["invested"], 2)
+        pod_agg[pid]["pnl"]      = round(pod_agg[pid]["pnl"] + contrib["pnl"], 2)
+
     return {
         "pod_agg":     pod_agg,
         "pods_list":   pods_list,
         "strategies":  strategies,
         "UNALLOCATED": UNALLOCATED,
         "_snapshot":   snapshot,   # reused by _fast variants to avoid extra DB call
+        "_axia_agg":   axia_agg,   # strategy_id -> { invested, pnl, baseline, series }
     }
 
 
@@ -695,12 +780,16 @@ def get_pods_with_kpis() -> list[dict]:
     # for all strategies in that pod that have a brokerage_account set.
     # Hybrid: auto when brokerage_account set, manual initial_investment fallback.
     net_deployed = _get_net_deployed_per_account()
+    axia_agg     = data.get("_axia_agg") or {}
 
     def _strategy_initial(s: dict) -> float:
-        """Auto from transfers if brokerage_account set, else manual initial_investment."""
+        """Auto from transfers if brokerage_account set, AXIA baseline if AXIA-linked,
+        else manual initial_investment."""
         acct = s.get("brokerage_account")
         if acct:
             return net_deployed.get(acct, 0.0)
+        if s.get("axia_client_id") and s["id"] in axia_agg:
+            return axia_agg[s["id"]]["baseline"]
         return float(s.get("initial_investment") or 0)
 
     result = []
@@ -852,12 +941,15 @@ def get_hierarchy_rows(entity_type: str) -> list[dict]:
 
         total_aum    = sum(v["invested"] for v in pod_agg.values()) or 1.0
         net_deployed = _get_net_deployed_per_account()
+        hier_axia_agg = data.get("_axia_agg") or {}
         rows         = []
 
         def _hier_strat_initial(s: dict) -> float:
             acct = s.get("brokerage_account")
             if acct:
                 return net_deployed.get(acct, 0.0)
+            if s.get("axia_client_id") and s["id"] in hier_axia_agg:
+                return hier_axia_agg[s["id"]]["baseline"]
             return float(s.get("initial_investment") or 0)
 
         for pid, agg in pod_agg.items():
@@ -922,7 +1014,11 @@ def get_hierarchy_rows(entity_type: str) -> list[dict]:
             acct_agg[acct]["invested"] = round(acct_agg[acct]["invested"] + invested, 2)
             acct_agg[acct]["pnl"]      = round(acct_agg[acct]["pnl"] + pnl, 2)
 
-        total_aum          = sum(v["invested"] for v in darwin_agg.values()) or 1.0
+        strat_axia_agg     = _axia_strategy_agg(strategies)
+        total_aum          = (
+            sum(v["invested"] for v in darwin_agg.values())
+            + sum(v["invested"] for v in strat_axia_agg.values())
+        ) or 1.0
         rows               = []
         strat_net_deployed = _get_net_deployed_per_account()
 
@@ -951,10 +1047,14 @@ def get_hierarchy_rows(entity_type: str) -> list[dict]:
                 broker  = s.get("brokerage_account")
 
                 # Lookup priority:
-                # 1. account_id column directly (if set + matches pfees AccountId)
-                # 2. brokerage_account → AccountId via invest-vs-deploy matching
-                # 3. strategy_code → Darwin display name fallback
-                if acct_id is not None and int(acct_id) in acct_agg:
+                # 1. axia_client_id — AXIA broker-statement equity (its own tier, not pfees)
+                # 2. account_id column directly (if set + matches pfees AccountId)
+                # 3. brokerage_account → AccountId via invest-vs-deploy matching
+                # 4. strategy_code → Darwin display name fallback
+                axia_contrib = strat_axia_agg.get(s["id"]) if s.get("axia_client_id") else None
+                if axia_contrib is not None:
+                    agg = {"invested": axia_contrib["invested"], "pnl": axia_contrib["pnl"]}
+                elif acct_id is not None and int(acct_id) in acct_agg:
                     agg = acct_agg[int(acct_id)]
                 elif broker and broker_to_acct_s.get(broker) in acct_agg:
                     agg = acct_agg[broker_to_acct_s[broker]]
@@ -967,12 +1067,21 @@ def get_hierarchy_rows(entity_type: str) -> list[dict]:
                 pod_color  = pod_joined.get("color") or pod.get("color") or "#6366f1"
                 pod_code_s = pod_joined.get("pod_code") or pod.get("pod_code") or ""
 
-                _acct      = s.get("brokerage_account")
-                initial    = strat_net_deployed.get(_acct, 0.0) if _acct else float(s.get("initial_investment") or 0)
+                _acct = s.get("brokerage_account")
+                if _acct:
+                    initial = strat_net_deployed.get(_acct, 0.0)
+                elif axia_contrib is not None:
+                    initial = axia_contrib["baseline"]
+                else:
+                    initial = float(s.get("initial_investment") or 0)
 
-                # Per-strategy period returns from user_accounts_equity
-                resolved_aid = _strat_account_id(s)
-                acct_series  = acct_eq_series.get(resolved_aid, []) if resolved_aid else []
+                # Per-strategy period returns — AXIA equity series if AXIA-linked,
+                # else per-account equity series from user_accounts_equity
+                if axia_contrib is not None:
+                    acct_series = axia_contrib["series"]
+                else:
+                    resolved_aid = _strat_account_id(s)
+                    acct_series  = acct_eq_series.get(resolved_aid, []) if resolved_aid else []
                 s_pct_1d     = _account_period_return(acct_series, 1)  if acct_series else pct_1d
                 s_pct_7d     = _account_period_return(acct_series, 7)  if acct_series else pct_7d
                 s_pct_30d    = _account_period_return(acct_series, 30) if acct_series else pct_30d
@@ -1343,11 +1452,14 @@ def get_pods_with_kpis_fast(pod_pfees_map: dict, balance_hist: list[dict]) -> li
     pct_30d = _period_return_from_hist(balance_hist, 30)
 
     net_deployed = _get_net_deployed_per_account()
+    axia_agg     = pod_pfees_map.get("_axia_agg") or {}
 
     def _strat_initial_fast(s: dict) -> float:
         acct = s.get("brokerage_account")
         if acct:
             return net_deployed.get(acct, 0.0)
+        if s.get("axia_client_id") and s["id"] in axia_agg:
+            return axia_agg[s["id"]]["baseline"]
         return float(s.get("initial_investment") or 0)
 
     result = []
@@ -1530,7 +1642,8 @@ def list_strategies(pod_id: Optional[int] = None) -> list[dict]:
 def create_strategy(name: str, strategy_code: str, pod_id: Optional[int],
                     initial_investment: float, date_created: str,
                     status: str = "Active", notes: str = "",
-                    brokerage_account: Optional[str] = None) -> dict:
+                    brokerage_account: Optional[str] = None,
+                    axia_client_id: Optional[str] = None) -> dict:
     sb  = get_client()
     res = sb.table("strategies").insert({
         "name":               name,
@@ -1541,6 +1654,7 @@ def create_strategy(name: str, strategy_code: str, pod_id: Optional[int],
         "status":             status,
         "notes":              notes or None,
         "brokerage_account":  brokerage_account or None,
+        "axia_client_id":     axia_client_id or None,
     }).execute()
     _invalidate("strategies_all")
     return res.data[0] if res.data else {}
@@ -1565,13 +1679,14 @@ def delete_strategy(strategy_id: int) -> bool:
 # ---------------------------------------------------------------------------
 
 def create_capital_event(event_date: str, event_type: str,
-                          amount: float, notes: str = "") -> dict:
+                          amount: float, notes: str = "", reference: str = "") -> dict:
     sb  = get_client()
     res = sb.table("capital_events").insert({
         "event_date":  event_date,
         "event_type":  event_type,
         "amount":      round(abs(amount), 2),
         "notes":       notes or None,
+        "reference":   reference or None,
     }).execute()
     _invalidate("capital_events")
     return res.data[0] if res.data else {}
@@ -1941,4 +2056,50 @@ def delete_misc_event(misc_id: int) -> bool:
     sb = get_client()
     sb.table("misc_events").delete().eq("id", misc_id).execute()
     _invalidate("misc_events")
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Expenses CRUD — tracked record only, does NOT affect bank_balance/TWR/AUM
+# ---------------------------------------------------------------------------
+
+def list_expenses() -> list[dict]:
+    """All rows from expenses ordered by expense_date asc (cached 60s)."""
+    return _get_cached("expenses", lambda: (
+        get_client()
+        .table("expenses")
+        .select("*")
+        .order("expense_date", desc=False)
+        .execute()
+        .data or []
+    ))
+
+
+def create_expense(expense_date: str, description: str, amount: float,
+                    recurrence: str, reference: str = "") -> dict:
+    sb  = get_client()
+    res = sb.table("expenses").insert({
+        "expense_date": expense_date,
+        "description":  description,
+        "amount":       round(abs(amount), 2),
+        "recurrence":   recurrence,
+        "reference":    reference or None,
+    }).execute()
+    _invalidate("expenses")
+    return res.data[0] if res.data else {}
+
+
+def update_expense(expense_id: int, **fields) -> dict:
+    sb = get_client()
+    if "amount" in fields:
+        fields["amount"] = round(abs(float(fields["amount"])), 2)
+    res = sb.table("expenses").update(fields).eq("id", expense_id).execute()
+    _invalidate("expenses")
+    return res.data[0] if res.data else {}
+
+
+def delete_expense(expense_id: int) -> bool:
+    sb = get_client()
+    sb.table("expenses").delete().eq("id", expense_id).execute()
+    _invalidate("expenses")
     return True

@@ -17,13 +17,22 @@ import {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function fmtPnl(v) {
+// Compact form — axis ticks only (space-constrained)
+function fmtPnlAxis(v) {
   if (v == null) return '—'
   const abs = Math.abs(v)
   const sign = v < 0 ? '-' : '+'
   if (abs >= 999_950) return `${sign}£${(abs / 1_000_000).toFixed(2)}M`
   if (abs >= 1_000)   return `${sign}£${(abs / 1_000).toFixed(2)}K`
   return `${sign}£${abs.toFixed(2)}`
+}
+
+// Full exact form — tooltip on hover/tap
+function fmtPnl(v) {
+  if (v == null) return '—'
+  const abs = Math.abs(v)
+  const sign = v < 0 ? '-' : '+'
+  return `${sign}£${abs.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
 function PnlTooltip({ active, payload }) {
@@ -78,7 +87,7 @@ export default function PnlBarChart({ data = [], height = 220 }) {
         />
         <XAxis
           type="number"
-          tickFormatter={v => fmtPnl(v)}
+          tickFormatter={v => fmtPnlAxis(v)}
           tick={{ fill: '#475569', fontSize: 10 }}
           axisLine={false}
           tickLine={false}

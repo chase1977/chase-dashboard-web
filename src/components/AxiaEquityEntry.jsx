@@ -203,11 +203,12 @@ function ConfirmPopup({ message, onConfirm, onCancel, variant = 'confirm' }) {
 // ---------------------------------------------------------------------------
 export default function AxiaEquityEntry() {
   // ---- State ----
-  const [clients,  setClients]  = useState([])
-  const [records,  setRecords]  = useState([])
-  const [loading,  setLoading]  = useState(false)
-  const [error,    setError]    = useState(null)
-  const [success,  setSuccess]  = useState(null)
+  const [clients,    setClients]    = useState([])
+  const [strategies, setStrategies] = useState([])   // for linked-strategy badge only
+  const [records,    setRecords]    = useState([])
+  const [loading,    setLoading]    = useState(false)
+  const [error,      setError]      = useState(null)
+  const [success,    setSuccess]    = useState(null)
 
   // Form
   const [selClient,  setSelClient]  = useState(null)   // { id, client, account, label }
@@ -240,6 +241,7 @@ export default function AxiaEquityEntry() {
   // ---- Load clients ----
   useEffect(() => {
     loadClients()
+    loadStrategies()
   }, [])
 
   const loadClients = async () => {
@@ -253,6 +255,20 @@ export default function AxiaEquityEntry() {
       }
     } catch { /* silent */ }
   }
+
+  // Strategies with an axia_client_id — used only to show which strategy/pod
+  // a client is linked to (linking itself happens in Manage Pods & Strategies).
+  const loadStrategies = async () => {
+    try {
+      const res  = await fetch(`${BASE}/api/management/strategies`)
+      const data = await res.json()
+      setStrategies(data)
+    } catch { /* silent */ }
+  }
+
+  const linkedStrategy = selClient
+    ? strategies.find(s => s.axia_client_id === selClient.id)
+    : null
 
   // ---- Load records when client changes ----
   useEffect(() => {
@@ -492,6 +508,26 @@ export default function AxiaEquityEntry() {
             style={{ fontSize: 11, padding: '7px 14px' }}>
             {showNewClient ? '✕ Cancel' : '+ New Client'}
           </Btn>
+
+          {selClient && (
+            linkedStrategy ? (
+              <div style={{
+                padding: '6px 12px', borderRadius: 6, fontSize: 11, fontWeight: 600,
+                background: 'rgba(168,85,247,0.10)', border: '1px solid rgba(168,85,247,0.28)',
+                color: '#c084fc',
+              }}>
+                Linked to strategy: {linkedStrategy.name} ({linkedStrategy.strategy_code})
+              </div>
+            ) : (
+              <div style={{
+                padding: '6px 12px', borderRadius: 6, fontSize: 11,
+                background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.25)',
+                color: C.warn,
+              }}>
+                Not linked to a strategy — link it in Manage Pods &amp; Strategies to feed the breakdown table
+              </div>
+            )
+          )}
         </div>
 
         {/* New client inline form */}

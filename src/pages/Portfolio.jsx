@@ -155,11 +155,16 @@ export default function Portfolio({ timeRange, initialTab }) {
     equity_curve, allocation, pnl_contribution,
   } = data
 
+  // UK convention: DD-MM-YYYY HH:MM
   const lastUpdatedStr = last_updated
-    ? new Date(last_updated).toLocaleString('en-GB', {
-        day: '2-digit', month: 'short', year: 'numeric',
-        hour: '2-digit', minute: '2-digit',
-      }) + ' UTC'
+    ? (() => {
+        const s = new Date(last_updated).toLocaleString('en-GB', {
+          day: '2-digit', month: '2-digit', year: 'numeric',
+          hour: '2-digit', minute: '2-digit',
+        })
+        const [datePart, timePart] = s.split(', ')
+        return `${datePart.replace(/\//g, '-')}${timePart ? ' ' + timePart : ''} UTC`
+      })()
     : '—'
 
   return (

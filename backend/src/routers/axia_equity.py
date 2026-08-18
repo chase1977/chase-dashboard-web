@@ -21,7 +21,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from src.services.supabase_service import get_client
+from src.services.supabase_service import get_client, invalidate_all_cache
 
 
 router = APIRouter(prefix="/api/axia", tags=["axia"])
@@ -80,6 +80,7 @@ def create_client(body: ClientCreate):
             .execute()
             .data[0]
         )
+        invalidate_all_cache()
         return row
     except Exception as exc:
         if "duplicate" in str(exc).lower() or "unique" in str(exc).lower():
@@ -91,6 +92,7 @@ def create_client(body: ClientCreate):
 def delete_client(client_id: str):
     sb = get_client()
     sb.table("axia_clients").delete().eq("id", client_id).execute()
+    invalidate_all_cache()
     return JSONResponse(status_code=204, content=None)
 
 
@@ -156,6 +158,7 @@ def create_equity(body: EquityCreate):
     }
     try:
         row = sb.table("axia_daily_equity").insert(payload).execute().data[0]
+        invalidate_all_cache()
         return row
     except Exception as exc:
         if "duplicate" in str(exc).lower() or "unique" in str(exc).lower():
@@ -182,6 +185,7 @@ def update_equity(record_id: str, body: EquityUpdate):
         )
         if not rows:
             raise HTTPException(status_code=404, detail="Record not found.")
+        invalidate_all_cache()
         return rows[0]
     except HTTPException:
         raise
@@ -195,4 +199,5 @@ def update_equity(record_id: str, body: EquityUpdate):
 def delete_equity(record_id: str):
     sb = get_client()
     sb.table("axia_daily_equity").delete().eq("id", record_id).execute()
+    invalidate_all_cache()
     return JSONResponse(status_code=204, content=None)

@@ -38,7 +38,7 @@ function DonutTooltip({ active, payload }) {
     }}>
       <div style={{ color: '#94A3B8', marginBottom: 2 }}>{d.name}</div>
       <div style={{ color: '#F1F5F9', fontWeight: 500 }}>
-        {d.pct?.toFixed(1)}% · ${(d.aum / 1000).toFixed(0)}K
+        {d.pct?.toFixed(1)}% · £{(d.aum ?? 0).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
       </div>
     </div>
   )

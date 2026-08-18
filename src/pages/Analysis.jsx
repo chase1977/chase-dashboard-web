@@ -29,10 +29,13 @@ const inputStyle = {
   transition: 'border-color 0.15s',
 }
 
+// UK convention: DD-MM-YYYY HH:MM
 const fmtWhen = iso => {
   if (!iso) return ''
   try {
-    return new Date(iso).toLocaleString('en-GB', { day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit' })
+    const s = new Date(iso).toLocaleString('en-GB', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit' })
+    const [datePart, timePart] = s.split(', ')
+    return `${datePart.replace(/\//g, '-')}${timePart ? ' ' + timePart : ''}`
   } catch { return iso }
 }
 

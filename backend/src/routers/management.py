@@ -27,6 +27,10 @@ Endpoints:
   POST /api/management/misc-events               Create misc event
   PATCH /api/management/misc-events/{id}         Update misc event
   DELETE /api/management/misc-events/{id}        Delete misc event
+  GET  /api/management/expenses                  List all expenses
+  POST /api/management/expenses                  Create expense
+  PATCH /api/management/expenses/{id}            Update expense
+  DELETE /api/management/expenses/{id}           Delete expense
 
   GET  /api/management/fund-metrics              Live AUM, PnL, TWR from Supabase
 """
@@ -50,6 +54,7 @@ class CapitalEventIn(BaseModel):
     event_type:  str   = Field(..., pattern="^(deposit|withdrawal)$")
     amount:      float = Field(..., gt=0, description="Always positive")
     notes:       Optional[str] = None
+    reference:   Optional[str] = None
 
 
 class CapitalEventPatch(BaseModel):
@@ -57,6 +62,7 @@ class CapitalEventPatch(BaseModel):
     event_type:  Optional[str]   = Field(None, pattern="^(deposit|withdrawal)$")
     amount:      Optional[float] = Field(None, gt=0)
     notes:       Optional[str]   = None
+    reference:   Optional[str]   = None
 
 
 class PodIn(BaseModel):
@@ -86,6 +92,7 @@ class StrategyIn(BaseModel):
     status:             str            = Field(default="Active")
     notes:              Optional[str]  = None
     brokerage_account:  Optional[str]  = None  # e.g. "Chase1", "Chase3xA", "XPF2026"
+    axia_client_id:     Optional[str]  = None  # FK -> axia_clients.id
 
 
 class StrategyPatch(BaseModel):
@@ -98,6 +105,7 @@ class StrategyPatch(BaseModel):
     notes:              Optional[str]   = None
     account_id:         Optional[int]   = None
     brokerage_account:  Optional[str]   = None  # e.g. "Chase1", "Chase3xA", "XPF2026"
+    axia_client_id:     Optional[str]   = None  # FK -> axia_clients.id
 
 
 # ---------------------------------------------------------------------------
@@ -286,6 +294,7 @@ def record_capital_event(body: CapitalEventIn):
             event_type = body.event_type,
             amount     = body.amount,
             notes      = body.notes or "",
+            reference  = body.reference or "",
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -417,6 +426,7 @@ def create_strategy(body: StrategyIn):
             status             = body.status,
             notes              = body.notes or "",
             brokerage_account  = body.brokerage_account,
+            axia_client_id     = body.axia_client_id,
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -564,5 +574,66 @@ def update_misc_event(misc_id: int, body: MiscEventPatch):
 def delete_misc_event(misc_id: int):
     try:
         sb.delete_misc_event(misc_id)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Expenses — tracked record only, does NOT affect bank_balance/TWR/AUM
+# ---------------------------------------------------------------------------
+
+class ExpenseIn(BaseModel):
+    expense_date: str   = Field(..., description="ISO date YYYY-MM-DD")
+    description:  str   = Field(..., description="Expense description")
+    amount:       float = Field(..., gt=0, description="Always positive")
+    recurrence:   str   = Field(..., pattern="^(one_time|recurring)$")
+    reference:    Optional[str] = None
+
+
+class ExpensePatch(BaseModel):
+    expense_date: Optional[str]   = None
+    description:  Optional[str]   = None
+    amount:       Optional[float] = Field(None, gt=0)
+    recurrence:   Optional[str]   = Field(None, pattern="^(one_time|recurring)$")
+    reference:    Optional[str]   = None
+
+
+@router.get("/expenses")
+def list_expenses():
+    try:
+        return sb.list_expenses()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/expenses", status_code=201)
+def create_expense(body: ExpenseIn):
+    try:
+        return sb.create_expense(
+            expense_date = body.expense_date,
+            description  = body.description,
+            amount       = body.amount,
+            recurrence   = body.recurrence,
+            reference    = body.reference or "",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.patch("/expenses/{expense_id}")
+def update_expense(expense_id: int, body: ExpensePatch):
+    fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not fields:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    try:
+        return sb.update_expense(expense_id, **fields)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.delete("/expenses/{expense_id}", status_code=204)
+def delete_expense(expense_id: int):
+    try:
+        sb.delete_expense(expense_id)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

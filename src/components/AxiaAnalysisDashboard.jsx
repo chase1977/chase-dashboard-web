@@ -60,6 +60,13 @@ const GRID = { stroke:'#1E3A5F', strokeDasharray:'3 3' }
 const fmt = (n, dp=2) =>
   n == null ? '—' : Number(n).toLocaleString('en-GB', { minimumFractionDigits:dp, maximumFractionDigits:dp })
 
+// UK convention: DD-MM-YYYY — backend sends plain YYYY-MM-DD date strings
+const fmtDate = d => {
+  if (!d) return '—'
+  const m = String(d).match(/^(\d{4})-(\d{2})-(\d{2})/)
+  return m ? `${m[3]}-${m[2]}-${m[1]}` : d
+}
+
 const pnlColor  = n => n == null ? C.muted : n >= 0 ? C.pos : C.neg
 const ccyColor  = c => CCY_COLOR[c] || C.accent
 const instColor = i => INST_PALETTE[i % INST_PALETTE.length]
@@ -679,7 +686,7 @@ export default function AxiaAnalysisDashboard({
           <div style={{ display:'flex', gap:20, fontSize:13, color:C.muted, marginTop:6, flexWrap:'wrap' }}>
             <span>Trader: <span style={{ color:C.accent, fontWeight:600 }}>{trader}</span></span>
             <span>Account: <span style={{ color:C.accent, fontWeight:600 }}>{account}</span></span>
-            <span>Period: <span style={{ color:C.dim }}>{data.date_range.from} → {data.date_range.to}</span></span>
+            <span>Period: <span style={{ color:C.dim }}>{fmtDate(data.date_range.from)} → {fmtDate(data.date_range.to)}</span></span>
             <span style={{ color:C.dim }}>{data.date_range.trading_days} trading day{data.date_range.trading_days!==1?'s':''}</span>
           </div>
         </div>
@@ -759,7 +766,7 @@ export default function AxiaAnalysisDashboard({
       <div style={{ display:'flex', gap:12, marginBottom:20, flexWrap:'wrap' }}>
         <KpiCard label="Instruments" value={data.summary.total_instruments} sub={data.summary.currencies.join(' · ')} />
         <KpiCard label="Total Lots"  value={fmt(totalLots,0)} sub={`${fmt(data.summary.total_long_lots,0)} long  ·  ${fmt(data.summary.total_short_lots,0)} short`} />
-        <KpiCard label="Trading Days" value={data.date_range.trading_days} sub={`${data.date_range.from} – ${data.date_range.to}`} />
+        <KpiCard label="Trading Days" value={data.date_range.trading_days} sub={`${fmtDate(data.date_range.from)} – ${fmtDate(data.date_range.to)}`} />
         <KpiCard label="Best Instrument"  value={bestAsset?.instrument}  sub={`${fmt(bestAsset?.net_pnl)} ${gbpMode ? 'GBP' : bestAsset?.currency}`}  color={C.pos} />
         <KpiCard label="Worst Instrument" value={worstAsset?.instrument} sub={`${fmt(worstAsset?.net_pnl)} ${gbpMode ? 'GBP' : worstAsset?.currency}`} color={C.neg} />
         <KpiCard label={gbpMode ? 'Total Comms (GBP)' : 'Total Commissions'} value={fmt(activeData.commission_breakdown.total)} sub="broker + exchange + NFA" color={C.warn} />

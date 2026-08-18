@@ -15,13 +15,13 @@
  *   onSaved  {function}   called after any mutation so parent can refetch
  */
 
-import { useState, useRef }    from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { X, Plus, Pencil, Trash2, Check, XCircle } from 'lucide-react'
 import {
   fetchPods, createPod, updatePod, deletePod,
   fetchStrategies, createStrategy, updateStrategy, deleteStrategy,
-  fetchAccountIds, fetchNetDeployed,
+  fetchAccountIds, fetchNetDeployed, fetchAxiaClients,
 } from '../services/api.js'
 import ConfirmModal from './ConfirmModal.jsx'
 
@@ -47,12 +47,17 @@ function todayISO() {
   return new Date().toISOString().slice(0, 10)
 }
 
+// UK convention: DD-MM-YYYY — Supabase sends plain YYYY-MM-DD date strings
+function fmtDate(d) {
+  if (!d) return '—'
+  const m = String(d).match(/^(\d{4})-(\d{2})-(\d{2})/)
+  return m ? `${m[3]}-${m[2]}-${m[1]}` : d
+}
+
 function fmtMoney(v) {
   if (v == null) return '—'
   const abs = Math.abs(v)
-  if (abs >= 999_950) return `£${(abs / 1_000_000).toFixed(2)}M`
-  if (abs >= 1_000)   return `£${(abs / 1_000).toFixed(2)}K`
-  return `£${abs.toFixed(2)}`
+  return `£${abs.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
 // Shared input style
@@ -256,11 +261,19 @@ function StrategyForm({ initial, pods, onSave, onCancel, saving, error }) {
     initial?.account_id != null ? String(initial.account_id) : ''
   )
   const [brokerageAccount, setBrokerageAccount] = useState(initial?.brokerage_account ?? '')
+  const [axiaClientId,     setAxiaClientId]     = useState(initial?.axia_client_id ?? '')
 
   // ── Live AccountIds from user_accounts_equity ──
   const { data: accountIds = [], isLoading: loadingAccIds } = useQuery({
     queryKey:  ['account_ids'],
     queryFn:   fetchAccountIds,
+    staleTime: 60_000,
+  })
+
+  // ── AXIA clients — broker-statement NLV tracking, GBP only ──
+  const { data: axiaClients = [], isLoading: loadingAxiaClients } = useQuery({
+    queryKey:  ['axia_clients'],
+    queryFn:   fetchAxiaClients,
     staleTime: 60_000,
   })
 
@@ -272,9 +285,10 @@ function StrategyForm({ initial, pods, onSave, onCancel, saving, error }) {
   })
 
   const computedInitial  = brokerageAccount ? (netDeployed[brokerageAccount] ?? null) : null
-  // Auto mode = brokerage account selected → initial auto-computed from transfers
-  // Manual mode = no brokerage account → admin types in the amount (e.g. News1 £16K external)
-  const isAutoMode = !!brokerageAccount
+  // Auto mode = brokerage account OR AXIA client selected → initial auto-computed
+  // (from transfers, or from that AXIA client's first equity entry) — manual
+  // Initial Investment only applies when neither is set.
+  const isAutoMode = !!brokerageAccount || !!axiaClientId
 
   function handleSubmit(e) {
     e.preventDefault()
@@ -289,6 +303,7 @@ function StrategyForm({ initial, pods, onSave, onCancel, saving, error }) {
       status,
       notes,
       brokerage_account:  brokerageAccount || null,
+      axia_client_id:     axiaClientId || null,
       ...(accountId !== '' ? { account_id: parseInt(accountId, 10) } : {}),
     })
   }
@@ -330,7 +345,7 @@ function StrategyForm({ initial, pods, onSave, onCancel, saving, error }) {
               <option key={a} value={a}>{a}</option>
             ))}
           </select>
-          {isAutoMode && (
+          {!!brokerageAccount && (
             <div style={{ marginTop: 4, fontSize: 10, color: computedInitial != null ? '#34D399' : '#475569' }}>
               {computedInitial != null
                 ? `Auto: ${fmtMoney(computedInitial)} net deployed`
@@ -381,6 +396,32 @@ function StrategyForm({ initial, pods, onSave, onCancel, saving, error }) {
             : `${accountIds.length} account${accountIds.length !== 1 ? 's' : ''} found in Supabase`}
         </span>
       </FormField>
+
+      {/* AXIA Client — broker-statement NLV tracking, GBP only */}
+      <div style={{ marginTop: 10 }}>
+        <FormField label="AXIA Client / Account">
+          <select
+            style={INPUT}
+            value={axiaClientId}
+            onChange={e => setAxiaClientId(e.target.value)}
+            disabled={loadingAxiaClients}
+          >
+            <option value="">— None —</option>
+            {axiaClients.map(c => (
+              <option key={c.id} value={c.id}>
+                {c.client} / {c.account}{c.label ? ` — ${c.label}` : ''}
+              </option>
+            ))}
+          </select>
+          <span style={{ fontSize: 10, color: '#334155', marginTop: 3, display: 'block' }}>
+            {loadingAxiaClients
+              ? 'Loading AXIA clients…'
+              : axiaClients.length === 0
+                ? 'No AXIA clients yet — add one on the AXIA Daily Equity tab'
+                : 'Links this strategy to daily equity entered on the AXIA tab. AUM/PnL then computed from that equity, not manual Initial Investment.'}
+          </span>
+        </FormField>
+      </div>
 
       <div style={{ marginTop: 10 }}>
         <FormField label="Notes (optional)">
@@ -435,6 +476,11 @@ function PodsTab({ queryClient, onSaved }) {
   const [deleteId, setDeleteId] = useState(null)
   const [deleting, setDeleting] = useState(false)
 
+  const formScrollRef = useRef(null)
+  useEffect(() => {
+    if (mode?.edit) formScrollRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, [mode])
+
   async function handleSave(body) {
     setSaving(true); setFormErr(null)
     try {
@@ -485,7 +531,7 @@ function PodsTab({ queryClient, onSaved }) {
 
       {/* Form */}
       {mode && (
-        <div style={{
+        <div ref={mode?.edit ? formScrollRef : null} style={{
           background: '#111C2B', border: '1px solid #1E3A5F',
           borderRadius: 10, padding: 16, marginBottom: 14,
         }}>
@@ -559,7 +605,7 @@ function PodsTab({ queryClient, onSaved }) {
               </span>
 
               {/* Date */}
-              <span style={{ fontSize: 11, color: '#64748B' }}>{pod.date_created}</span>
+              <span style={{ fontSize: 11, color: '#64748B' }}>{fmtDate(pod.date_created)}</span>
 
               {/* Status */}
               <span style={{
@@ -633,12 +679,23 @@ function StrategiesTab({ queryClient, onSaved }) {
     queryFn:   fetchNetDeployed,
     staleTime: 60_000,
   })
+  const { data: axiaClients = [] } = useQuery({
+    queryKey:  ['axia_clients'],
+    queryFn:   fetchAxiaClients,
+    staleTime: 60_000,
+  })
+  const axiaClientMap = Object.fromEntries(axiaClients.map(c => [c.id, c]))
 
   const [mode,     setMode]     = useState(null)
   const [saving,   setSaving]   = useState(false)
   const [formErr,  setFormErr]  = useState(null)
   const [deleteId, setDeleteId] = useState(null)
   const [deleting, setDeleting] = useState(false)
+
+  const formScrollRef = useRef(null)
+  useEffect(() => {
+    if (mode?.edit) formScrollRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, [mode])
 
   async function handleSave(body) {
     setSaving(true); setFormErr(null)
@@ -691,7 +748,7 @@ function StrategiesTab({ queryClient, onSaved }) {
 
       {/* Form */}
       {mode && (
-        <div style={{
+        <div ref={mode?.edit ? formScrollRef : null} style={{
           background: '#111C2B', border: '1px solid #1E3A5F',
           borderRadius: 10, padding: 16, marginBottom: 14,
         }}>
@@ -738,6 +795,7 @@ function StrategiesTab({ queryClient, onSaved }) {
             const pod         = podMap[strat.pod_id]
             const acct        = strat.brokerage_account
             const netAmt      = acct ? (netDeployed[acct] ?? null) : null
+            const axiaClient  = strat.axia_client_id ? axiaClientMap[strat.axia_client_id] : null
             return (
               <div
                 key={strat.id}
@@ -782,7 +840,7 @@ function StrategiesTab({ queryClient, onSaved }) {
                   <span style={{ fontSize: 11, color: '#334155' }}>—</span>
                 )}
 
-                {/* Brokerage account + computed net deployed */}
+                {/* Brokerage account / AXIA client + computed net */}
                 <div>
                   {acct ? (
                     <>
@@ -797,13 +855,25 @@ function StrategiesTab({ queryClient, onSaved }) {
                         {netAmt != null ? fmtMoney(netAmt) : '—'}
                       </div>
                     </>
+                  ) : axiaClient ? (
+                    <>
+                      <span style={{
+                        fontSize: 10, fontWeight: 600, color: '#c084fc',
+                        letterSpacing: '0.3px',
+                      }}>
+                        AXIA · {axiaClient.client}/{axiaClient.account}
+                      </span>
+                      <div style={{ fontSize: 10, color: '#475569', marginTop: 1 }}>
+                        Daily equity feed
+                      </div>
+                    </>
                   ) : (
                     <span style={{ fontSize: 11, color: '#334155' }}>—</span>
                   )}
                 </div>
 
                 {/* Date */}
-                <span style={{ fontSize: 11, color: '#64748B' }}>{strat.date_created}</span>
+                <span style={{ fontSize: 11, color: '#64748B' }}>{fmtDate(strat.date_created)}</span>
 
                 {/* Status */}
                 <span style={{

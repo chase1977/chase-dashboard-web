@@ -24,6 +24,7 @@ import {
   createCapitalEvent, updateCapitalEvent, deleteCapitalEvent,
   fetchInternalTransfers, createInternalTransfer, updateInternalTransfer, deleteInternalTransfer,
   fetchMiscEvents, createMiscEvent, updateMiscEvent, deleteMiscEvent,
+  fetchExpenses, createExpense, updateExpense, deleteExpense,
 } from '../services/api.js'
 import ConfirmModal from './ConfirmModal.jsx'
 
@@ -46,17 +47,13 @@ function formatCurrency(val) {
   if (val === null || val === undefined) return '—'
   const abs  = Math.abs(val)
   const sign = val < 0 ? '-' : val > 0 ? '+' : ''
-  if (abs >= 999_950) return `${sign}£${(abs / 1_000_000).toFixed(2)}M`
-  if (abs >= 1_000)   return `${sign}£${(abs / 1_000).toFixed(2)}K`
-  return `${sign}£${abs.toFixed(2)}`
+  return `${sign}£${abs.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
 function formatCurrencyAbs(val) {
   if (val === null || val === undefined) return '—'
   const abs = Math.abs(val)
-  if (abs >= 999_950) return `£${(abs / 1_000_000).toFixed(2)}M`
-  if (abs >= 1_000)   return `£${(abs / 1_000).toFixed(2)}K`
-  return `£${abs.toFixed(2)}`
+  return `£${abs.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
 function fmtPct(val, decimals = 2) {
@@ -66,16 +63,18 @@ function fmtPct(val, decimals = 2) {
   return `${sign}${pct.toFixed(decimals)}%`
 }
 
+// UK convention: DD-MM-YYYY
 function fmtDate(str) {
   if (!str) return '—'
   const d = new Date(str + 'T00:00:00')
-  return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+  return d.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }).replace(/\//g, '-')
 }
 
+// Compact axis-tick form — DD-MM, no year (space-constrained chart ticks only)
 function fmtTimestamp(str) {
   if (!str) return '—'
   const d = new Date(str)
-  return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })
+  return d.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit' }).replace(/\//g, '-')
 }
 
 // ---------------------------------------------------------------------------
@@ -217,20 +216,56 @@ function AmountInput({ value, onChange, style, required }) {
   )
 }
 
-// Reusable hidden date picker widget
+// Typable date field — DD-MM-YYYY, auto-inserts dashes while typing, validates
+// on blur. Calendar-icon picker still available as an alternative to typing.
+// `value`/`onChange` remain ISO "YYYY-MM-DD" (what the backend expects) —
+// this component only changes what the user sees and types.
 function DateField({ value, onChange, label }) {
   const ref = useRef(null)
+  const [text, setText] = useState(value ? isoToDDMMYYYY(value) : '')
+
+  // Keep display text in sync when value changes externally (e.g. picker, edit-open)
+  useEffect(() => { setText(value ? isoToDDMMYYYY(value) : '') }, [value])
+
+  function handleTextChange(e) {
+    let digits = e.target.value.replace(/\D/g, '').slice(0, 8)
+    let out = digits
+    if (digits.length > 4) out = `${digits.slice(0, 2)}-${digits.slice(2, 4)}-${digits.slice(4)}`
+    else if (digits.length > 2) out = `${digits.slice(0, 2)}-${digits.slice(2)}`
+    setText(out)
+  }
+
+  function commit() {
+    const m = text.trim().match(/^(\d{2})-(\d{2})-(\d{4})$/)
+    if (m) {
+      const [, dd, mm, yyyy] = m
+      const iso = `${yyyy}-${mm}-${dd}`
+      const d = new Date(iso + 'T00:00:00')
+      const valid = !isNaN(d.getTime()) && d.getUTCDate() === Number(dd) && (d.getUTCMonth() + 1) === Number(mm)
+      if (valid) { onChange(iso); return }
+    }
+    // Invalid or incomplete — snap back to last known-good value
+    setText(value ? isoToDDMMYYYY(value) : '')
+  }
+
   return (
     <div>
       <label style={{ fontSize: 10, color: '#64748B', textTransform: 'uppercase',
         letterSpacing: '0.5px', display: 'block', marginBottom: 5 }}>{label ?? 'Date (DD-MM-YYYY)'}</label>
       <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
-        <span style={{ flex: 1, ...INPUT_STYLE, paddingRight: 34, display: 'block',
-          color: value ? '#E2E8F0' : '#475569' }}>
-          {value ? isoToDDMMYYYY(value) : 'DD-MM-YYYY'}
-        </span>
+        <input
+          type="text"
+          inputMode="numeric"
+          placeholder="DD-MM-YYYY"
+          value={text}
+          onChange={handleTextChange}
+          onBlur={commit}
+          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); commit() } }}
+          style={{ flex: 1, ...INPUT_STYLE, paddingRight: 34 }}
+        />
         <div style={{ position: 'absolute', right: 8 }}>
-          <input ref={ref} type="date" value={value} onChange={e => onChange(e.target.value)}
+          <input ref={ref} type="date" value={value}
+            onChange={e => { onChange(e.target.value); setText(isoToDDMMYYYY(e.target.value)) }}
             style={{ position: 'absolute', opacity: 0, width: 0, height: 0, pointerEvents: 'none' }} />
           <button type="button" onClick={() => ref.current?.showPicker()}
             style={{ background: 'none', border: 'none', cursor: 'pointer',
@@ -244,11 +279,13 @@ function DateField({ value, onChange, label }) {
 }
 
 // Row with edit + delete icons
+// Icons stacked vertically (not side by side) — reclaims the dead space to
+// the right of the date/amount column instead of stretching the card wider.
 function EventRow({ children, onEdit, onDelete }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+    <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
       <div style={{ flex: 1, minWidth: 0 }}>{children}</div>
-      <div style={{ display: 'flex', gap: 4, flexShrink: 0, marginLeft: 8 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flexShrink: 0 }}>
         <button onClick={onEdit}
           style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 3,
             borderRadius: 5, display: 'flex', color: '#475569' }}
@@ -279,6 +316,7 @@ function CapitalEventsTab({ data, queryClient }) {
   const [formType,   setFormType]   = useState('deposit')
   const [formDate,   setFormDate]   = useState(todayISO())
   const [formAmount, setFormAmount] = useState('')
+  const [formRef,    setFormRef]    = useState('')
   const [formNotes,  setFormNotes]  = useState('')
   const [formError,  setFormError]  = useState(null)
   const [submitting, setSubmitting] = useState(false)
@@ -287,6 +325,7 @@ function CapitalEventsTab({ data, queryClient }) {
   const [editType,   setEditType]   = useState('deposit')
   const [editDate,   setEditDate]   = useState('')
   const [editAmount, setEditAmount] = useState('')
+  const [editRef,    setEditRef]    = useState('')
   const [editNotes,  setEditNotes]  = useState('')
   const [editError,  setEditError]  = useState(null)
   const [editSaving, setEditSaving] = useState(false)
@@ -294,9 +333,14 @@ function CapitalEventsTab({ data, queryClient }) {
   const [deletingId, setDeletingId] = useState(null)
   const [deleting,   setDeleting]   = useState(false)
 
+  const formScrollRef = useRef(null)
+  useEffect(() => {
+    if (editEv) formScrollRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, [editEv])
+
   function openAdd(type) {
     setEditEv(null); setFormType(type); setFormDate(todayISO())
-    setFormAmount(''); setFormNotes(''); setFormError(null); setShowForm(true)
+    setFormAmount(''); setFormRef(''); setFormNotes(''); setFormError(null); setShowForm(true)
   }
 
   async function handleAdd(e) {
@@ -307,7 +351,7 @@ function CapitalEventsTab({ data, queryClient }) {
     setSubmitting(true)
     try {
       await createCapitalEvent({ event_date: formDate, event_type: formType,
-        amount: parseFloat(amt.toFixed(2)), notes: formNotes.trim() })
+        amount: parseFloat(amt.toFixed(2)), notes: formNotes.trim(), reference: formRef.trim() })
       await queryClient.invalidateQueries({ queryKey: ['fund_ledger'] })
       setShowForm(false)
     } catch (err) { setFormError(err.message ?? 'Failed') }
@@ -317,7 +361,7 @@ function CapitalEventsTab({ data, queryClient }) {
   function openEdit(ev) {
     setShowForm(false); setEditEv(ev); setEditType(ev.event_type)
     setEditDate(ev.date); setEditAmount(String(Math.abs(ev.amount)))
-    setEditNotes(ev.notes ?? ''); setEditError(null)
+    setEditRef(ev.reference ?? ''); setEditNotes(ev.notes ?? ''); setEditError(null)
   }
 
   async function handleUpdate(e) {
@@ -329,7 +373,7 @@ function CapitalEventsTab({ data, queryClient }) {
     try {
       await updateCapitalEvent(editEv.event_id ?? editEv.id, {
         event_date: editDate, event_type: editType,
-        amount: parseFloat(amt.toFixed(2)), notes: editNotes.trim(),
+        amount: parseFloat(amt.toFixed(2)), notes: editNotes.trim(), reference: editRef.trim(),
       })
       await queryClient.invalidateQueries({ queryKey: ['fund_ledger'] })
       setEditEv(null)
@@ -353,6 +397,8 @@ function CapitalEventsTab({ data, queryClient }) {
     const setDate   = isEdit ? setEditDate   : setFormDate
     const amount    = isEdit ? editAmount : formAmount
     const setAmount = isEdit ? setEditAmount : setFormAmount
+    const reference = isEdit ? editRef    : formRef
+    const setReference = isEdit ? setEditRef : setFormRef
     const notes     = isEdit ? editNotes  : formNotes
     const setNotes  = isEdit ? setEditNotes  : setFormNotes
     const error     = isEdit ? editError  : formError
@@ -361,7 +407,7 @@ function CapitalEventsTab({ data, queryClient }) {
     const onCancel  = isEdit ? () => setEditEv(null) : () => setShowForm(false)
 
     return (
-      <form onSubmit={onSubmit} style={{
+      <form ref={isEdit ? formScrollRef : null} onSubmit={onSubmit} style={{
         background: isDeposit ? 'rgba(52,211,153,0.06)' : 'rgba(248,113,113,0.06)',
         border: `1px solid ${isDeposit ? 'rgba(52,211,153,0.2)' : 'rgba(248,113,113,0.2)'}`,
         borderRadius: 10, padding: '14px 16px', marginBottom: 14,
@@ -391,6 +437,12 @@ function CapitalEventsTab({ data, queryClient }) {
               letterSpacing: '0.5px', display: 'block', marginBottom: 5 }}>Amount (£)</label>
             <AmountInput value={amount} onChange={setAmount} style={INPUT_STYLE} required />
           </div>
+        </div>
+        <div style={{ marginBottom: 12 }}>
+          <label style={{ fontSize: 10, color: '#64748B', textTransform: 'uppercase',
+            letterSpacing: '0.5px', display: 'block', marginBottom: 5 }}>Reference (optional)</label>
+          <input type="text" placeholder="e.g. statement ref / txn ID"
+            value={reference} onChange={e => setReference(e.target.value)} style={INPUT_STYLE} />
         </div>
         <div style={{ marginBottom: 12 }}>
           <label style={{ fontSize: 10, color: '#64748B', textTransform: 'uppercase',
@@ -465,23 +517,38 @@ function CapitalEventsTab({ data, queryClient }) {
                   borderRadius: 10, padding: '9px 12px',
                 }}>
                   <EventRow onEdit={() => openEdit(ev)} onDelete={() => setDeletingId(ev.event_id ?? ev.id)}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <div style={{ width: 24, height: 24, borderRadius: 6, display: 'flex', alignItems: 'center',
-                        justifyContent: 'center', flexShrink: 0,
-                        background: isD ? 'rgba(52,211,153,0.2)' : 'rgba(248,113,113,0.2)' }}>
-                        {isD ? <ArrowDownLeft size={12} color="#34d399" /> : <ArrowUpRight size={12} color="#f87171" />}
+                    <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
+                      {/* Left: icon + title + notes/reference */}
+                      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, minWidth: 0, flex: 1 }}>
+                        <div style={{ width: 24, height: 24, borderRadius: 6, display: 'flex', alignItems: 'center',
+                          justifyContent: 'center', flexShrink: 0,
+                          background: isD ? 'rgba(52,211,153,0.2)' : 'rgba(248,113,113,0.2)' }}>
+                          {isD ? <ArrowDownLeft size={12} color="#34d399" /> : <ArrowUpRight size={12} color="#f87171" />}
+                        </div>
+                        <div style={{ minWidth: 0 }}>
+                          <span style={{ fontSize: 12, fontWeight: 600, color: '#E2E8F0' }}>
+                            {isD ? 'Deposit' : 'Withdrawal'}
+                          </span>
+                          {(ev.notes || ev.reference) && (
+                            <div style={{ marginTop: 3, display: 'flex', flexDirection: 'column', gap: 1 }}>
+                              {ev.notes && (
+                                <span style={{ fontSize: 10, color: '#64748B' }}>{ev.notes}</span>
+                              )}
+                              {ev.reference && (
+                                <span style={{ fontSize: 10, color: '#475569' }}>Ref: {ev.reference}</span>
+                              )}
+                            </div>
+                          )}
+                        </div>
                       </div>
-                      <div>
-                        <span style={{ fontSize: 12, fontWeight: 600, color: '#E2E8F0' }}>
-                          {isD ? 'Deposit' : 'Withdrawal'}
-                        </span>
-                        {ev.notes && <span style={{ fontSize: 10, color: '#475569', marginLeft: 6 }}>{ev.notes}</span>}
+                      {/* Right: date (bold, top) / amount (below) — stacked to fill vertical space */}
+                      <div style={{ flexShrink: 0, textAlign: 'right' }}>
+                        <div style={{ fontSize: 11, fontWeight: 700, color: '#CBD5E1' }}>{fmtDate(ev.date)}</div>
+                        <div style={{ fontSize: 12, fontWeight: 700, fontVariantNumeric: 'tabular-nums',
+                          color: isD ? '#34d399' : '#f87171', marginTop: 3 }}>
+                          {isD ? '+' : '-'}{formatCurrencyAbs(ev.amount)}
+                        </div>
                       </div>
-                      <span style={{ marginLeft: 'auto', fontSize: 11, color: '#475569' }}>{ev.date}</span>
-                      <span style={{ fontSize: 12, fontWeight: 700, fontVariantNumeric: 'tabular-nums',
-                        color: isD ? '#34d399' : '#f87171', minWidth: 70, textAlign: 'right' }}>
-                        {isD ? '+' : '-'}{formatCurrencyAbs(ev.amount)}
-                      </span>
                     </div>
                   </EventRow>
                 </div>
@@ -537,6 +604,11 @@ function InternalTransfersTab({ queryClient, capitalData }) {
 
   const [deletingId,   setDeletingId]   = useState(null)
   const [deleting,     setDeleting]     = useState(false)
+
+  const formScrollRef = useRef(null)
+  useEffect(() => {
+    if (editRec) formScrollRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, [editRec])
 
   function openAdd() {
     setEditRec(null); setFormDate(todayISO()); setFormFrom('Wallet'); setFormTo('Chase1')
@@ -604,7 +676,7 @@ function InternalTransfersTab({ queryClient, capitalData }) {
     const onCancel = isEdit ? () => setEditRec(null) : () => setShowForm(false)
 
     return (
-      <form onSubmit={onSubmit} style={{
+      <form ref={isEdit ? formScrollRef : null} onSubmit={onSubmit} style={{
         background: 'rgba(56,189,248,0.06)', border: '1px solid rgba(56,189,248,0.2)',
         borderRadius: 10, padding: '14px 16px', marginBottom: 14,
       }}>
@@ -775,6 +847,11 @@ function MiscellaneousTab({ queryClient }) {
   const [deletingId, setDeletingId] = useState(null)
   const [deleting,   setDeleting]   = useState(false)
 
+  const formScrollRef = useRef(null)
+  useEffect(() => {
+    if (editRec) formScrollRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, [editRec])
+
   function openAdd() {
     setEditRec(null); setFormDate(todayISO()); setFormEType('Rebate'); setFormDir('credit')
     setFormAmount(''); setFormNotes(''); setFormError(null); setShowForm(true)
@@ -839,7 +916,7 @@ function MiscellaneousTab({ queryClient }) {
     const isCredit = dir === 'credit'
 
     return (
-      <form onSubmit={onSubmit} style={{
+      <form ref={isEdit ? formScrollRef : null} onSubmit={onSubmit} style={{
         background: isCredit ? 'rgba(168,85,247,0.06)' : 'rgba(245,158,11,0.06)',
         border: `1px solid ${isCredit ? 'rgba(168,85,247,0.2)' : 'rgba(245,158,11,0.2)'}`,
         borderRadius: 10, padding: '14px 16px', marginBottom: 14,
@@ -982,7 +1059,260 @@ function MiscellaneousTab({ queryClient }) {
   )
 }
 
-// ── LedgerModal — 3-tab shell ─────────────────────────────────────────────
+// ── Tab 4: Expenses — tracked record only, no calc impact ────────────────
+
+function ExpensesTab({ queryClient }) {
+  const { data: expenseList = [], isLoading } = useQuery({
+    queryKey: ['expenses'],
+    queryFn:  fetchExpenses,
+    staleTime: 30_000,
+  })
+
+  const [showForm,     setShowForm]     = useState(false)
+  const [formDate,     setFormDate]     = useState(todayISO())
+  const [formDesc,     setFormDesc]     = useState('')
+  const [formAmount,   setFormAmount]   = useState('')
+  const [formRef,      setFormRef]      = useState('')
+  const [formRecur,    setFormRecur]    = useState('one_time')
+  const [formError,    setFormError]    = useState(null)
+  const [submitting,   setSubmitting]   = useState(false)
+
+  const [editRec,      setEditRec]      = useState(null)
+  const [editDate,     setEditDate]     = useState('')
+  const [editDesc,     setEditDesc]     = useState('')
+  const [editAmount,   setEditAmount]   = useState('')
+  const [editRef,      setEditRef]      = useState('')
+  const [editRecur,    setEditRecur]    = useState('one_time')
+  const [editError,    setEditError]    = useState(null)
+  const [editSaving,   setEditSaving]   = useState(false)
+
+  const [deletingId,   setDeletingId]   = useState(null)
+  const [deleting,     setDeleting]     = useState(false)
+
+  const formScrollRef = useRef(null)
+  useEffect(() => {
+    if (editRec) formScrollRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, [editRec])
+
+  function openAdd() {
+    setEditRec(null); setFormDate(todayISO()); setFormDesc(''); setFormAmount('')
+    setFormRef(''); setFormRecur('one_time'); setFormError(null); setShowForm(true)
+  }
+
+  function openEdit(r) {
+    setShowForm(false); setEditRec(r); setEditDate(r.expense_date); setEditDesc(r.description)
+    setEditAmount(String(r.amount)); setEditRef(r.reference ?? ''); setEditRecur(r.recurrence ?? 'one_time')
+    setEditError(null)
+  }
+
+  async function handleAdd(e) {
+    e.preventDefault(); setFormError(null)
+    const amt = parseFloat(formAmount)
+    if (isNaN(amt) || amt <= 0) return setFormError('Enter valid amount > 0')
+    if (!formDesc.trim()) return setFormError('Enter expense description')
+    if (!formDate) return setFormError('Select a date')
+    setSubmitting(true)
+    try {
+      await createExpense({ expense_date: formDate, description: formDesc.trim(),
+        amount: parseFloat(amt.toFixed(2)), recurrence: formRecur, reference: formRef.trim() })
+      await queryClient.invalidateQueries({ queryKey: ['expenses'] })
+      setShowForm(false)
+    } catch (err) { setFormError(err.message ?? 'Failed') }
+    finally { setSubmitting(false) }
+  }
+
+  async function handleUpdate(e) {
+    e.preventDefault(); setEditError(null)
+    const amt = parseFloat(editAmount)
+    if (isNaN(amt) || amt <= 0) return setEditError('Enter valid amount > 0')
+    if (!editDesc.trim()) return setEditError('Enter expense description')
+    if (!editDate) return setEditError('Select a date')
+    setEditSaving(true)
+    try {
+      await updateExpense(editRec.id, { expense_date: editDate, description: editDesc.trim(),
+        amount: parseFloat(amt.toFixed(2)), recurrence: editRecur, reference: editRef.trim() })
+      await queryClient.invalidateQueries({ queryKey: ['expenses'] })
+      setEditRec(null)
+    } catch (err) { setEditError(err.message ?? 'Failed') }
+    finally { setEditSaving(false) }
+  }
+
+  async function handleDelete() {
+    setDeleting(true)
+    try {
+      await deleteExpense(deletingId)
+      await queryClient.invalidateQueries({ queryKey: ['expenses'] })
+    } finally { setDeleting(false); setDeletingId(null) }
+  }
+
+  function renderExpenseForm(isEdit) {
+    const date    = isEdit ? editDate   : formDate
+    const desc    = isEdit ? editDesc   : formDesc
+    const amount  = isEdit ? editAmount : formAmount
+    const ref     = isEdit ? editRef    : formRef
+    const recur   = isEdit ? editRecur  : formRecur
+    const error   = isEdit ? editError  : formError
+    const saving  = isEdit ? editSaving : submitting
+    const setDate = isEdit ? setEditDate   : setFormDate
+    const setDsc  = isEdit ? setEditDesc   : setFormDesc
+    const setAmt  = isEdit ? setEditAmount : setFormAmount
+    const setRef  = isEdit ? setEditRef    : setFormRef
+    const setRec  = isEdit ? setEditRecur  : setFormRecur
+    const onSubmit = isEdit ? handleUpdate : handleAdd
+    const onCancel = isEdit ? () => setEditRec(null) : () => setShowForm(false)
+
+    return (
+      <form ref={isEdit ? formScrollRef : null} onSubmit={onSubmit} style={{
+        background: 'rgba(56,189,248,0.06)', border: '1px solid rgba(56,189,248,0.2)',
+        borderRadius: 10, padding: '14px 16px', marginBottom: 14,
+      }}>
+        <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
+          letterSpacing: '0.7px', color: '#38bdf8', display: 'block', marginBottom: 10 }}>
+          {isEdit ? 'Edit Expense' : 'New Expense'}
+        </span>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10, marginBottom: 10 }}>
+          <DateField value={date} onChange={setDate} />
+          <div>
+            <label style={{ fontSize: 10, color: '#64748B', textTransform: 'uppercase',
+              letterSpacing: '0.5px', display: 'block', marginBottom: 5 }}>Amount (£)</label>
+            <AmountInput value={amount} onChange={setAmt} style={INPUT_STYLE} required />
+          </div>
+          <div>
+            <label style={{ fontSize: 10, color: '#64748B', textTransform: 'uppercase',
+              letterSpacing: '0.5px', display: 'block', marginBottom: 5 }}>Recurrence</label>
+            <div style={{ display: 'flex', gap: 6 }}>
+              {[{ id: 'one_time', label: 'One-time' }, { id: 'recurring', label: 'Recurring' }].map(o => (
+                <button key={o.id} type="button" onClick={() => setRec(o.id)} style={{
+                  flex: 1, padding: '7px 0', borderRadius: 7, border: 'none', fontSize: 11,
+                  fontWeight: 600, cursor: 'pointer',
+                  background: recur===o.id ? 'rgba(56,189,248,0.3)' : 'rgba(71,85,105,0.3)',
+                  color: recur===o.id ? '#38bdf8' : '#64748B',
+                }}>{o.label}</button>
+              ))}
+            </div>
+          </div>
+        </div>
+        <div style={{ marginBottom: 10 }}>
+          <label style={{ fontSize: 10, color: '#64748B', textTransform: 'uppercase',
+            letterSpacing: '0.5px', display: 'block', marginBottom: 5 }}>Expense</label>
+          <input type="text" value={desc} onChange={e => setDsc(e.target.value)}
+            placeholder="e.g. Data feed subscription" style={INPUT_STYLE} required />
+        </div>
+        <div style={{ marginBottom: 12 }}>
+          <label style={{ fontSize: 10, color: '#64748B', textTransform: 'uppercase',
+            letterSpacing: '0.5px', display: 'block', marginBottom: 5 }}>Reference (optional)</label>
+          <input type="text" value={ref} onChange={e => setRef(e.target.value)}
+            placeholder="e.g. statement/transaction reference" style={INPUT_STYLE} />
+        </div>
+        {error && <p style={{ fontSize: 11, color: '#f87171', marginBottom: 10 }}>{error}</p>}
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button type="submit" disabled={saving} style={{ ...BTN_SM_STYLE,
+            background: '#0284c7', opacity: saving ? 0.65 : 1 }}>
+            {saving ? 'Saving…' : isEdit ? 'Update' : 'Save Expense'}
+          </button>
+          <button type="button" onClick={onCancel} disabled={saving}
+            style={{ ...BTN_SM_STYLE, background: '#374151', opacity: saving ? 0.5 : 1 }}>Cancel</button>
+        </div>
+      </form>
+    )
+  }
+
+  const totalExpenses = expenseList.reduce((s, x) => s + x.amount, 0)
+  const recurringCount = expenseList.filter(x => x.recurrence === 'recurring').length
+
+  return (
+    <>
+      {/* Summary */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10, marginBottom: 14 }}>
+        {[
+          { label: 'Total Expenses', value: formatCurrencyAbs(totalExpenses), color: '#38bdf8' },
+          { label: 'Recurring Items', value: String(recurringCount), color: '#94a3b8' },
+        ].map(s => (
+          <div key={s.label} style={{ background: 'rgba(30,41,59,0.4)', border: '1px solid rgba(51,65,85,0.3)',
+            borderRadius: 10, padding: '10px 14px' }}>
+            <p style={{ fontSize: 10, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.6px', marginBottom: 4 }}>{s.label}</p>
+            <p style={{ fontSize: 15, fontWeight: 700, color: s.color, fontVariantNumeric: 'tabular-nums' }}>{s.value}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* Add button */}
+      {!editRec && (
+        <div style={{ marginBottom: 14 }}>
+          <button onClick={openAdd} style={{ display: 'flex', alignItems: 'center', gap: 6,
+            padding: '7px 12px', borderRadius: 8, cursor: 'pointer', fontSize: 11, fontWeight: 600,
+            background: 'rgba(56,189,248,0.15)', color: '#38bdf8', border: '1px solid rgba(56,189,248,0.25)' }}>
+            <Plus size={12} /> Record Expense
+          </button>
+        </div>
+      )}
+
+      {showForm && !editRec && renderExpenseForm(false)}
+      {editRec && renderExpenseForm(true)}
+
+      {/* List */}
+      <p style={{ fontSize: 10, fontWeight: 600, color: '#475569', textTransform: 'uppercase',
+        letterSpacing: '0.8px', marginBottom: 8 }}>Expense Log</p>
+      {isLoading
+        ? <p style={{ fontSize: 12, color: '#475569', textAlign: 'center', padding: '20px 0' }}>Loading…</p>
+        : expenseList.length === 0
+          ? <p style={{ fontSize: 12, color: '#475569', textAlign: 'center', padding: '20px 0' }}>No expenses recorded</p>
+          : <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {expenseList.map(x => {
+                const isRecurring = x.recurrence === 'recurring'
+                return (
+                  <div key={x.id} style={{
+                    background: 'rgba(56,189,248,0.06)', border: '1px solid rgba(56,189,248,0.18)',
+                    borderRadius: 10, padding: '9px 12px',
+                  }}>
+                    <EventRow onEdit={() => openEdit(x)} onDelete={() => setDeletingId(x.id)}>
+                      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
+                        {/* Left: icon + title + notes/ref */}
+                        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, minWidth: 0, flex: 1 }}>
+                          <div style={{ width: 24, height: 24, borderRadius: 6, display: 'flex', alignItems: 'center',
+                            justifyContent: 'center', flexShrink: 0, background: 'rgba(56,189,248,0.2)' }}>
+                            <span style={{ fontSize: 11, fontWeight: 800, color: '#38bdf8' }}>-</span>
+                          </div>
+                          <div style={{ minWidth: 0 }}>
+                            <span style={{ fontSize: 12, fontWeight: 600, color: '#E2E8F0' }}>{x.description}</span>
+                            <div style={{ marginTop: 3, display: 'flex', flexDirection: 'column', gap: 1 }}>
+                              <span style={{ fontSize: 10, color: '#64748B' }}>
+                                {isRecurring ? 'Recurring' : 'One-time'}
+                              </span>
+                              {x.reference && (
+                                <span style={{ fontSize: 10, color: '#475569' }}>Ref: {x.reference}</span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                        {/* Right: date (bold, top) / amount (below) */}
+                        <div style={{ flexShrink: 0, textAlign: 'right' }}>
+                          <div style={{ fontSize: 11, fontWeight: 700, color: '#CBD5E1' }}>{fmtDate(x.expense_date)}</div>
+                          <div style={{ fontSize: 12, fontWeight: 700, fontVariantNumeric: 'tabular-nums',
+                            color: '#38bdf8', marginTop: 3 }}>
+                            -{formatCurrencyAbs(x.amount)}
+                          </div>
+                        </div>
+                      </div>
+                    </EventRow>
+                  </div>
+                )
+              })}
+            </div>
+      }
+
+      {deletingId != null && (
+        <ConfirmModal
+          title="Delete Expense" message="Permanently delete this expense record?"
+          variant="delete" confirmLabel="Delete"
+          onConfirm={handleDelete} onCancel={() => setDeletingId(null)} loading={deleting}
+        />
+      )}
+    </>
+  )
+}
+
+// ── LedgerModal — 4-tab shell ─────────────────────────────────────────────
 
 function LedgerModal({ data, onClose }) {
   const queryClient = useQueryClient()
@@ -992,6 +1322,7 @@ function LedgerModal({ data, onClose }) {
     { id: 'capital',   label: 'Capital Events',      count: data?.events?.length ?? 0 },
     { id: 'transfers', label: 'Internal Transfers',   count: null },
     { id: 'misc',      label: 'Miscellaneous',        count: null },
+    { id: 'expenses',  label: 'Expenses',             count: null },
   ]
 
   return (
@@ -1029,6 +1360,7 @@ function LedgerModal({ data, onClose }) {
       {activeTab === 'capital'   && <CapitalEventsTab    data={data}         queryClient={queryClient} />}
       {activeTab === 'transfers' && <InternalTransfersTab capitalData={data}  queryClient={queryClient} />}
       {activeTab === 'misc'      && <MiscellaneousTab                        queryClient={queryClient} />}
+      {activeTab === 'expenses'  && <ExpensesTab                             queryClient={queryClient} />}
     </Modal>
   )
 }

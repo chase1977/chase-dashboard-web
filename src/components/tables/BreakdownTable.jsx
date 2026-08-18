@@ -27,9 +27,7 @@ import { ArrowUpDown, ArrowUp, ArrowDown, Search, X } from 'lucide-react'
 function fmtMoney(v) {
   if (v == null) return '—'
   const abs = Math.abs(v), s = v < 0 ? '-' : ''
-  if (abs >= 999_950) return `${s}£${(abs / 1_000_000).toFixed(2)}M`
-  if (abs >= 1_000)   return `${s}£${(abs / 1_000).toFixed(2)}K`
-  return `${s}£${abs.toFixed(2)}`
+  return `${s}£${abs.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
 function fmtPct(v, d = 2) {

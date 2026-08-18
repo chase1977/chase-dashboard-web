@@ -110,8 +110,8 @@ export function fetchCapitalEvents() {
   return get('/api/management/capital-events')
 }
 
-export function createCapitalEvent({ event_date, event_type, amount, notes = '' }) {
-  return _post('/api/management/capital-events', { event_date, event_type, amount, notes })
+export function createCapitalEvent({ event_date, event_type, amount, notes = '', reference = '' }) {
+  return _post('/api/management/capital-events', { event_date, event_type, amount, notes, reference })
 }
 
 export function updateCapitalEvent(id, body) {
@@ -208,4 +208,32 @@ export function updateMiscEvent(id, body) {
 
 export function deleteMiscEvent(id) {
   return _delete(`/api/management/misc-events/${id}`)
+}
+
+// ---------------------------------------------------------------------------
+// Management — Expenses
+// ---------------------------------------------------------------------------
+
+export function fetchExpenses() {
+  return get('/api/management/expenses')
+}
+
+export function createExpense(body) {
+  return _post('/api/management/expenses', body)
+}
+
+export function updateExpense(id, body) {
+  return _patch(`/api/management/expenses/${id}`, body)
+}
+
+export function deleteExpense(id) {
+  return _delete(`/api/management/expenses/${id}`)
+}
+
+// ---------------------------------------------------------------------------
+// AXIA Clients (Daily Equity — for Strategy linking)
+// ---------------------------------------------------------------------------
+
+export function fetchAxiaClients() {
+  return get('/api/axia/clients')
 }
