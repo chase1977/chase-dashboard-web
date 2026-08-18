@@ -6,6 +6,7 @@
  */
 
 import { useState, useMemo, useRef, useCallback } from 'react'
+import useIsMobile from '../hooks/useIsMobile.js'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   LineChart, Line, PieChart, Pie, Cell, ResponsiveContainer,
@@ -627,6 +628,7 @@ export default function AxiaAnalysisDashboard({
   data, trader, account, onNewUpload, onExport, exporting, onGbpRetry, gbpRetrying,
   readOnly = false, forceGbp = false, onSaveShare, saving = false,
 }) {
+  const isMobile = useIsMobile()
   const [exportingGraphs, setExportingGraphs] = useState(false)
   const [gbpMode, setGbpMode]                 = useState(forceGbp)
 
@@ -656,10 +658,10 @@ export default function AxiaAnalysisDashboard({
   const hasGbpData      = gbpRatesOk && !!data.gbp_assets
 
   return (
-    <div style={{ background:C.bg, minHeight:'calc(100vh - 56px)', padding:'28px 36px', color:C.text }}>
+    <div style={{ background:C.bg, minHeight:'calc(100vh - 56px)', padding: isMobile ? '18px 14px' : '28px 36px', color:C.text }}>
 
       {/* ── Header ─────────────────────────────────────────────────────────── */}
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:28 }}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:28, flexWrap:'wrap', gap:12 }}>
         <div>
           <div style={{ display:'flex', alignItems:'center', gap:12 }}>
             <div style={{ fontSize:22, fontWeight:700, color:C.text, letterSpacing:'-0.3px' }}>AXIA Strategy — Trade Analysis</div>
@@ -778,7 +780,7 @@ export default function AxiaAnalysisDashboard({
       </div>
 
       {/* ── Row 1: P&L by Instrument + Right column ───────────────────────── */}
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 320px', gap:16, marginBottom:20 }}>
+      <div style={{ display:'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 320px', gap:16, marginBottom:20 }}>
         <Card id="chart-asset-pnl">
           <SectionLabel>Net P&L by Instrument{gbpMode ? ' — converted to GBP' : ' — sorted worst → best'}</SectionLabel>
           <AssetPnlChart assets={activeData.by_asset} gbpMode={gbpMode} />
@@ -800,7 +802,7 @@ export default function AxiaAnalysisDashboard({
       </div>
 
       {/* ── Row 2: Daily P&L + Cumulative ─────────────────────────────────── */}
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16, marginBottom:20 }}>
+      <div style={{ display:'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap:16, marginBottom:20 }}>
         <Card id="chart-daily-pnl">
           <SectionLabel>Daily Net P&L{gbpMode ? ' — GBP' : ' by Currency'}</SectionLabel>
           <DailyPnlChart byDate={activeData.by_date} currencies={currencies} />
@@ -824,7 +826,7 @@ export default function AxiaAnalysisDashboard({
       </Card>
 
       {/* ── Row 3: Volume + Commission Drag ───────────────────────────────── */}
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16, marginBottom:20 }}>
+      <div style={{ display:'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap:16, marginBottom:20 }}>
         <Card id="chart-volume">
           <SectionLabel>Trade Volume by Instrument (Total Lots)</SectionLabel>
           <VolumeChart assets={activeData.by_asset} />
@@ -838,7 +840,7 @@ export default function AxiaAnalysisDashboard({
       {/* ── Top winners mini curves ────────────────────────────────────────── */}
       <Card id="chart-winners-curves" style={{ marginBottom:20 }}>
         <SectionLabel>Top 5 Winners — Equity Curves{gbpMode ? ' (GBP)' : ''}</SectionLabel>
-        <div style={{ display:'grid', gridTemplateColumns:`repeat(${Math.min(topWinners.length,5)},1fr)`, gap:12 }}>
+        <div style={{ display:'grid', gridTemplateColumns:`repeat(auto-fit, minmax(130px, 1fr))`, gap:12 }}>
           {topWinners.map(a => <MiniCurve key={`${a.instrument}-${a.original_currency || a.currency}`} asset={a} />)}
         </div>
       </Card>
@@ -846,7 +848,7 @@ export default function AxiaAnalysisDashboard({
       {/* ── Top losers mini curves ─────────────────────────────────────────── */}
       <Card id="chart-losers-curves" style={{ marginBottom:20 }}>
         <SectionLabel>Top 5 Losers — Equity Curves{gbpMode ? ' (GBP)' : ''}</SectionLabel>
-        <div style={{ display:'grid', gridTemplateColumns:`repeat(${Math.min(topLosers.length,5)},1fr)`, gap:12 }}>
+        <div style={{ display:'grid', gridTemplateColumns:`repeat(auto-fit, minmax(130px, 1fr))`, gap:12 }}>
           {topLosers.map(a => <MiniCurve key={`${a.instrument}-${a.original_currency || a.currency}`} asset={a} />)}
         </div>
       </Card>

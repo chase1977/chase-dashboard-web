@@ -384,7 +384,7 @@ function CapitalEventsTab({ data, queryClient }) {
             </div>
           )}
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10, marginBottom: 10 }}>
           <DateField value={date} onChange={setDate} />
           <div>
             <label style={{ fontSize: 10, color: '#64748B', textTransform: 'uppercase',
@@ -414,7 +414,7 @@ function CapitalEventsTab({ data, queryClient }) {
   return (
     <>
       {/* Summary bar */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10, marginBottom: 14 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 10, marginBottom: 14 }}>
         {[
           { label: 'Net Position',    value: formatCurrency(data?.bank_balance),       color: (data?.bank_balance??0)>=0?'#34d399':'#f87171' },
           { label: 'Total Deposited', value: formatCurrencyAbs(data?.total_deposited),  color: '#34d399' },
@@ -612,7 +612,7 @@ function InternalTransfersTab({ queryClient, capitalData }) {
           letterSpacing: '0.7px', color: '#38bdf8', display: 'block', marginBottom: 10 }}>
           {isEdit ? 'Edit Transfer' : 'New Internal Transfer'}
         </span>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10, marginBottom: 10 }}>
           <DateField value={date} onChange={setDate} />
           <div>
             <label style={{ fontSize: 10, color: '#64748B', textTransform: 'uppercase',
@@ -664,7 +664,7 @@ function InternalTransfersTab({ queryClient, capitalData }) {
   return (
     <>
       {/* Summary cards */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10, marginBottom: 14 }}>
         <div style={{ background: walletBal >= 0 ? 'rgba(52,211,153,0.08)' : 'rgba(248,113,113,0.08)',
           border: `1px solid ${walletBal >= 0 ? 'rgba(52,211,153,0.2)' : 'rgba(248,113,113,0.2)'}`,
           borderRadius: 10, padding: '10px 14px' }}>
@@ -848,7 +848,7 @@ function MiscellaneousTab({ queryClient }) {
           letterSpacing: '0.7px', color: isCredit ? '#c084fc' : '#fbbf24', display: 'block', marginBottom: 10 }}>
           {isEdit ? 'Edit Misc Event' : 'New Misc Event'}
         </span>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10, marginBottom: 10 }}>
           <DateField value={date} onChange={setDate} />
           <div>
             <label style={{ fontSize: 10, color: '#64748B', textTransform: 'uppercase',
@@ -902,7 +902,7 @@ function MiscellaneousTab({ queryClient }) {
   return (
     <>
       {/* Summary */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10, marginBottom: 14 }}>
         {[
           { label: 'Total Credits', value: formatCurrencyAbs(totalCredits), color: '#c084fc' },
           { label: 'Total Debits',  value: formatCurrencyAbs(totalDebits),  color: '#fbbf24' },
@@ -1274,7 +1274,7 @@ export default function SummaryStrip({ data, equityCurve, loading }) {
 
   if (loading) {
     return (
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 16 }}>
         {[...Array(4)].map((_, i) => <SkeletonCard key={i} />)}
       </div>
     )
@@ -1343,7 +1343,7 @@ export default function SummaryStrip({ data, equityCurve, loading }) {
 
   return (
     <>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 16 }}>
 
         {/* ── Card 1: Money Allocated ── */}
         <div

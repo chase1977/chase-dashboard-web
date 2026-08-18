@@ -369,7 +369,7 @@ export default function BreakdownTable({ rows = [], onRowClick, title }) {
       <div style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
         padding: '10px 12px', borderBottom: '1px solid #162032',
-        background: '#0D1B2E',
+        background: '#0D1B2E', flexWrap: 'wrap', gap: 8,
       }}>
         {/* Left: title + count */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -393,7 +393,7 @@ export default function BreakdownTable({ rows = [], onRowClick, title }) {
         {/* Right: search input */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 6,
           background: '#111C2B', border: '1px solid #1E3A5F',
-          borderRadius: 6, padding: '4px 10px', width: 200 }}>
+          borderRadius: 6, padding: '4px 10px', width: 200, maxWidth: '100%', flex: '1 1 160px' }}>
           <Search size={12} color="#475569" style={{ flexShrink: 0 }} />
           <input
             type="text"
@@ -415,9 +415,9 @@ export default function BreakdownTable({ rows = [], onRowClick, title }) {
         </div>
       </div>
 
-      {/* ── Table ── */}
-      <div style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: 'calc(100vh - 220px)' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+      {/* ── Table — horizontal scroll on narrow viewports keeps columns readable ── */}
+      <div style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: 'calc(100vh - 220px)', WebkitOverflowScrolling: 'touch' }}>
+        <table style={{ width: '100%', minWidth: 720, borderCollapse: 'collapse', fontSize: 12 }}>
           <thead>
             <tr style={{ borderBottom: '1px solid #1E3A5F' }}>
               {COLUMNS.map(col => (
@@ -500,7 +500,7 @@ export default function BreakdownTable({ rows = [], onRowClick, title }) {
         <div style={{
           display: 'flex', alignItems: 'center', gap: 20,
           padding: '8px 12px', borderTop: '1px solid #162032',
-          background: '#0D1B2E',
+          background: '#0D1B2E', flexWrap: 'wrap',
         }}>
           <span style={{ fontSize: 10, color: '#334155' }}>
             Showing <span style={{ color: '#64748B', fontWeight: 500 }}>{sorted.length}</span>

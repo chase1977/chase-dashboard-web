@@ -124,7 +124,10 @@ export default function KpiRow({ kpis, small = false, sparklineData = [] }) {
   return (
     <div style={{
       display:             'grid',
-      gridTemplateColumns: 'repeat(7, 1fr)',
+      // repeat(7,1fr) on desktop widths (7 tracks fit above ~910px and stretch
+      // to fill exactly as before); reflows to 2-3 per row automatically as
+      // the viewport narrows below that — no JS/media-query needed.
+      gridTemplateColumns: `repeat(auto-fit, minmax(${small ? 100 : 118}px, 1fr))`,
       gap:                 8,
     }}>
       {cards.map(c => (

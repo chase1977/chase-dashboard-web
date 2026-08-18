@@ -109,7 +109,7 @@ function ShareLinkModal({ url, onClose }) {
     }}>
       <div style={{
         background: C.card, border: `1px solid ${C.border}`, borderRadius: 16,
-        padding: 36, maxWidth: 520, width: '100%',
+        padding: 'clamp(20px, 6vw, 36px)', maxWidth: 520, width: '100%',
       }}>
         <div style={{ fontSize: 18, fontWeight: 700, color: C.text, marginBottom: 6 }}>
           🔗 Analysis Saved & Shareable
@@ -159,7 +159,7 @@ function UploadZone({ onFile, error, savedAnalyses, savedLoading, onOpenSaved, o
   return (
     <div style={{
       background: C.bg, minHeight: 'calc(100vh - 56px)',
-      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 32,
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 'clamp(16px, 6vw, 32px)',
     }}>
       <div style={{ maxWidth: 580, width: '100%', textAlign: 'center' }}>
 
@@ -174,7 +174,7 @@ function UploadZone({ onFile, error, savedAnalyses, savedLoading, onOpenSaved, o
             AXIA Strategy
           </span>
         </div>
-        <div style={{ fontSize: 28, fontWeight: 700, color: C.text, marginBottom: 10, letterSpacing: '-0.5px' }}>
+        <div style={{ fontSize: 'clamp(21px, 6vw, 28px)', fontWeight: 700, color: C.text, marginBottom: 10, letterSpacing: '-0.5px' }}>
           Trade Analysis Dashboard
         </div>
         <div style={{ fontSize: 14, color: C.muted, marginBottom: 44, lineHeight: 1.6, maxWidth: 420, margin: '0 auto 44px' }}>
@@ -190,12 +190,12 @@ function UploadZone({ onFile, error, savedAnalyses, savedLoading, onOpenSaved, o
           onDragLeave={() => setDragging(false)}
           style={{
             border: `2px dashed ${dragging ? C.accent : C.border}`,
-            borderRadius: 16, padding: '52px 36px',
+            borderRadius: 16, padding: 'clamp(28px, 8vw, 52px) clamp(16px, 6vw, 36px)',
             background: dragging ? 'rgba(56,189,248,0.05)' : C.card,
             cursor: 'pointer', transition: 'all 0.2s',
           }}
         >
-          <div style={{ fontSize: 48, marginBottom: 20 }}>📊</div>
+          <div style={{ fontSize: 'clamp(36px, 10vw, 48px)', marginBottom: 20 }}>📊</div>
           <div style={{ fontSize: 17, fontWeight: 600, color: C.dim, marginBottom: 8 }}>
             Drop AXIA Statement Excel here
           </div>
@@ -255,11 +255,11 @@ function TraderModal({ file, trader, setTrader, account, setAccount,
   return (
     <div style={{
       background: C.bg, minHeight: 'calc(100vh - 56px)',
-      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 32,
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 'clamp(16px, 6vw, 32px)',
     }}>
       <div style={{
         background: C.card, border: `1px solid ${C.border}`,
-        borderRadius: 16, padding: 44, maxWidth: 500, width: '100%',
+        borderRadius: 16, padding: 'clamp(22px, 6vw, 44px)', maxWidth: 500, width: '100%',
       }}>
 
         <div style={{ fontSize: 20, fontWeight: 700, color: C.text, marginBottom: 6 }}>

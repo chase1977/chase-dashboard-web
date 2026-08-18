@@ -450,7 +450,7 @@ export default function AxiaEquityEntry() {
   // Render
   // ---------------------------------------------------------------------------
   return (
-    <div style={{ padding: '20px 24px 28px' }}>
+    <div style={{ padding: '20px clamp(14px, 4vw, 24px) 28px' }}>
       <style>{`
         input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.6); cursor: pointer; }
         input::placeholder { color: #475569; }

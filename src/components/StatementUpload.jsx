@@ -194,7 +194,7 @@ export default function StatementUpload() {
   }) || []
 
   return (
-    <div style={{ padding: '20px 24px 28px' }}>
+    <div style={{ padding: '20px clamp(14px, 4vw, 24px) 28px' }}>
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
 
       {/* Drop zone — hide once single parse result is showing */}

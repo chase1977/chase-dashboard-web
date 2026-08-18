@@ -17,6 +17,7 @@ import { useQuery }            from '@tanstack/react-query'
 import { RefreshCw }           from 'lucide-react'
 
 import { usePortfolio, useHierarchyTable } from '../hooks/usePortfolioData.js'
+import useIsMobile         from '../hooks/useIsMobile.js'
 import KpiRow              from '../components/cards/KpiRow.jsx'
 import EquityChart         from '../components/charts/EquityChart.jsx'
 import { DonutChart }      from '../components/charts/DonutChart.jsx'
@@ -126,6 +127,7 @@ function HierarchyTab({ entityType, onRowClick }) {
 
 export default function Portfolio({ timeRange, initialTab }) {
   const navigate  = useNavigate()
+  const isMobile  = useIsMobile()
   const [activeTab,    setActiveTab]    = useState(initialTab || 'pod')
   const [showManager,  setShowManager]  = useState(false)
 
@@ -161,19 +163,25 @@ export default function Portfolio({ timeRange, initialTab }) {
     : '—'
 
   return (
-    <div style={{ padding: '16px 24px 48px' }}>
+    <div style={{ padding: isMobile ? '14px 14px 40px' : '16px 24px 48px' }}>
 
       {/* ── Page header ── */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 20 }}>
+      <div style={{
+        display: 'flex', justifyContent: 'space-between',
+        alignItems: isMobile ? 'flex-start' : 'flex-end',
+        flexDirection: isMobile ? 'column' : 'row',
+        gap: isMobile ? 8 : 0,
+        marginBottom: 20,
+      }}>
         <div>
-          <h1 style={{ fontSize: 22, fontWeight: 600, color: '#F1F5F9', margin: 0 }}>
+          <h1 style={{ fontSize: isMobile ? 19 : 22, fontWeight: 600, color: '#F1F5F9', margin: 0 }}>
             {portfolio_name}
           </h1>
           <div style={{ fontSize: 11, color: '#475569', marginTop: 3 }}>
             Portfolio · All pods · {timeRange === 'SI' ? 'Since inception' : timeRange}
           </div>
         </div>
-        <div style={{ textAlign: 'right', fontSize: 11, color: '#475569', lineHeight: 1.6 }}>
+        <div style={{ textAlign: isMobile ? 'left' : 'right', fontSize: 11, color: '#475569', lineHeight: 1.6 }}>
           Last updated<br />
           <span style={{ color: '#64748B' }}>{lastUpdatedStr}</span>
         </div>
@@ -246,21 +254,29 @@ export default function Portfolio({ timeRange, initialTab }) {
       <div style={{ height: 1, background: '#1E3A5F', margin: '20px 0 20px' }} />
 
       {/* ── Charts row ── */}
-      <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: 12, marginBottom: 28 }}>
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: isMobile ? '1fr' : '2fr 1fr 1fr',
+        gap: 12, marginBottom: 28,
+      }}>
         <ChartCard title="Equity (with drawdown)">
-          <EquityChart data={equity_curve} height={300} />
+          <EquityChart data={equity_curve} height={isMobile ? 240 : 300} />
         </ChartCard>
         <ChartCard title="Allocation by Pod">
-          <DonutChart data={allocation} height={260} />
+          <DonutChart data={allocation} height={isMobile ? 220 : 260} />
         </ChartCard>
         <ChartCard title="PnL Contribution (Pod)">
-          <PnlBarChart data={pnl_contribution} height={260} />
+          <PnlBarChart data={pnl_contribution} height={isMobile ? 220 : 260} />
         </ChartCard>
       </div>
 
       {/* ── Hierarchy tabs ── */}
       <div>
-        <div style={{ display: 'flex', gap: 2, paddingBottom: 12, borderBottom: '1px solid #1E3A5F', marginBottom: 16 }}>
+        <div style={{
+          display: 'flex', gap: 2, paddingBottom: 12,
+          borderBottom: '1px solid #1E3A5F', marginBottom: 16,
+          overflowX: 'auto', WebkitOverflowScrolling: 'touch',
+        }}>
           {HIERARCHY_TABS.map(t => (
             <TabButton key={t} label={t} active={activeTab === t} onClick={() => setActiveTab(t)} />
           ))}

@@ -172,7 +172,7 @@ function PodForm({ initial, onSave, onCancel, saving, error }) {
 
   return (
     <form onSubmit={handleSubmit}>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10, marginBottom: 10 }}>
         <FormField label="Pod Name">
           <input
             style={INPUT} required
@@ -295,7 +295,7 @@ function StrategyForm({ initial, pods, onSave, onCancel, saving, error }) {
 
   return (
     <form onSubmit={handleSubmit}>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10, marginBottom: 10 }}>
         <FormField label="Strategy Name">
           <input
             style={INPUT} required
@@ -511,11 +511,11 @@ function PodsTab({ queryClient, onSaved }) {
           No pods configured. Add one above.
         </p>
       ) : (
-        <div style={{ borderRadius: 8, overflow: 'hidden', border: '1px solid #1E3A5F' }}>
+        <div style={{ borderRadius: 8, border: '1px solid #1E3A5F', overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
           {/* Header */}
           <div style={{
             display: 'grid', gridTemplateColumns: '28px 1fr 80px 90px 70px 80px',
-            gap: 8, padding: '8px 12px',
+            gap: 8, padding: '8px 12px', minWidth: 460,
             background: '#0D1B2E', borderBottom: '1px solid #1E3A5F',
           }}>
             {['', 'Name', 'Code', 'Date', 'Status', ''].map((h, i) => (
@@ -531,7 +531,7 @@ function PodsTab({ queryClient, onSaved }) {
               key={pod.id}
               style={{
                 display: 'grid', gridTemplateColumns: '28px 1fr 80px 90px 70px 80px',
-                gap: 8, padding: '9px 12px', alignItems: 'center',
+                gap: 8, padding: '9px 12px', alignItems: 'center', minWidth: 460,
                 background: i % 2 === 0 ? '#0D1728' : 'transparent',
                 borderBottom: i < pods.length - 1 ? '1px solid #162032' : 'none',
               }}
@@ -718,12 +718,12 @@ function StrategiesTab({ queryClient, onSaved }) {
           No strategies configured. Add one above.
         </p>
       ) : (
-        <div style={{ borderRadius: 8, overflow: 'hidden', border: '1px solid #1E3A5F' }}>
+        <div style={{ borderRadius: 8, border: '1px solid #1E3A5F', overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
           {/* Header */}
           <div style={{
             display: 'grid',
             gridTemplateColumns: '1fr 90px 110px 110px 90px 70px 72px',
-            gap: 8, padding: '8px 12px',
+            gap: 8, padding: '8px 12px', minWidth: 640,
             background: '#0D1B2E', borderBottom: '1px solid #1E3A5F',
           }}>
             {['Name', 'Code', 'Pod', 'Account / Net', 'Date', 'Status', ''].map((h, i) => (
@@ -744,7 +744,7 @@ function StrategiesTab({ queryClient, onSaved }) {
                 style={{
                   display: 'grid',
                   gridTemplateColumns: '1fr 90px 110px 110px 90px 70px 72px',
-                  gap: 8, padding: '9px 12px', alignItems: 'center',
+                  gap: 8, padding: '9px 12px', alignItems: 'center', minWidth: 640,
                   background: i % 2 === 0 ? '#0D1728' : 'transparent',
                   borderBottom: i < strategies.length - 1 ? '1px solid #162032' : 'none',
                 }}
@@ -911,7 +911,7 @@ export default function PodStrategyManager({ onClose, onSaved }) {
         {/* Header */}
         <div style={{
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-          padding: '16px 20px', borderBottom: '1px solid #1E3A5F', flexShrink: 0,
+          padding: 'clamp(12px, 4vw, 16px) clamp(14px, 4vw, 20px)', borderBottom: '1px solid #1E3A5F', flexShrink: 0,
         }}>
           <div>
             <div style={{ fontSize: 14, fontWeight: 700, color: '#F1F5F9' }}>
@@ -949,7 +949,7 @@ export default function PodStrategyManager({ onClose, onSaved }) {
         </div>
 
         {/* Scrollable body */}
-        <div style={{ flex: 1, overflowY: 'auto', padding: 20 }}>
+        <div style={{ flex: 1, overflowY: 'auto', padding: 'clamp(14px, 4vw, 20px)' }}>
           {tab === 'pods'       && <PodsTab       queryClient={queryClient} onSaved={onSaved} />}
           {tab === 'strategies' && <StrategiesTab  queryClient={queryClient} onSaved={onSaved} />}
         </div>

@@ -23,6 +23,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { RefreshCw, ChevronRight, ChevronLeft } from 'lucide-react'
 
 import { useDrillDown, useTraderContext } from '../hooks/usePortfolioData.js'
+import useIsMobile     from '../hooks/useIsMobile.js'
 import KpiRow         from '../components/cards/KpiRow.jsx'
 import KpiCard, { fmtMoney, fmtPct } from '../components/cards/KpiCard.jsx'
 import EquityChart    from '../components/charts/EquityChart.jsx'
@@ -233,7 +234,7 @@ function MiniKpiStrip({ row }) {
   ]
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 6 }}>
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(100px, 1fr))', gap: 6 }}>
       {cards.map(c => (
         <KpiCard key={c.label} label={c.label} value={c.value} type={c.type} small />
       ))}
@@ -350,6 +351,7 @@ function buildPnlBars(rows) {
 }
 
 function SmartTraderCharts({ entityId, equityCurve, ctx }) {
+  const isMobile   = useIsMobile()
   const venues     = ctx?.venues     ?? []
   const pods       = ctx?.pods       ?? []
   const strategies = ctx?.strategies ?? []
@@ -389,7 +391,7 @@ function SmartTraderCharts({ entityId, equityCurve, ctx }) {
       {/* ── Row 1: Equity + stacked donuts ── */}
       <div style={{
         display: 'grid',
-        gridTemplateColumns: `3fr ${donutCharts.length > 1 ? '1.1fr' : '1fr'}`,
+        gridTemplateColumns: isMobile ? '1fr' : `3fr ${donutCharts.length > 1 ? '1.1fr' : '1fr'}`,
         gap: 10,
         marginBottom: 10,
       }}>
@@ -411,7 +413,7 @@ function SmartTraderCharts({ entityId, equityCurve, ctx }) {
       {/* ── Row 2: PnL bar charts ── */}
       <div style={{
         display: 'grid',
-        gridTemplateColumns: `repeat(${barCharts.length}, 1fr)`,
+        gridTemplateColumns: isMobile ? '1fr' : `repeat(${barCharts.length}, 1fr)`,
         gap: 10,
         marginBottom: 20,
       }}>
@@ -499,6 +501,7 @@ function TraderBreakdownPanel({ entityId, ctx, navigate }) {
 export default function DrillDown({ timeRange }) {
   const { entityId } = useParams()
   const navigate     = useNavigate()
+  const isMobile      = useIsMobile()
 
   const { data, isLoading, error }               = useDrillDown(entityId, timeRange)
   const { data: ctx, isLoading: ctxLoading }     = useTraderContext(
@@ -521,7 +524,7 @@ export default function DrillDown({ timeRange }) {
   const sparklineData = equity_curve.slice(-20).map(p => p.equity)
 
   return (
-    <div style={{ padding: '16px 24px 48px' }}>
+    <div style={{ padding: isMobile ? '14px 14px 40px' : '16px 24px 48px' }}>
 
       {/* ── Back + breadcrumb ── */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 0, marginBottom: 14, flexWrap: 'wrap' }}>
@@ -566,9 +569,12 @@ export default function DrillDown({ timeRange }) {
       </div>
 
       {/* ── Page header ── */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14 }}>
+      <div style={{
+        display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start',
+        marginBottom: 14, flexWrap: 'wrap', gap: 6,
+      }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-          <h1 style={{ fontSize: 22, fontWeight: 600, color: '#F1F5F9', margin: 0 }}>{entity_name}</h1>
+          <h1 style={{ fontSize: isMobile ? 19 : 22, fontWeight: 600, color: '#F1F5F9', margin: 0 }}>{entity_name}</h1>
           <TypeBadge type={entity_type} />
           {showPodTag && pod_code  && <PodTag   podCode={pod_code} podColor={pod_color} />}
           {showPodTag && strategy_code && <StratTag code={strategy_code} />}
@@ -628,15 +634,19 @@ export default function DrillDown({ timeRange }) {
       ══════════════════════════════════════════ */
         <>
           {/* Charts row */}
-          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: 12, marginBottom: 28 }}>
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: isMobile ? '1fr' : '2fr 1fr 1fr',
+            gap: 12, marginBottom: 28,
+          }}>
             <ChartCard title="Equity (with drawdown)">
-              <EquityChart data={equity_curve} height={300} />
+              <EquityChart data={equity_curve} height={isMobile ? 240 : 300} />
             </ChartCard>
             <ChartCard title={`Allocation by ${childLabel}`}>
-              <DonutChart data={allocation} height={260} />
+              <DonutChart data={allocation} height={isMobile ? 220 : 260} />
             </ChartCard>
             <ChartCard title={`PnL Contribution (${childLabel})`}>
-              <PnlBarChart data={pnl_contribution} height={260} />
+              <PnlBarChart data={pnl_contribution} height={isMobile ? 220 : 260} />
             </ChartCard>
           </div>
 

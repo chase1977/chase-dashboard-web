@@ -55,7 +55,9 @@ chase-dashboard-web/
 │   │   ├── HomePage.jsx              # Landing / redirect page
 │   │   ├── Portfolio.jsx             # Main portfolio dashboard
 │   │   ├── DrillDown.jsx             # Entity drill-down (pod/strategy/trader/venue)
-│   │   └── Reports.jsx               # Reports: download + CSV upload
+│   │   ├── Reports.jsx               # Reports: download + CSV upload
+│   │   ├── Analysis.jsx              # AXIA trade analysis: upload → dashboard, saved analyses
+│   │   └── SharedAnalysis.jsx        # Read-only public view of a shared analysis (/analysis/shared/:shareId)
 │   │
 │   ├── components/
 │   │   ├── BankCard.jsx              # Bank balance display card
@@ -65,6 +67,10 @@ chase-dashboard-web/
 │   │   ├── PodStrategyManager.jsx    # Pod/strategy CRUD management panel
 │   │   ├── SummaryCards.jsx          # KPI summary card grid
 │   │   ├── SummaryStrip.jsx          # Compact top summary strip
+│   │   ├── AxiaAnalysisDashboard.jsx # AXIA analysis results dashboard (charts, tables, export)
+│   │   ├── AxiaEquityEntry.jsx       # Manual AXIA daily-equity entry/edit grid
+│   │   ├── StatementUpload.jsx       # Broker PDF statement upload → parsed Excel
+│   │   ├── StatementMerge.jsx        # Merge multiple statement .xlsx files chronologically
 │   │   │
 │   │   ├── auth/
 │   │   │   ├── ProtectedRoute.jsx    # Auth guard — redirects unauthenticated users
@@ -107,14 +113,21 @@ chase-dashboard-web/
         │   ├── __init__.py
         │   ├── portfolio.py          # /api/portfolio/* — all portfolio data
         │   ├── reports.py            # /api/reports/* + /api/upload — reports & CSV upload
-        │   └── management.py        # /api/management/* — CRUD for capital events, pods, strategies
+        │   ├── management.py        # /api/management/* — CRUD for capital events, pods, strategies
+        │   ├── statement.py          # /api/statement/* — PDF statement upload, batch upload, merge
+        │   ├── axia_equity.py        # /api/axia/* — AXIA daily equity CRUD (clients, records)
+        │   └── axia_analysis.py      # /api/analysis/* — AXIA statement upload, deep analysis, Excel export
         │
         ├── services/
         │   ├── __init__.py
         │   ├── supabase_service.py   # All Supabase queries (live data)
         │   ├── data_service.py       # CSV/file data fallback layer
         │   ├── demo_service.py       # Demo/seed data generator
-        │   └── report_service.py     # Excel + PDF report generation
+        │   ├── report_service.py     # Excel + PDF report generation
+        │   ├── analysis_service.py   # AXIA statement parsing + quantitative analysis + Excel export
+        │   ├── statement_service.py  # Broker PDF statement parsing
+        │   ├── excel_writer.py       # Parsed-statement → Excel writer
+        │   └── merge_service.py      # Chronological merge of multiple statement Excel files
         │
         └── models/
             ├── __init__.py
@@ -206,7 +219,9 @@ VITE_SUPABASE_ANON_KEY=your-anon-key-here
 | `HomePage.jsx` | `/home` | Landing redirect |
 | `Portfolio.jsx` | `/`, `/pods`, `/strategies`, `/traders`, `/venues` | Main dashboard: KPI strip, equity chart, allocation donut, PnL bars, hierarchy table, fund ledger |
 | `DrillDown.jsx` | `/drilldown/:entityId` | Entity-level breakdown — charts, metrics, 3-tab trader context |
-| `Reports.jsx` | `/reports` | Download Excel/PDF/CSV + upload data CSVs |
+| `Reports.jsx` | `/reports` | Download Excel/PDF/CSV + upload data CSVs + broker statement upload/merge |
+| `Analysis.jsx` | `/analysis` | AXIA trade analysis — upload statement, run analysis, save/share, export Excel |
+| `SharedAnalysis.jsx` | `/analysis/shared/:shareId` | Public read-only view of a shared analysis (no auth) |
 
 ### Components
 
@@ -315,6 +330,35 @@ Query params: `?time_range=` accepts `1D`, `7D`, `30D`, `YTD`, `SI`
 | `POST` | `/api/management/misc-events` | Create misc event |
 | `PATCH` | `/api/management/misc-events/{id}` | Update misc event |
 | `DELETE` | `/api/management/misc-events/{id}` | Delete misc event |
+
+### Statement Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/statement/upload` | Upload one broker PDF daily-detail statement → parsed JSON + Excel |
+| `POST` | `/api/statement/upload-batch` | Upload multiple PDFs → ZIP of individual Excel files |
+| `POST` | `/api/statement/merge` | Merge multiple statement `.xlsx` files, sorted chronologically |
+| `GET` | `/api/statement/download/{filename}` | Serve a previously generated Excel file |
+
+### AXIA Equity Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/axia/clients` | List client/account pairs |
+| `POST` | `/api/axia/clients` | Create client/account pair |
+| `DELETE` | `/api/axia/clients/{id}` | Delete client |
+| `GET` | `/api/axia/equity` | List daily equity records `?client=&account=&limit=` |
+| `GET` | `/api/axia/equity/prev` | Most recent record before a given date |
+| `POST` | `/api/axia/equity` | Create record (409 on duplicate date) |
+| `PATCH` | `/api/axia/equity/{id}` | Update record |
+| `DELETE` | `/api/axia/equity/{id}` | Delete record |
+
+### AXIA Analysis Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/analysis/upload` | Upload AXIA statement `.xlsx` → full analysis JSON + `analysis_id` |
+| `GET`/`POST` | `/api/analysis/*` | Fetch, persist, save, delete, share, export (Excel), and refresh GBP FX rates for a saved analysis — see `analysis_service.py` for the full set |
 
 ---
 

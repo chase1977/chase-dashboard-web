@@ -179,7 +179,7 @@ function ConfirmModal({ items, missingFiles, dupItems, onConfirm, onCancel }) {
       display:'flex', alignItems:'center', justifyContent:'center', padding:24 }}>
       <div style={{ background:'#0F1923',
         border:`1px solid ${hasMissing ? '#F8717160' : hasDups ? '#F59E0B60' : '#34D39960'}`,
-        borderRadius:12, padding:28, maxWidth:820, width:'100%',
+        borderRadius:12, padding:'clamp(16px, 5vw, 28px)', maxWidth:820, width:'100%',
         maxHeight:'85vh', overflowY:'auto' }}>
 
         <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:20 }}>
@@ -299,7 +299,7 @@ function ResultsModal({ results, onClose }) {
       display:'flex', alignItems:'center', justifyContent:'center', padding:24 }}>
       <div style={{ background:'#0F1923',
         border:`1px solid ${hasErrors ? '#F8717160' : '#34D39960'}`,
-        borderRadius:12, padding:28, maxWidth:820, width:'100%',
+        borderRadius:12, padding:'clamp(16px, 5vw, 28px)', maxWidth:820, width:'100%',
         maxHeight:'80vh', overflowY:'auto' }}>
 
         {/* Header */}
@@ -596,7 +596,7 @@ function UploadSection() {
           color:'#334155', textTransform:'uppercase', marginBottom:10 }}>
           CSV → Table Mapping
         </div>
-        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'5px 24px' }}>
+        <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(220px, 1fr))', gap:'5px 24px' }}>
           {TABLE_DEFS.map(d => (
             <div key={d.table} style={{ display:'flex', alignItems:'center', gap:6 }}>
               <ArrowRight size={9} color="#334155" />
@@ -634,7 +634,7 @@ function UploadSection() {
 
 export default function Reports() {
   return (
-    <div style={{ padding:'16px 24px 48px', maxWidth:1400 }}>
+    <div style={{ padding:'16px clamp(14px, 4vw, 24px) 48px', maxWidth:1400 }}>
       <div style={{ marginBottom:24 }}>
         <h1 style={{ fontSize:22, fontWeight:600, color:'#F1F5F9', margin:0 }}>Reports</h1>
         <div style={{ fontSize:11, color:'#475569', marginTop:3 }}>
@@ -647,7 +647,7 @@ export default function Reports() {
         Reports reflect the latest available data snapshot.
         Past performance is not indicative of future results. For authorised personnel only.
       </div>
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:16 }}>
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(230px, 1fr))', gap:16 }}>
         {REPORT_CARDS.map(c => <ReportCard key={c.id} card={c} />)}
       </div>
       <UploadSection />
