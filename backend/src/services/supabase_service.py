@@ -1518,6 +1518,96 @@ def get_pods_with_kpis_fast(pod_pfees_map: dict, balance_hist: list[dict]) -> li
     return result
 
 
+def get_strategies_with_kpis_fast(pod_pfees_map: dict, balance_hist: list[dict]) -> list[dict]:
+    """
+    Strategy-level equivalent of get_pods_with_kpis_fast() — one KPI card per
+    strategy (Initial Invested / Current Equity / Total PnL / Performance),
+    used by the Portfolio page's Strategy Overview section.
+
+    Same 4-tier lookup priority as the hierarchy 'strategy' rows:
+    AXIA client equity > account_id > brokerage_account > strategy_code (Darwin).
+    Strategies already come back ordered by name (list_strategies() query),
+    so new strategies slot into alphabetical position automatically.
+    """
+    strategies  = pod_pfees_map["strategies"]
+    pods_list   = pod_pfees_map["pods_list"]
+    pods_idx    = {p["id"]: p for p in pods_list}
+    axia_agg    = pod_pfees_map.get("_axia_agg") or {}
+    snapshot    = pod_pfees_map.get("_snapshot", get_pfees_latest_snapshot())
+
+    pct_1d  = _period_return_from_hist(balance_hist, 1)
+    pct_7d  = _period_return_from_hist(balance_hist, 7)
+    pct_30d = _period_return_from_hist(balance_hist, 30)
+
+    net_deployed = _get_net_deployed_per_account()
+
+    darwin_agg: dict = {}
+    acct_agg:   dict = {}
+    for row in snapshot:
+        darwin   = _darwin_display(row.get("Darwin") or "")
+        invested = float(row.get("Invested") or 0)
+        pnl      = float(row.get("Current PnL") or 0)
+        darwin_agg.setdefault(darwin, {"invested": 0.0, "pnl": 0.0})
+        darwin_agg[darwin]["invested"] = round(darwin_agg[darwin]["invested"] + invested, 2)
+        darwin_agg[darwin]["pnl"]      = round(darwin_agg[darwin]["pnl"] + pnl, 2)
+
+        acct = int(row.get("AccountId") or 0)
+        acct_agg.setdefault(acct, {"invested": 0.0, "pnl": 0.0})
+        acct_agg[acct]["invested"] = round(acct_agg[acct]["invested"] + invested, 2)
+        acct_agg[acct]["pnl"]      = round(acct_agg[acct]["pnl"] + pnl, 2)
+
+    acct_to_broker_s = _match_pfees_accounts_to_brokerage()
+    broker_to_acct_s = {v: k for k, v in acct_to_broker_s.items()}
+
+    result = []
+    for s in strategies:
+        code    = (s.get("strategy_code") or "").upper()
+        acct_id = s.get("account_id")
+        broker  = s.get("brokerage_account")
+
+        axia_contrib = axia_agg.get(s["id"]) if s.get("axia_client_id") else None
+        if axia_contrib is not None:
+            agg = {"invested": axia_contrib["invested"], "pnl": axia_contrib["pnl"]}
+        elif acct_id is not None and int(acct_id) in acct_agg:
+            agg = acct_agg[int(acct_id)]
+        elif broker and broker_to_acct_s.get(broker) in acct_agg:
+            agg = acct_agg[broker_to_acct_s[broker]]
+        else:
+            agg = darwin_agg.get(code, {"invested": 0.0, "pnl": 0.0})
+
+        if broker:
+            initial = net_deployed.get(broker, 0.0)
+        elif axia_contrib is not None:
+            initial = axia_contrib["baseline"]
+        else:
+            initial = float(s.get("initial_investment") or 0)
+
+        pid        = s.get("pod_id")
+        pod        = pods_idx.get(pid, {}) if pid else {}
+        pod_joined = s.get("pods") or {}
+        pod_color  = pod_joined.get("color") or pod.get("color") or "#6366f1"
+        pod_code_s = pod_joined.get("pod_code") or pod.get("pod_code") or ""
+
+        result.append({
+            "entity_id":     f"strategy_{s['id']}",
+            "name":          s.get("name", code),
+            "strategy_code": s.get("strategy_code", ""),
+            "pod_code":      pod_code_s,
+            "pod_color":     pod_color,
+            "kpis": {
+                "initial_investment": round(initial, 2),
+                "current_equity":     agg["invested"],
+                "performance":        round(agg["pnl"] / initial, 6) if initial else 0.0,
+                "total_pnl":          agg["pnl"],
+                "pct_1d":             pct_1d,
+                "pct_7d":             pct_7d,
+                "pct_30d":            pct_30d,
+            },
+        })
+
+    return result
+
+
 def get_equity_curve_data_fast(history: list[dict], days: Optional[int] = None) -> list[dict]:
     """
     Equity curve — prefers user_accounts_equity (summed per date) as source of truth.
@@ -2102,4 +2192,50 @@ def delete_expense(expense_id: int) -> bool:
     sb = get_client()
     sb.table("expenses").delete().eq("id", expense_id).execute()
     _invalidate("expenses")
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Wages/Invoices CRUD — tracked record only, does NOT affect bank_balance/TWR/AUM
+# ---------------------------------------------------------------------------
+
+def list_wages() -> list[dict]:
+    """All rows from wages_invoices ordered by wage_date asc (cached 60s)."""
+    return _get_cached("wages_invoices", lambda: (
+        get_client()
+        .table("wages_invoices")
+        .select("*")
+        .order("wage_date", desc=False)
+        .execute()
+        .data or []
+    ))
+
+
+def create_wage(wage_date: str, employee: str, amount: float,
+                 recurrence: str, reference: str = "") -> dict:
+    sb  = get_client()
+    res = sb.table("wages_invoices").insert({
+        "wage_date":  wage_date,
+        "employee":   employee,
+        "amount":     round(abs(amount), 2),
+        "recurrence": recurrence,
+        "reference":  reference or None,
+    }).execute()
+    _invalidate("wages_invoices")
+    return res.data[0] if res.data else {}
+
+
+def update_wage(wage_id: int, **fields) -> dict:
+    sb = get_client()
+    if "amount" in fields:
+        fields["amount"] = round(abs(float(fields["amount"])), 2)
+    res = sb.table("wages_invoices").update(fields).eq("id", wage_id).execute()
+    _invalidate("wages_invoices")
+    return res.data[0] if res.data else {}
+
+
+def delete_wage(wage_id: int) -> bool:
+    sb = get_client()
+    sb.table("wages_invoices").delete().eq("id", wage_id).execute()
+    _invalidate("wages_invoices")
     return True

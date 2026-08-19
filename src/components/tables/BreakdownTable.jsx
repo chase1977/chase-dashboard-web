@@ -364,9 +364,9 @@ export default function BreakdownTable({ rows = [], onRowClick, title }) {
     <div ref={containerRef} style={{ position: 'relative' }}>
 
       {/* ── Search bar ── */}
-      <div style={{
+      <div className="gt-bar" style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '10px 12px', borderBottom: '1px solid #162032',
+        padding: '10px 12px', borderBottom: '1px solid rgba(255,255,255,0.06)',
         background: '#0D1B2E', flexWrap: 'wrap', gap: 8,
       }}>
         {/* Left: title + count */}
@@ -456,13 +456,11 @@ export default function BreakdownTable({ rows = [], onRowClick, title }) {
                 onMouseEnter={(e) => handleRowEnter(e, row)}
                 onMouseLeave={handleRowLeave}
                 style={{
-                  borderBottom: '1px solid #162032',
+                  borderBottom: '1px solid rgba(255,255,255,0.05)',
                   background:   i % 2 === 0 ? '#0D1728' : 'transparent',
                   cursor:       onRowClick ? 'pointer' : 'default',
-                  transition:   'background 0.1s',
+                  transition:   'background 0.15s',
                 }}
-                onMouseOver={e => { e.currentTarget.style.background = '#1A2D45' }}
-                onMouseOut={e  => { e.currentTarget.style.background = i % 2 === 0 ? '#0D1728' : 'transparent' }}
               >
                 {COLUMNS.map(col => (
                   <td
@@ -495,9 +493,9 @@ export default function BreakdownTable({ rows = [], onRowClick, title }) {
 
       {/* ── Totals bar ── */}
       {sorted.length > 0 && (
-        <div style={{
+        <div className="gt-bar" style={{
           display: 'flex', alignItems: 'center', gap: 20,
-          padding: '8px 12px', borderTop: '1px solid #162032',
+          padding: '8px 12px', borderTop: '1px solid rgba(255,255,255,0.06)',
           background: '#0D1B2E', flexWrap: 'wrap',
         }}>
           <span style={{ fontSize: 10, color: '#334155' }}>

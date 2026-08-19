@@ -160,14 +160,17 @@ function valueColor(type) {
 
 function cardBorderAndGlow(highlight) {
   if (highlight === 'positive') return {
-    border:    '1.5px solid rgba(52,211,153,0.70)',
-    boxShadow: '0 0 10px rgba(52,211,153,0.18), 0 0 20px rgba(52,211,153,0.08)',
+    border:    '1.5px solid rgba(52,211,153,0.55)',
+    boxShadow: '0 1px 0 rgba(255,255,255,0.04) inset, 0 0 16px rgba(52,211,153,0.14), 0 8px 20px -14px rgba(0,0,0,0.55)',
   }
   if (highlight === 'negative') return {
-    border:    '1.5px solid rgba(248,113,113,0.70)',
-    boxShadow: '0 0 10px rgba(248,113,113,0.18), 0 0 20px rgba(248,113,113,0.08)',
+    border:    '1.5px solid rgba(248,113,113,0.55)',
+    boxShadow: '0 1px 0 rgba(255,255,255,0.04) inset, 0 0 16px rgba(248,113,113,0.14), 0 8px 20px -14px rgba(0,0,0,0.55)',
   }
-  return { border: '1px solid #1E3A5F' }
+  return {
+    border:    '1px solid rgba(255,255,255,0.07)',
+    boxShadow: '0 1px 0 rgba(255,255,255,0.04) inset, 0 8px 20px -14px rgba(0,0,0,0.55)',
+  }
 }
 
 
@@ -196,12 +199,15 @@ export default function KpiCard({
   return (
     <div
       style={{
-        background:   '#111C2B',
-        borderRadius: 8,
+        background:   'linear-gradient(160deg, rgba(28,45,71,0.42) 0%, rgba(13,24,38,0.62) 100%)',
+        backdropFilter:          'blur(12px) saturate(140%)',
+        WebkitBackdropFilter:    'blur(12px) saturate(140%)',
+        borderRadius: 10,
         padding:      small ? '10px 12px' : '12px 14px',
         minHeight:    small ? 62 : sparkline ? 104 : 72,
         // Fade-slide-in on mount
         animation:    'kpiCardIn 0.35s ease-out both',
+        transition:   'border-color 0.25s ease, box-shadow 0.25s ease',
         ...cardBorderAndGlow(highlight),
       }}
     >

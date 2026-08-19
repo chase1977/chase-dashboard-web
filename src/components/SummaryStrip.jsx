@@ -25,6 +25,7 @@ import {
   fetchInternalTransfers, createInternalTransfer, updateInternalTransfer, deleteInternalTransfer,
   fetchMiscEvents, createMiscEvent, updateMiscEvent, deleteMiscEvent,
   fetchExpenses, createExpense, updateExpense, deleteExpense,
+  fetchWages, createWage, updateWage, deleteWage,
 } from '../services/api.js'
 import ConfirmModal from './ConfirmModal.jsx'
 
@@ -1222,6 +1223,17 @@ function ExpensesTab({ queryClient }) {
 
   return (
     <>
+      {/* Info box */}
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 14,
+        background: 'rgba(56,189,248,0.06)', border: '1px solid rgba(56,189,248,0.2)',
+        borderRadius: 10, padding: '10px 14px' }}>
+        <Info size={13} color="#38bdf8" style={{ flexShrink: 0, marginTop: 1 }} />
+        <p style={{ fontSize: 11, color: '#94a3b8', lineHeight: 1.5 }}>
+          Expenses — tracked record only. Does not affect Net Position, AUM or TWR.
+          Add a new entry each month for recurring expenses.
+        </p>
+      </div>
+
       {/* Summary */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10, marginBottom: 14 }}>
         {[
@@ -1312,7 +1324,271 @@ function ExpensesTab({ queryClient }) {
   )
 }
 
-// ── LedgerModal — 4-tab shell ─────────────────────────────────────────────
+// ── Tab 5: Wages/Invoices — tracked record only, no calc impact ──────────
+
+function WagesTab({ queryClient }) {
+  const { data: wageList = [], isLoading } = useQuery({
+    queryKey: ['wages'],
+    queryFn:  fetchWages,
+    staleTime: 30_000,
+  })
+
+  const [showForm,     setShowForm]     = useState(false)
+  const [formDate,     setFormDate]     = useState(todayISO())
+  const [formEmp,      setFormEmp]      = useState('')
+  const [formAmount,   setFormAmount]   = useState('')
+  const [formRef,      setFormRef]      = useState('')
+  const [formRecur,    setFormRecur]    = useState('one_time')
+  const [formError,    setFormError]    = useState(null)
+  const [submitting,   setSubmitting]   = useState(false)
+
+  const [editRec,      setEditRec]      = useState(null)
+  const [editDate,     setEditDate]     = useState('')
+  const [editEmp,      setEditEmp]      = useState('')
+  const [editAmount,   setEditAmount]   = useState('')
+  const [editRef,      setEditRef]      = useState('')
+  const [editRecur,    setEditRecur]    = useState('one_time')
+  const [editError,    setEditError]    = useState(null)
+  const [editSaving,   setEditSaving]   = useState(false)
+
+  const [deletingId,   setDeletingId]   = useState(null)
+  const [deleting,     setDeleting]     = useState(false)
+
+  const formScrollRef = useRef(null)
+  useEffect(() => {
+    if (editRec) formScrollRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, [editRec])
+
+  function openAdd() {
+    setEditRec(null); setFormDate(todayISO()); setFormEmp(''); setFormAmount('')
+    setFormRef(''); setFormRecur('one_time'); setFormError(null); setShowForm(true)
+  }
+
+  function openEdit(r) {
+    setShowForm(false); setEditRec(r); setEditDate(r.wage_date); setEditEmp(r.employee)
+    setEditAmount(String(r.amount)); setEditRef(r.reference ?? ''); setEditRecur(r.recurrence ?? 'one_time')
+    setEditError(null)
+  }
+
+  async function handleAdd(e) {
+    e.preventDefault(); setFormError(null)
+    const amt = parseFloat(formAmount)
+    if (isNaN(amt) || amt <= 0) return setFormError('Enter valid amount > 0')
+    if (!formEmp.trim()) return setFormError('Enter employee name')
+    if (!formDate) return setFormError('Select a date')
+    setSubmitting(true)
+    try {
+      await createWage({ wage_date: formDate, employee: formEmp.trim(),
+        amount: parseFloat(amt.toFixed(2)), recurrence: formRecur, reference: formRef.trim() })
+      await queryClient.invalidateQueries({ queryKey: ['wages'] })
+      setShowForm(false)
+    } catch (err) { setFormError(err.message ?? 'Failed') }
+    finally { setSubmitting(false) }
+  }
+
+  async function handleUpdate(e) {
+    e.preventDefault(); setEditError(null)
+    const amt = parseFloat(editAmount)
+    if (isNaN(amt) || amt <= 0) return setEditError('Enter valid amount > 0')
+    if (!editEmp.trim()) return setEditError('Enter employee name')
+    if (!editDate) return setEditError('Select a date')
+    setEditSaving(true)
+    try {
+      await updateWage(editRec.id, { wage_date: editDate, employee: editEmp.trim(),
+        amount: parseFloat(amt.toFixed(2)), recurrence: editRecur, reference: editRef.trim() })
+      await queryClient.invalidateQueries({ queryKey: ['wages'] })
+      setEditRec(null)
+    } catch (err) { setEditError(err.message ?? 'Failed') }
+    finally { setEditSaving(false) }
+  }
+
+  async function handleDelete() {
+    setDeleting(true)
+    try {
+      await deleteWage(deletingId)
+      await queryClient.invalidateQueries({ queryKey: ['wages'] })
+    } finally { setDeleting(false); setDeletingId(null) }
+  }
+
+  function renderWageForm(isEdit) {
+    const date    = isEdit ? editDate   : formDate
+    const emp     = isEdit ? editEmp    : formEmp
+    const amount  = isEdit ? editAmount : formAmount
+    const ref     = isEdit ? editRef    : formRef
+    const recur   = isEdit ? editRecur  : formRecur
+    const error   = isEdit ? editError  : formError
+    const saving  = isEdit ? editSaving : submitting
+    const setDate = isEdit ? setEditDate   : setFormDate
+    const setEmp  = isEdit ? setEditEmp    : setFormEmp
+    const setAmt  = isEdit ? setEditAmount : setFormAmount
+    const setRef  = isEdit ? setEditRef    : setFormRef
+    const setRec  = isEdit ? setEditRecur  : setFormRecur
+    const onSubmit = isEdit ? handleUpdate : handleAdd
+    const onCancel = isEdit ? () => setEditRec(null) : () => setShowForm(false)
+
+    return (
+      <form ref={isEdit ? formScrollRef : null} onSubmit={onSubmit} style={{
+        background: 'rgba(244,114,182,0.06)', border: '1px solid rgba(244,114,182,0.2)',
+        borderRadius: 10, padding: '14px 16px', marginBottom: 14,
+      }}>
+        <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
+          letterSpacing: '0.7px', color: '#f472b6', display: 'block', marginBottom: 10 }}>
+          {isEdit ? 'Edit Wage/Invoice' : 'New Wage/Invoice'}
+        </span>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10, marginBottom: 10 }}>
+          <DateField value={date} onChange={setDate} />
+          <div>
+            <label style={{ fontSize: 10, color: '#64748B', textTransform: 'uppercase',
+              letterSpacing: '0.5px', display: 'block', marginBottom: 5 }}>Amount (£)</label>
+            <AmountInput value={amount} onChange={setAmt} style={INPUT_STYLE} required />
+          </div>
+          <div>
+            <label style={{ fontSize: 10, color: '#64748B', textTransform: 'uppercase',
+              letterSpacing: '0.5px', display: 'block', marginBottom: 5 }}>Recurrence</label>
+            <div style={{ display: 'flex', gap: 6 }}>
+              {[{ id: 'one_time', label: 'One-time' }, { id: 'recurring', label: 'Recurring' }].map(o => (
+                <button key={o.id} type="button" onClick={() => setRec(o.id)} style={{
+                  flex: 1, padding: '7px 0', borderRadius: 7, border: 'none', fontSize: 11,
+                  fontWeight: 600, cursor: 'pointer',
+                  background: recur===o.id ? 'rgba(244,114,182,0.3)' : 'rgba(71,85,105,0.3)',
+                  color: recur===o.id ? '#f472b6' : '#64748B',
+                }}>{o.label}</button>
+              ))}
+            </div>
+          </div>
+        </div>
+        <div style={{ marginBottom: 10 }}>
+          <label style={{ fontSize: 10, color: '#64748B', textTransform: 'uppercase',
+            letterSpacing: '0.5px', display: 'block', marginBottom: 5 }}>Employee</label>
+          <input type="text" value={emp} onChange={e => setEmp(e.target.value)}
+            placeholder="e.g. J. Smith" style={INPUT_STYLE} required />
+        </div>
+        <div style={{ marginBottom: 12 }}>
+          <label style={{ fontSize: 10, color: '#64748B', textTransform: 'uppercase',
+            letterSpacing: '0.5px', display: 'block', marginBottom: 5 }}>Reference (optional)</label>
+          <input type="text" value={ref} onChange={e => setRef(e.target.value)}
+            placeholder="e.g. statement/invoice reference" style={INPUT_STYLE} />
+        </div>
+        {error && <p style={{ fontSize: 11, color: '#f87171', marginBottom: 10 }}>{error}</p>}
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button type="submit" disabled={saving} style={{ ...BTN_SM_STYLE,
+            background: '#db2777', opacity: saving ? 0.65 : 1 }}>
+            {saving ? 'Saving…' : isEdit ? 'Update' : 'Save Wage/Invoice'}
+          </button>
+          <button type="button" onClick={onCancel} disabled={saving}
+            style={{ ...BTN_SM_STYLE, background: '#374151', opacity: saving ? 0.5 : 1 }}>Cancel</button>
+        </div>
+      </form>
+    )
+  }
+
+  const totalWages     = wageList.reduce((s, w) => s + w.amount, 0)
+  const recurringCount = wageList.filter(w => w.recurrence === 'recurring').length
+
+  return (
+    <>
+      {/* Info box */}
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 14,
+        background: 'rgba(244,114,182,0.06)', border: '1px solid rgba(244,114,182,0.2)',
+        borderRadius: 10, padding: '10px 14px' }}>
+        <Info size={13} color="#f472b6" style={{ flexShrink: 0, marginTop: 1 }} />
+        <p style={{ fontSize: 11, color: '#94a3b8', lineHeight: 1.5 }}>
+          Wages &amp; invoices — tracked record only. Does not affect Net Position, AUM or TWR.
+          Add a new entry each month for recurring wages/invoices.
+        </p>
+      </div>
+
+      {/* Summary */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10, marginBottom: 14 }}>
+        {[
+          { label: 'Total Wages/Invoices', value: formatCurrencyAbs(totalWages), color: '#f472b6' },
+          { label: 'Recurring Items', value: String(recurringCount), color: '#94a3b8' },
+        ].map(s => (
+          <div key={s.label} style={{ background: 'rgba(30,41,59,0.4)', border: '1px solid rgba(51,65,85,0.3)',
+            borderRadius: 10, padding: '10px 14px' }}>
+            <p style={{ fontSize: 10, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.6px', marginBottom: 4 }}>{s.label}</p>
+            <p style={{ fontSize: 15, fontWeight: 700, color: s.color, fontVariantNumeric: 'tabular-nums' }}>{s.value}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* Add button */}
+      {!editRec && (
+        <div style={{ marginBottom: 14 }}>
+          <button onClick={openAdd} style={{ display: 'flex', alignItems: 'center', gap: 6,
+            padding: '7px 12px', borderRadius: 8, cursor: 'pointer', fontSize: 11, fontWeight: 600,
+            background: 'rgba(244,114,182,0.15)', color: '#f472b6', border: '1px solid rgba(244,114,182,0.25)' }}>
+            <Plus size={12} /> Record Wage/Invoice
+          </button>
+        </div>
+      )}
+
+      {showForm && !editRec && renderWageForm(false)}
+      {editRec && renderWageForm(true)}
+
+      {/* List */}
+      <p style={{ fontSize: 10, fontWeight: 600, color: '#475569', textTransform: 'uppercase',
+        letterSpacing: '0.8px', marginBottom: 8 }}>Wages/Invoices Log</p>
+      {isLoading
+        ? <p style={{ fontSize: 12, color: '#475569', textAlign: 'center', padding: '20px 0' }}>Loading…</p>
+        : wageList.length === 0
+          ? <p style={{ fontSize: 12, color: '#475569', textAlign: 'center', padding: '20px 0' }}>No wages/invoices recorded</p>
+          : <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {wageList.map(w => {
+                const isRecurring = w.recurrence === 'recurring'
+                return (
+                  <div key={w.id} style={{
+                    background: 'rgba(244,114,182,0.06)', border: '1px solid rgba(244,114,182,0.18)',
+                    borderRadius: 10, padding: '9px 12px',
+                  }}>
+                    <EventRow onEdit={() => openEdit(w)} onDelete={() => setDeletingId(w.id)}>
+                      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
+                        {/* Left: icon + title + notes/ref */}
+                        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, minWidth: 0, flex: 1 }}>
+                          <div style={{ width: 24, height: 24, borderRadius: 6, display: 'flex', alignItems: 'center',
+                            justifyContent: 'center', flexShrink: 0, background: 'rgba(244,114,182,0.2)' }}>
+                            <span style={{ fontSize: 11, fontWeight: 800, color: '#f472b6' }}>-</span>
+                          </div>
+                          <div style={{ minWidth: 0 }}>
+                            <span style={{ fontSize: 12, fontWeight: 600, color: '#E2E8F0' }}>{w.employee}</span>
+                            <div style={{ marginTop: 3, display: 'flex', flexDirection: 'column', gap: 1 }}>
+                              <span style={{ fontSize: 10, color: '#64748B' }}>
+                                {isRecurring ? 'Recurring' : 'One-time'}
+                              </span>
+                              {w.reference && (
+                                <span style={{ fontSize: 10, color: '#475569' }}>Ref: {w.reference}</span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                        {/* Right: date (bold, top) / amount (below) */}
+                        <div style={{ flexShrink: 0, textAlign: 'right' }}>
+                          <div style={{ fontSize: 11, fontWeight: 700, color: '#CBD5E1' }}>{fmtDate(w.wage_date)}</div>
+                          <div style={{ fontSize: 12, fontWeight: 700, fontVariantNumeric: 'tabular-nums',
+                            color: '#f472b6', marginTop: 3 }}>
+                            -{formatCurrencyAbs(w.amount)}
+                          </div>
+                        </div>
+                      </div>
+                    </EventRow>
+                  </div>
+                )
+              })}
+            </div>
+      }
+
+      {deletingId != null && (
+        <ConfirmModal
+          title="Delete Wage/Invoice" message="Permanently delete this record?"
+          variant="delete" confirmLabel="Delete"
+          onConfirm={handleDelete} onCancel={() => setDeletingId(null)} loading={deleting}
+        />
+      )}
+    </>
+  )
+}
+
+// ── LedgerModal — 5-tab shell ─────────────────────────────────────────────
 
 function LedgerModal({ data, onClose }) {
   const queryClient = useQueryClient()
@@ -1323,6 +1599,7 @@ function LedgerModal({ data, onClose }) {
     { id: 'transfers', label: 'Internal Transfers',   count: null },
     { id: 'misc',      label: 'Miscellaneous',        count: null },
     { id: 'expenses',  label: 'Expenses',             count: null },
+    { id: 'wages',     label: 'Wages/Invoices',       count: null },
   ]
 
   return (
@@ -1361,6 +1638,7 @@ function LedgerModal({ data, onClose }) {
       {activeTab === 'transfers' && <InternalTransfersTab capitalData={data}  queryClient={queryClient} />}
       {activeTab === 'misc'      && <MiscellaneousTab                        queryClient={queryClient} />}
       {activeTab === 'expenses'  && <ExpensesTab                             queryClient={queryClient} />}
+      {activeTab === 'wages'     && <WagesTab                                queryClient={queryClient} />}
     </Modal>
   )
 }
@@ -1622,10 +1900,12 @@ export default function SummaryStrip({ data, equityCurve, loading }) {
     justifyContent: 'space-between',
     padding:        '18px 20px 16px',
     borderRadius:   16,
-    border:         '1px solid rgba(30,58,95,0.6)',
-    background:     'rgba(13,17,23,0.80)',
-    backdropFilter: 'blur(8px)',
-    transition:     'all 0.2s',
+    border:         '1px solid rgba(255,255,255,0.08)',
+    background:     'linear-gradient(160deg, rgba(28,45,71,0.42) 0%, rgba(13,24,38,0.68) 100%)',
+    backdropFilter:       'blur(14px) saturate(150%)',
+    WebkitBackdropFilter: 'blur(14px) saturate(150%)',
+    boxShadow:      '0 1px 0 rgba(255,255,255,0.05) inset, 0 8px 20px -14px rgba(0,0,0,0.55)',
+    transition:     'transform 0.22s cubic-bezier(.2,.8,.2,1), box-shadow 0.22s ease, border-color 0.22s ease',
     position:       'relative',
     overflow:       'hidden',
   }
@@ -1717,10 +1997,10 @@ export default function SummaryStrip({ data, equityCurve, loading }) {
           <span style={HINT}>Ledger ↗</span>
         </div>
 
-        {/* ── Card 2: Current AUM ── */}
+        {/* ── Card 2: Current Equity ── */}
         <div style={baseCard}>
           <div>
-            <div style={LABEL_STYLE}>Current AUM</div>
+            <div style={LABEL_STYLE}>Current Equity</div>
             <div style={{ ...MAIN_VAL_BASE, color: '#F1F5F9' }}>
               {formatCurrencyAbs(animAum)}
             </div>
@@ -1728,36 +2008,7 @@ export default function SummaryStrip({ data, equityCurve, loading }) {
           <div style={SUB_LINE}>Assets Under Management</div>
         </div>
 
-        {/* ── Card 3: TWR ── */}
-        <div
-          style={{
-            ...clickableCard,
-            borderColor: isTWRPos ? 'rgba(52,211,153,0.2)' : 'rgba(248,113,113,0.2)',
-            boxShadow:   isTWRPos
-              ? '0 0 20px rgba(52,211,153,0.07)'
-              : '0 0 20px rgba(248,113,113,0.07)',
-          }}
-          onClick={() => setModal('twr')}
-          onMouseEnter={e => {
-            e.currentTarget.style.borderColor = isTWRPos ? 'rgba(52,211,153,0.4)' : 'rgba(248,113,113,0.4)'
-            e.currentTarget.style.transform   = 'scale(1.01)'
-          }}
-          onMouseLeave={e => {
-            e.currentTarget.style.borderColor = isTWRPos ? 'rgba(52,211,153,0.2)' : 'rgba(248,113,113,0.2)'
-            e.currentTarget.style.transform   = 'scale(1)'
-          }}
-        >
-          <div>
-            <div style={LABEL_STYLE}>TWR</div>
-            <div style={{ ...MAIN_VAL_BASE, color: isTWRPos ? '#34d399' : '#f87171' }}>
-              {fmtPct(animTWR)}
-            </div>
-          </div>
-          <div style={SUB_LINE}>Time-Weighted Return</div>
-          <span style={HINT}>Breakdown ↗</span>
-        </div>
-
-        {/* ── Card 4: Total PnL ── */}
+        {/* ── Card 3: Total PnL ── */}
         <div
           style={{
             ...clickableCard,
@@ -1784,6 +2035,35 @@ export default function SummaryStrip({ data, equityCurve, loading }) {
           </div>
           <div style={SUB_LINE}>Since inception</div>
           <span style={HINT}>Equity curve ↗</span>
+        </div>
+
+        {/* ── Card 4: Performance (TWR) ── */}
+        <div
+          style={{
+            ...clickableCard,
+            borderColor: isTWRPos ? 'rgba(52,211,153,0.2)' : 'rgba(248,113,113,0.2)',
+            boxShadow:   isTWRPos
+              ? '0 0 20px rgba(52,211,153,0.07)'
+              : '0 0 20px rgba(248,113,113,0.07)',
+          }}
+          onClick={() => setModal('twr')}
+          onMouseEnter={e => {
+            e.currentTarget.style.borderColor = isTWRPos ? 'rgba(52,211,153,0.4)' : 'rgba(248,113,113,0.4)'
+            e.currentTarget.style.transform   = 'scale(1.01)'
+          }}
+          onMouseLeave={e => {
+            e.currentTarget.style.borderColor = isTWRPos ? 'rgba(52,211,153,0.2)' : 'rgba(248,113,113,0.2)'
+            e.currentTarget.style.transform   = 'scale(1)'
+          }}
+        >
+          <div>
+            <div style={LABEL_STYLE}>Performance</div>
+            <div style={{ ...MAIN_VAL_BASE, color: isTWRPos ? '#34d399' : '#f87171' }}>
+              {fmtPct(animTWR)}
+            </div>
+          </div>
+          <div style={SUB_LINE}>Time-Weighted Return</div>
+          <span style={HINT}>Breakdown ↗</span>
         </div>
 
       </div>

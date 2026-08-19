@@ -231,6 +231,26 @@ export function deleteExpense(id) {
 }
 
 // ---------------------------------------------------------------------------
+// Management — Wages/Invoices
+// ---------------------------------------------------------------------------
+
+export function fetchWages() {
+  return get('/api/management/wages')
+}
+
+export function createWage(body) {
+  return _post('/api/management/wages', body)
+}
+
+export function updateWage(id, body) {
+  return _patch(`/api/management/wages/${id}`, body)
+}
+
+export function deleteWage(id) {
+  return _delete(`/api/management/wages/${id}`)
+}
+
+// ---------------------------------------------------------------------------
 // AXIA Clients (Daily Equity — for Strategy linking)
 // ---------------------------------------------------------------------------
 

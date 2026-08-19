@@ -19,7 +19,7 @@ from src.services import supabase_service as sb_svc
 from src.models.schemas import (
     PortfolioPageResponse, DrillDownPageResponse,
     TraderContextResponse,
-    KpiData, PodSummary, EquityPoint, AllocationSlice,
+    KpiData, PodSummary, StrategySummary, EquityPoint, AllocationSlice,
     PnlBar, BreakdownRow, HierarchyTableResponse,
     FundLedgerSummary, SubPeriod, CapitalEvent,
 )
@@ -83,6 +83,23 @@ def get_portfolio(time_range: str = Query("SI")):
         for p in pod_data
     ]
 
+    # Strategy strips — reuse pod_pfees_map
+    strategy_data = sb_svc.get_strategies_with_kpis_fast(
+        pod_pfees_map = pod_pfees_map,
+        balance_hist  = balance_hist,
+    )
+    strategies = [
+        StrategySummary(
+            entity_id     = s["entity_id"],
+            name          = s["name"],
+            strategy_code = s.get("strategy_code", ""),
+            pod_code      = s.get("pod_code", ""),
+            pod_color     = s.get("pod_color", "#6366f1"),
+            kpis          = KpiData(**s["kpis"]),
+        )
+        for s in strategy_data
+    ]
+
     # Equity curve — reuse balance_hist
     equity_curve = [
         EquityPoint(timestamp=pt["timestamp"], equity=pt["equity"])
@@ -100,6 +117,7 @@ def get_portfolio(time_range: str = Query("SI")):
         last_updated     = last_updated,
         kpis             = kpis,
         pods             = pods,
+        strategies       = strategies,
         equity_curve     = equity_curve,
         allocation       = allocation,
         pnl_contribution = pnl_contribution,

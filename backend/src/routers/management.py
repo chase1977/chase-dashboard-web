@@ -31,6 +31,10 @@ Endpoints:
   POST /api/management/expenses                  Create expense
   PATCH /api/management/expenses/{id}            Update expense
   DELETE /api/management/expenses/{id}           Delete expense
+  GET  /api/management/wages                     List all wages/invoices
+  POST /api/management/wages                     Create wage/invoice
+  PATCH /api/management/wages/{id}               Update wage/invoice
+  DELETE /api/management/wages/{id}               Delete wage/invoice
 
   GET  /api/management/fund-metrics              Live AUM, PnL, TWR from Supabase
 """
@@ -635,5 +639,66 @@ def update_expense(expense_id: int, body: ExpensePatch):
 def delete_expense(expense_id: int):
     try:
         sb.delete_expense(expense_id)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Wages/Invoices — tracked record only, does NOT affect bank_balance/TWR/AUM
+# ---------------------------------------------------------------------------
+
+class WageIn(BaseModel):
+    wage_date:  str   = Field(..., description="ISO date YYYY-MM-DD")
+    employee:   str   = Field(..., description="Employee / payee name")
+    amount:     float = Field(..., gt=0, description="Always positive")
+    recurrence: str   = Field(..., pattern="^(one_time|recurring)$")
+    reference:  Optional[str] = None
+
+
+class WagePatch(BaseModel):
+    wage_date:  Optional[str]   = None
+    employee:   Optional[str]   = None
+    amount:     Optional[float] = Field(None, gt=0)
+    recurrence: Optional[str]   = Field(None, pattern="^(one_time|recurring)$")
+    reference:  Optional[str]   = None
+
+
+@router.get("/wages")
+def list_wages():
+    try:
+        return sb.list_wages()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/wages", status_code=201)
+def create_wage(body: WageIn):
+    try:
+        return sb.create_wage(
+            wage_date  = body.wage_date,
+            employee   = body.employee,
+            amount     = body.amount,
+            recurrence = body.recurrence,
+            reference  = body.reference or "",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.patch("/wages/{wage_id}")
+def update_wage(wage_id: int, body: WagePatch):
+    fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not fields:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    try:
+        return sb.update_wage(wage_id, **fields)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.delete("/wages/{wage_id}", status_code=204)
+def delete_wage(wage_id: int):
+    try:
+        sb.delete_wage(wage_id)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

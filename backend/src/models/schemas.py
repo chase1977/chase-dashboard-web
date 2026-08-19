@@ -48,6 +48,19 @@ class PodSummary(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Strategy summary (used in Portfolio page strategy overview strip)
+# ---------------------------------------------------------------------------
+
+class StrategySummary(BaseModel):
+    entity_id:      str
+    name:           str
+    strategy_code:  Optional[str]
+    pod_code:       Optional[str]
+    pod_color:      Optional[str]
+    kpis:           KpiData
+
+
+# ---------------------------------------------------------------------------
 # Equity curve point
 # ---------------------------------------------------------------------------
 
@@ -123,6 +136,7 @@ class PortfolioPageResponse(BaseModel):
     last_updated:     str
     kpis:             KpiData
     pods:             List[PodSummary]
+    strategies:       List[StrategySummary]
     equity_curve:     List[EquityPoint]
     allocation:       List[AllocationSlice]
     pnl_contribution: List[PnlBar]

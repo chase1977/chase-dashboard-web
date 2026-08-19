@@ -227,6 +227,14 @@ export default function AxiaEquityEntry() {
   const [newLabel,   setNewLabel]   = useState('')
   const [clientSaving, setClientSaving] = useState(false)
 
+  // Edit client form (client ID / account / label — fixes typos post-entry)
+  const [showEditClient,  setShowEditClient]  = useState(false)
+  const [editClientText,  setEditClientText]  = useState('')
+  const [editAccountText, setEditAccountText] = useState('')
+  const [editLabelText,   setEditLabelText]   = useState('')
+  const [clientEditSaving, setClientEditSaving] = useState(false)
+  const [clientEditError,  setClientEditError]  = useState(null)
+
   // Popups
   const [confirmPopup, setConfirmPopup] = useState(null)  // { message, onConfirm, variant }
 
@@ -459,6 +467,38 @@ export default function AxiaEquityEntry() {
     finally { setClientSaving(false) }
   }
 
+  // ---- Edit client (client ID / account / label) ----
+  const openEditClient = () => {
+    if (!selClient) return
+    setEditClientText(selClient.client)
+    setEditAccountText(selClient.account)
+    setEditLabelText(selClient.label ?? '')
+    setClientEditError(null)
+    setShowEditClient(true)
+  }
+
+  const saveEditClient = async () => {
+    if (!selClient || !editClientText || !editAccountText) return
+    setClientEditSaving(true); setClientEditError(null)
+    try {
+      const res = await fetch(`${BASE}/api/axia/clients/${selClient.id}`, {
+        method:  'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          client:  editClientText,
+          account: editAccountText,
+          label:   editLabelText,
+        }),
+      })
+      if (!res.ok) { const e = await res.json(); throw new Error(e.detail) }
+      const updated = await res.json()
+      setShowEditClient(false)
+      await loadClients()
+      setSelClient(updated)   // triggers loadRecords with the (possibly new) client/account
+    } catch (e) { setClientEditError(e.message) }
+    finally { setClientEditSaving(false) }
+  }
+
   // ---- Computed chg display ----
   const displayChg = chgNlv ?? parseNum(chgOverride) ?? null
 
@@ -473,44 +513,50 @@ export default function AxiaEquityEntry() {
         select option { background: #111C2B; }
       `}</style>
 
-      {/* ── Client selector ── */}
+      {/* ── Client / Account tabs ── */}
       <div style={{ marginBottom: 20 }}>
         <Label>Client / Account</Label>
-        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-          {clients.length === 0 ? (
-            <div style={{ fontSize: 12, color: C.textSub }}>No clients — add one below.</div>
-          ) : clients.length === 1 ? (
-            <div style={{
-              padding: '8px 16px', borderRadius: 6, fontSize: 12, fontWeight: 600,
-              background: C.accentDim, border: `1px solid ${C.accentBorder}`, color: C.accent,
-            }}>
-              {clients[0].client} / {clients[0].account}
-              {clients[0].label ? ` — ${clients[0].label}` : ''}
-            </div>
-          ) : (
-            <Select
-              value={selClient ? `${selClient.client}|${selClient.account}` : ''}
-              onChange={e => {
-                const [cl, ac] = e.target.value.split('|')
-                setSelClient(clients.find(c => c.client === cl && c.account === ac))
-              }}
-              style={{ maxWidth: 320 }}
-            >
-              {clients.map(c => (
-                <option key={c.id} value={`${c.client}|${c.account}`}>
-                  {c.client} / {c.account}{c.label ? ` — ${c.label}` : ''}
-                </option>
-              ))}
-            </Select>
-          )}
 
-          <Btn variant="default" onClick={() => setShowNewClient(v => !v)}
-            style={{ fontSize: 11, padding: '7px 14px' }}>
-            {showNewClient ? '✕ Cancel' : '+ New Client'}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          {/* Tab bar — one tab per client/account, scrolls horizontally on overflow */}
+          <div style={{
+            display: 'flex', gap: 6, flex: 1, minWidth: 0, overflowX: 'auto',
+            WebkitOverflowScrolling: 'touch', paddingBottom: 2,
+          }}>
+            {clients.length === 0 ? (
+              <div style={{ fontSize: 12, color: C.textSub, padding: '8px 0' }}>No clients — add one on the right.</div>
+            ) : (
+              clients.map(c => {
+                const active = selClient?.id === c.id
+                return (
+                  <button
+                    key={c.id}
+                    onClick={() => { setSelClient(c); setShowEditClient(false) }}
+                    style={{
+                      padding: '8px 14px', borderRadius: 6, fontSize: 12, fontWeight: 600,
+                      whiteSpace: 'nowrap', cursor: 'pointer', flexShrink: 0,
+                      background: active ? C.accentDim : 'transparent',
+                      border: `1px solid ${active ? C.accentBorder : C.border}`,
+                      color: active ? C.accent : C.textMid,
+                    }}
+                  >
+                    {c.client} / {c.account}{c.label ? ` — ${c.label}` : ''}
+                  </button>
+                )
+              })
+            )}
+          </div>
+
+          {/* Far right — add client/account */}
+          <Btn variant="default" onClick={() => { setShowNewClient(v => !v); setShowEditClient(false) }}
+            style={{ fontSize: 11, padding: '7px 14px', flexShrink: 0 }}>
+            {showNewClient ? '✕ Cancel' : '+ Client / Account'}
           </Btn>
+        </div>
 
-          {selClient && (
-            linkedStrategy ? (
+        {selClient && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
+            {linkedStrategy ? (
               <div style={{
                 padding: '6px 12px', borderRadius: 6, fontSize: 11, fontWeight: 600,
                 background: 'rgba(168,85,247,0.10)', border: '1px solid rgba(168,85,247,0.28)',
@@ -526,9 +572,48 @@ export default function AxiaEquityEntry() {
               }}>
                 Not linked to a strategy — link it in Manage Pods &amp; Strategies to feed the breakdown table
               </div>
-            )
-          )}
-        </div>
+            )}
+
+            <Btn variant="default" onClick={() => { showEditClient ? setShowEditClient(false) : openEditClient() }}
+              style={{ fontSize: 11, padding: '6px 12px' }}>
+              {showEditClient ? '✕ Cancel Edit' : 'Edit Client / Account'}
+            </Btn>
+          </div>
+        )}
+
+        {/* Edit client inline form — fixes client ID / account / label typos.
+            Editing client/account text cascades onto existing equity history
+            server-side, so past entries stay linked. */}
+        {showEditClient && selClient && (
+          <div style={{
+            marginTop: 14, padding: '16px 18px', borderRadius: 8,
+            background: 'rgba(245,158,11,0.05)', border: `1px solid ${C.warnBorder}`,
+            display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end',
+          }}>
+            <Field>
+              <Label>Client ID</Label>
+              <Input value={editClientText} onChange={e => setEditClientText(e.target.value.toUpperCase())}
+                placeholder="4751R" style={{ width: 100 }} />
+            </Field>
+            <Field>
+              <Label>Account</Label>
+              <Input value={editAccountText} onChange={e => setEditAccountText(e.target.value)}
+                placeholder="47511" style={{ width: 110 }} />
+            </Field>
+            <Field style={{ flex: 1, minWidth: 160 }}>
+              <Label>Label / Notes (optional)</Label>
+              <Input value={editLabelText} onChange={e => setEditLabelText(e.target.value)}
+                placeholder="Chase Capital – AXIA" />
+            </Field>
+            <Btn variant="warn" onClick={saveEditClient}
+              disabled={clientEditSaving || !editClientText || !editAccountText}>
+              {clientEditSaving ? 'Saving…' : 'Save Changes'}
+            </Btn>
+            {clientEditError && (
+              <div style={{ width: '100%', fontSize: 11, color: C.neg }}>⚠ {clientEditError}</div>
+            )}
+          </div>
+        )}
 
         {/* New client inline form */}
         {showNewClient && (

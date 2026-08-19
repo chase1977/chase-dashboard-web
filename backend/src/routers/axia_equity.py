@@ -5,6 +5,10 @@ AXIA Daily Equity router.
 Endpoints:
   GET    /api/axia/clients              List all client/account pairs
   POST   /api/axia/clients              Create new client/account pair
+  PATCH  /api/axia/clients/{id}         Update client/account/label — cascades
+                                         client/account text changes onto
+                                         existing axia_daily_equity rows so
+                                         history stays linked
   DELETE /api/axia/clients/{id}         Delete client
 
   GET    /api/axia/equity               List records ?client=&account=&limit=
@@ -34,6 +38,12 @@ router = APIRouter(prefix="/api/axia", tags=["axia"])
 class ClientCreate(BaseModel):
     client:  str
     account: str
+    label:   Optional[str] = None
+
+
+class ClientPatch(BaseModel):
+    client:  Optional[str] = None
+    account: Optional[str] = None
     label:   Optional[str] = None
 
 
@@ -85,6 +95,58 @@ def create_client(body: ClientCreate):
     except Exception as exc:
         if "duplicate" in str(exc).lower() or "unique" in str(exc).lower():
             raise HTTPException(status_code=409, detail="Client/account already exists.")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.patch("/clients/{client_id}")
+def update_client(client_id: str, body: ClientPatch):
+    """
+    Update a client's client/account/label. If client or account text changes,
+    cascades that change onto every existing axia_daily_equity row so
+    historical equity entries stay linked to the correct client — otherwise
+    they'd silently orphan (row still exists, but no longer matches on
+    client/account lookup).
+    """
+    sb = get_client()
+    existing = sb.table("axia_clients").select("*").eq("id", client_id).execute().data
+    if not existing:
+        raise HTTPException(status_code=404, detail="Client not found.")
+    old = existing[0]
+
+    fields = {}
+    if body.client is not None:
+        fields["client"] = body.client.strip().upper()
+    if body.account is not None:
+        fields["account"] = body.account.strip()
+    if body.label is not None:
+        fields["label"] = body.label.strip() or None
+    if not fields:
+        raise HTTPException(status_code=400, detail="No fields to update.")
+
+    try:
+        new_client  = fields.get("client",  old["client"])
+        new_account = fields.get("account", old["account"])
+
+        row = (
+            sb.table("axia_clients")
+            .update(fields)
+            .eq("id", client_id)
+            .execute()
+            .data[0]
+        )
+
+        # Cascade client/account text change onto existing equity history
+        if new_client != old["client"] or new_account != old["account"]:
+            sb.table("axia_daily_equity").update({
+                "client":  new_client,
+                "account": new_account,
+            }).eq("client", old["client"]).eq("account", old["account"]).execute()
+
+        invalidate_all_cache()
+        return row
+    except Exception as exc:
+        if "duplicate" in str(exc).lower() or "unique" in str(exc).lower():
+            raise HTTPException(status_code=409, detail="Another client already has that client/account.")
         raise HTTPException(status_code=500, detail=str(exc))
 
 
