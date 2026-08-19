@@ -631,13 +631,74 @@ def _axia_equity_series(client: str, account: str) -> list[dict]:
     return _get_cached(f"axia_equity_{client}_{account}", _fetch)
 
 
+def _capital_transfers_by_strategy() -> dict[int, dict]:
+    """
+    strategy_id -> { "in": float, "out": float } aggregated from the
+    capital_transfers ledger (Wallet/Pod/Strategy typed transfers).
+
+    Separate from Darwinex's internal_transfers table — this ledger covers
+    AXIA and manual/other strategies only, per the Wallet↔Pod↔Strategy
+    funding-tranche model. "in" = cumulative capital moved INTO the
+    strategy (never reduced — matches "Total Capital Invested" being
+    monotonic). "out" = cumulative capital moved back OUT to a pod/wallet.
+    """
+    def _fetch():
+        rows = get_client().table("capital_transfers").select("*").execute().data or []
+        agg: dict[int, dict] = {}
+        for r in rows:
+            amt = float(r.get("amount") or 0)
+            if r.get("to_type") == "strategy" and r.get("to_id") is not None:
+                sid = int(r["to_id"])
+                agg.setdefault(sid, {"in": 0.0, "out": 0.0})
+                agg[sid]["in"] = round(agg[sid]["in"] + amt, 2)
+            if r.get("from_type") == "strategy" and r.get("from_id") is not None:
+                sid = int(r["from_id"])
+                agg.setdefault(sid, {"in": 0.0, "out": 0.0})
+                agg[sid]["out"] = round(agg[sid]["out"] + amt, 2)
+        return agg
+    return _get_cached("capital_transfers_by_strategy", _fetch)
+
+
+def _strategy_capital_invested(s: dict, net_deployed: dict, axia_agg: dict,
+                                ct_by_strategy: dict) -> float:
+    """
+    Single source of truth for a strategy's "Total Capital Invested".
+    Priority:
+      1. brokerage_account set (Darwinex) → net_deployed_per_account
+         (unchanged — Darwinex keeps its own internal_transfers mechanism).
+      2. capital_transfers ledger has inbound entries → sum of those
+         (new source of truth, once a strategy has been funded through
+         the Wallet/Pod/Strategy picker).
+      3. AXIA-linked, no transfers logged yet → first daily-equity baseline
+         (transitional fallback until backfilled).
+      4. else → manual initial_investment field on the strategy row
+         (transitional fallback).
+    """
+    acct = s.get("brokerage_account")
+    if acct:
+        return net_deployed.get(acct, 0.0)
+    ct = ct_by_strategy.get(s["id"])
+    if ct and ct["in"] > 0:
+        return round(ct["in"], 2)
+    if s.get("axia_client_id") and s["id"] in axia_agg:
+        return axia_agg[s["id"]]["baseline"]
+    return float(s.get("initial_investment") or 0)
+
+
 def _axia_strategy_agg(strategies: list[dict]) -> dict[int, dict]:
     """
     strategy_id -> { invested, pnl, baseline, series } for strategies with
-    axia_client_id set. invested = latest GBP equity. baseline = first GBP
-    equity entry for that client/account. pnl = latest − baseline.
+    axia_client_id set. invested = latest GBP equity (current equity).
+
+    baseline (cost basis / "Total Capital Invested"):
+      - if the strategy has inbound capital_transfers logged, use that sum
+        (accounts for multi-tranche funding, e.g. £100k then +£150k later)
+      - else fall back to first GBP equity entry (transitional, pre-backfill)
+
+    pnl = latest − baseline, so it stays correct under either source.
     """
-    clients_idx = _axia_clients_by_id()
+    clients_idx    = _axia_clients_by_id()
+    ct_by_strategy = _capital_transfers_by_strategy()
     out: dict[int, dict] = {}
     for s in strategies:
         cid = s.get("axia_client_id")
@@ -650,8 +711,12 @@ def _axia_strategy_agg(strategies: list[dict]) -> dict[int, dict]:
         if not series:
             out[s["id"]] = {"invested": 0.0, "pnl": 0.0, "baseline": 0.0, "series": []}
             continue
-        baseline = series[0]["equity"]
-        latest   = series[-1]["equity"]
+        latest = series[-1]["equity"]
+        ct     = ct_by_strategy.get(s["id"])
+        if ct and ct["in"] > 0:
+            baseline = round(ct["in"], 2)
+        else:
+            baseline = series[0]["equity"]
         out[s["id"]] = {
             "invested": latest,
             "pnl":      round(latest - baseline, 2),
@@ -939,18 +1004,11 @@ def get_hierarchy_rows(entity_type: str) -> list[dict]:
         UNALLOCATED = data["UNALLOCATED"]
         pods_idx    = {p["id"]: p for p in pods_list}
 
-        total_aum    = sum(v["invested"] for v in pod_agg.values()) or 1.0
-        net_deployed = _get_net_deployed_per_account()
-        hier_axia_agg = data.get("_axia_agg") or {}
-        rows         = []
-
-        def _hier_strat_initial(s: dict) -> float:
-            acct = s.get("brokerage_account")
-            if acct:
-                return net_deployed.get(acct, 0.0)
-            if s.get("axia_client_id") and s["id"] in hier_axia_agg:
-                return hier_axia_agg[s["id"]]["baseline"]
-            return float(s.get("initial_investment") or 0)
+        total_aum      = sum(v["invested"] for v in pod_agg.values()) or 1.0
+        net_deployed   = _get_net_deployed_per_account()
+        hier_axia_agg  = data.get("_axia_agg") or {}
+        ct_by_strategy = _capital_transfers_by_strategy()
+        rows           = []
 
         for pid, agg in pod_agg.items():
             if pid == UNALLOCATED:
@@ -959,7 +1017,7 @@ def get_hierarchy_rows(entity_type: str) -> list[dict]:
                 pod = pods_idx.get(pid, {"name": f"Pod {pid}", "pod_code": "", "color": "#6366f1", "id": pid})
 
             initial = sum(
-                _hier_strat_initial(s)
+                _strategy_capital_invested(s, net_deployed, hier_axia_agg, ct_by_strategy)
                 for s in data["strategies"]
                 if s.get("pod_id") == pid
             ) if pid != UNALLOCATED else agg["invested"]
@@ -1019,8 +1077,9 @@ def get_hierarchy_rows(entity_type: str) -> list[dict]:
             sum(v["invested"] for v in darwin_agg.values())
             + sum(v["invested"] for v in strat_axia_agg.values())
         ) or 1.0
-        rows               = []
-        strat_net_deployed = _get_net_deployed_per_account()
+        rows                = []
+        strat_net_deployed  = _get_net_deployed_per_account()
+        strat_ct_by_strategy = _capital_transfers_by_strategy()
 
         # Broker → AccountId reverse mapping (for strategies with brokerage_account set)
         acct_to_broker_s = _match_pfees_accounts_to_brokerage()   # { acct_int: "Chase1" }
@@ -1067,13 +1126,7 @@ def get_hierarchy_rows(entity_type: str) -> list[dict]:
                 pod_color  = pod_joined.get("color") or pod.get("color") or "#6366f1"
                 pod_code_s = pod_joined.get("pod_code") or pod.get("pod_code") or ""
 
-                _acct = s.get("brokerage_account")
-                if _acct:
-                    initial = strat_net_deployed.get(_acct, 0.0)
-                elif axia_contrib is not None:
-                    initial = axia_contrib["baseline"]
-                else:
-                    initial = float(s.get("initial_investment") or 0)
+                initial = _strategy_capital_invested(s, strat_net_deployed, strat_axia_agg, strat_ct_by_strategy)
 
                 # Per-strategy period returns — AXIA equity series if AXIA-linked,
                 # else per-account equity series from user_accounts_equity
@@ -1451,16 +1504,9 @@ def get_pods_with_kpis_fast(pod_pfees_map: dict, balance_hist: list[dict]) -> li
     pct_7d  = _period_return_from_hist(balance_hist, 7)
     pct_30d = _period_return_from_hist(balance_hist, 30)
 
-    net_deployed = _get_net_deployed_per_account()
-    axia_agg     = pod_pfees_map.get("_axia_agg") or {}
-
-    def _strat_initial_fast(s: dict) -> float:
-        acct = s.get("brokerage_account")
-        if acct:
-            return net_deployed.get(acct, 0.0)
-        if s.get("axia_client_id") and s["id"] in axia_agg:
-            return axia_agg[s["id"]]["baseline"]
-        return float(s.get("initial_investment") or 0)
+    net_deployed   = _get_net_deployed_per_account()
+    axia_agg       = pod_pfees_map.get("_axia_agg") or {}
+    ct_by_strategy = _capital_transfers_by_strategy()
 
     result = []
 
@@ -1469,7 +1515,7 @@ def get_pods_with_kpis_fast(pod_pfees_map: dict, balance_hist: list[dict]) -> li
             pid     = pod["id"]
             agg     = pod_agg.get(pid, {"invested": 0.0, "pnl": 0.0})
             initial = sum(
-                _strat_initial_fast(s)
+                _strategy_capital_invested(s, net_deployed, axia_agg, ct_by_strategy)
                 for s in strategies if s.get("pod_id") == pid
             )
             result.append({
@@ -1539,7 +1585,8 @@ def get_strategies_with_kpis_fast(pod_pfees_map: dict, balance_hist: list[dict])
     pct_7d  = _period_return_from_hist(balance_hist, 7)
     pct_30d = _period_return_from_hist(balance_hist, 30)
 
-    net_deployed = _get_net_deployed_per_account()
+    net_deployed   = _get_net_deployed_per_account()
+    ct_by_strategy = _capital_transfers_by_strategy()
 
     darwin_agg: dict = {}
     acct_agg:   dict = {}
@@ -1575,12 +1622,7 @@ def get_strategies_with_kpis_fast(pod_pfees_map: dict, balance_hist: list[dict])
         else:
             agg = darwin_agg.get(code, {"invested": 0.0, "pnl": 0.0})
 
-        if broker:
-            initial = net_deployed.get(broker, 0.0)
-        elif axia_contrib is not None:
-            initial = axia_contrib["baseline"]
-        else:
-            initial = float(s.get("initial_investment") or 0)
+        initial = _strategy_capital_invested(s, net_deployed, axia_agg, ct_by_strategy)
 
         pid        = s.get("pod_id")
         pod        = pods_idx.get(pid, {}) if pid else {}
@@ -2100,6 +2142,61 @@ def delete_internal_transfer(transfer_id: int) -> bool:
     sb = get_client()
     sb.table("internal_transfers").delete().eq("id", transfer_id).execute()
     _invalidate("internal_transfers")
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Capital Transfers — Wallet ⇄ Pod ⇄ Strategy funding ledger
+# Separate from Darwinex's internal_transfers above. Covers AXIA and manual
+# strategies: "we moved £150,000 from the wallet into AXIA-JJ", etc.
+# ---------------------------------------------------------------------------
+
+def list_capital_transfers() -> list[dict]:
+    """All rows from capital_transfers ordered by transfer_date ASC, id ASC."""
+    def _fetch():
+        rows = (
+            get_client()
+            .table("capital_transfers")
+            .select("*")
+            .execute()
+            .data or []
+        )
+        rows.sort(key=lambda r: (r["transfer_date"], r["id"]))
+        return rows
+    return _get_cached("capital_transfers", _fetch)
+
+
+def create_capital_transfer(transfer_date: str, from_type: str, from_id,
+                             to_type: str, to_id, amount: float,
+                             reference: str = "", notes: str = "") -> dict:
+    sb  = get_client()
+    res = sb.table("capital_transfers").insert({
+        "transfer_date": transfer_date,
+        "from_type":     from_type,
+        "from_id":       from_id,
+        "to_type":       to_type,
+        "to_id":         to_id,
+        "amount":        round(abs(amount), 2),
+        "reference":     reference or None,
+        "notes":         notes or None,
+    }).execute()
+    _invalidate("capital_transfers", "capital_transfers_by_strategy")
+    return res.data[0] if res.data else {}
+
+
+def update_capital_transfer(transfer_id: int, **fields) -> dict:
+    sb = get_client()
+    if "amount" in fields:
+        fields["amount"] = round(abs(float(fields["amount"])), 2)
+    res = sb.table("capital_transfers").update(fields).eq("id", transfer_id).execute()
+    _invalidate("capital_transfers", "capital_transfers_by_strategy")
+    return res.data[0] if res.data else {}
+
+
+def delete_capital_transfer(transfer_id: int) -> bool:
+    sb = get_client()
+    sb.table("capital_transfers").delete().eq("id", transfer_id).execute()
+    _invalidate("capital_transfers", "capital_transfers_by_strategy")
     return True
 
 

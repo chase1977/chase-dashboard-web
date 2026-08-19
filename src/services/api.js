@@ -191,6 +191,26 @@ export function deleteInternalTransfer(id) {
 }
 
 // ---------------------------------------------------------------------------
+// Management — Capital Transfers (Wallet / Pod / Strategy funding ledger)
+// ---------------------------------------------------------------------------
+
+export function fetchCapitalTransfers() {
+  return get('/api/management/capital-transfers')
+}
+
+export function createCapitalTransfer(body) {
+  return _post('/api/management/capital-transfers', body)
+}
+
+export function updateCapitalTransfer(id, body) {
+  return _patch(`/api/management/capital-transfers/${id}`, body)
+}
+
+export function deleteCapitalTransfer(id) {
+  return _delete(`/api/management/capital-transfers/${id}`)
+}
+
+// ---------------------------------------------------------------------------
 // Management — Miscellaneous Events
 // ---------------------------------------------------------------------------
 

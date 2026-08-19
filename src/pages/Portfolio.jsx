@@ -11,15 +11,17 @@
  *   6. Hierarchy tabs    — Pods | Strategies | Traders | Venues
  */
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useNavigate }         from 'react-router-dom'
 import { useQuery }            from '@tanstack/react-query'
-import { RefreshCw }           from 'lucide-react'
+import { RefreshCw, BookOpen } from 'lucide-react'
 
 import { usePortfolio, useHierarchyTable } from '../hooks/usePortfolioData.js'
 import useIsMobile         from '../hooks/useIsMobile.js'
-import KpiRow              from '../components/cards/KpiRow.jsx'
-import { fmtMoney, fmtPct } from '../components/cards/KpiCard.jsx'
+import {
+  computeCapitalMetrics, fmtGBP, fmtPctSigned, CapitalOverviewHero,
+  CapitalFlowTable, CapitalAtGlanceChart, CapitalInfoBox,
+} from '../components/CapitalOverview.jsx'
 import EquityChart         from '../components/charts/EquityChart.jsx'
 import { DonutChart }      from '../components/charts/DonutChart.jsx'
 import PnlBarChart         from '../components/charts/PnlBarChart.jsx'
@@ -118,11 +120,12 @@ function GlassStyles() {
       }
       .ov-card::after {
         content: '';
-        position: absolute; top: -60%; right: -30%;
-        width: 70%; height: 180%;
-        background: radial-gradient(circle, var(--accent-soft, rgba(56,189,248,0.14)) 0%, transparent 65%);
-        opacity: 0.9; pointer-events: none;
+        position: absolute; inset: 0;
+        background: radial-gradient(130% 110% at 0% 0%, var(--accent-soft, rgba(56,189,248,0.14)) 0%, transparent 62%);
+        opacity: 0.55; pointer-events: none;
+        transition: opacity 0.25s ease;
       }
+      .ov-card:hover::after { opacity: 0.75; }
       .ov-card:hover {
         transform: translateY(-4px);
         border-color: var(--accent-soft, rgba(56,189,248,0.35));
@@ -148,15 +151,23 @@ function GlassStyles() {
       }
       .ov-card:hover .ov-hint { opacity: 1; transform: translateX(0); color: var(--accent, #38BDF8); }
       .stat-grid {
-        display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+        display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 8px;
         position: relative;
+      }
+      .stat-grid.stat-grid-2col {
+        grid-template-columns: repeat(2, minmax(0,1fr));
+      }
+      .cap-hero-card {
+        display: flex; flex-direction: column;
+        min-height: 172px;
       }
       .stat-box {
         position: relative;
         background: rgba(255,255,255,0.035);
         border: 1px solid rgba(255,255,255,0.07);
         border-radius: 10px;
-        padding: 11px 13px;
+        padding: 9px 10px;
+        min-width: 0;
         transition: background 0.25s ease, border-color 0.25s ease;
       }
       .ov-card:hover .stat-box {
@@ -164,13 +175,14 @@ function GlassStyles() {
         border-color: rgba(255,255,255,0.12);
       }
       .stat-label {
-        font-size: 9.5px; font-weight: 600; letter-spacing: 0.5px;
-        text-transform: uppercase; color: #64748B; margin-bottom: 6px;
+        font-size: 8.7px; font-weight: 600; letter-spacing: 0.4px;
+        text-transform: uppercase; color: #64748B; margin-bottom: 5px;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
       }
       .stat-value {
-        font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums;
-        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-        display: flex; align-items: center; gap: 4px;
+        font-size: 12.5px; font-weight: 700; font-variant-numeric: tabular-nums;
+        display: flex; align-items: center; gap: 3px; flex-wrap: wrap;
+        line-height: 1.25; word-break: break-word;
       }
       .ov-grid {
         display: grid; gap: 16px;
@@ -233,12 +245,14 @@ function StatBox({ label, value, tone = 'default' }) {
   )
 }
 
-function OverviewCard({ name, color, kpis, onClick }) {
+function OverviewCard({ name, color, kpis, onClick, isMobile }) {
   const vars = {
     '--accent':       color,
     '--accent-soft':  hexToRgba(color, 0.20),
     '--accent-glow':  hexToRgba(color, 0.35),
   }
+  const { invested, banked, allocated, equity, pnl, roi } = computeCapitalMetrics(kpis)
+
   return (
     <div className="ov-card" onClick={onClick} style={vars}>
       <div className="ov-header">
@@ -247,18 +261,20 @@ function OverviewCard({ name, color, kpis, onClick }) {
         <div className="ov-hint">Drill down →</div>
       </div>
 
-      <div className="stat-grid">
-        <StatBox label="Initial Invested" value={fmtMoney(kpis.initial_investment)} />
-        <StatBox label="Current Equity"   value={fmtMoney(kpis.current_equity)} />
+      <div className={`stat-grid${isMobile ? ' stat-grid-2col' : ''}`}>
+        <StatBox label="Capital Invested" value={fmtGBP(invested)} />
+        <StatBox label="Banked Profit"    value={fmtGBP(banked)} />
+        <StatBox label="Capital Allocated" value={fmtGBP(allocated)} />
+        <StatBox label="Current Equity"   value={fmtGBP(equity)} />
         <StatBox
-          label="Total PnL"
-          value={fmtMoney(kpis.total_pnl)}
-          tone={kpis.total_pnl >= 0 ? 'pos' : 'neg'}
+          label="Total P&L"
+          value={fmtGBP(pnl)}
+          tone={pnl >= 0 ? 'pos' : 'neg'}
         />
         <StatBox
-          label="Performance"
-          value={fmtPct(kpis.performance)}
-          tone={kpis.performance >= 0 ? 'pos' : 'neg'}
+          label="Total ROI"
+          value={fmtPctSigned(roi)}
+          tone={roi >= 0 ? 'pos' : 'neg'}
         />
       </div>
     </div>
@@ -309,6 +325,7 @@ export default function Portfolio({ timeRange, initialTab }) {
   const isMobile  = useIsMobile()
   const [activeTab,    setActiveTab]    = useState(initialTab || 'pod')
   const [showManager,  setShowManager]  = useState(false)
+  const summaryStripRef = useRef(null)
 
   // Sync tab when route changes (e.g. clicking Traders in navbar)
   useEffect(() => {
@@ -334,28 +351,26 @@ export default function Portfolio({ timeRange, initialTab }) {
     equity_curve, allocation, pnl_contribution,
   } = data
 
-  // UK convention: DD-MM-YYYY HH:MM
-  const lastUpdatedStr = last_updated
-    ? (() => {
-        const s = new Date(last_updated).toLocaleString('en-GB', {
-          day: '2-digit', month: '2-digit', year: 'numeric',
-          hour: '2-digit', minute: '2-digit',
-        })
-        const [datePart, timePart] = s.split(', ')
-        return `${datePart.replace(/\//g, '-')}${timePart ? ' ' + timePart : ''} UTC`
-      })()
-    : '—'
-
   return (
     <div style={{ padding: isMobile ? '14px 14px 40px' : '16px 24px 48px' }}>
       <GlassStyles />
+
+      {/* SummaryStrip mounted invisibly — owns the Ledger/Equity/TWR modals,
+          triggered externally via summaryStripRef from the header button. */}
+      <SummaryStrip
+        ref={summaryStripRef}
+        data={fundLedger}
+        equityCurve={equity_curve}
+        loading={ledgerLoading}
+        cardsVisible={false}
+      />
 
       {/* ── Page header ── */}
       <div style={{
         display: 'flex', justifyContent: 'space-between',
         alignItems: isMobile ? 'flex-start' : 'flex-end',
         flexDirection: isMobile ? 'column' : 'row',
-        gap: isMobile ? 8 : 0,
+        gap: isMobile ? 10 : 0,
         marginBottom: 20,
       }}>
         <div>
@@ -366,35 +381,46 @@ export default function Portfolio({ timeRange, initialTab }) {
             Portfolio · All pods · {timeRange === 'SI' ? 'Since inception' : timeRange}
           </div>
         </div>
-        <div style={{ textAlign: isMobile ? 'left' : 'right', fontSize: 11, color: '#475569', lineHeight: 1.6 }}>
-          Last updated<br />
-          <span style={{ color: '#64748B' }}>{lastUpdatedStr}</span>
-        </div>
+        <button
+          onClick={() => summaryStripRef.current?.openLedger()}
+          className="ov-card"
+          style={{
+            '--accent': '#38BDF8',
+            display: 'flex', alignItems: 'center', gap: 9,
+            padding: '10px 16px', cursor: 'pointer',
+            fontSize: 12.5, fontWeight: 700, color: '#E2E8F0',
+            border: '1px solid rgba(56,189,248,0.25)',
+          }}
+        >
+          <BookOpen size={15} color="#38BDF8" />
+          Capital Ledger
+        </button>
       </div>
 
-      {/* ── Summary Strip — 4 equal metric cards ── */}
+      {/* ── Capital & Performance Overview — 6-box hero strip ── */}
       <SectionLabel>Capital &amp; Performance Overview</SectionLabel>
       <div style={{ marginBottom: 20 }}>
-        <SummaryStrip
-          data={fundLedger}
-          equityCurve={equity_curve}
-          loading={ledgerLoading}
-        />
+        <CapitalOverviewHero kpis={kpis} isMobile={isMobile} />
       </div>
 
       {/* ── Divider ── */}
       <div style={{ height: 1, background: '#1E3A5F', margin: '0 0 16px' }} />
 
-      {/* ── Portfolio KPI strip ── */}
-      <SectionLabel>Portfolio Summary</SectionLabel>
-      <KpiRow
-        kpis={kpis}
-        sparklineData={equity_curve.slice(-20).map(p => p.equity)}
-        key={timeRange}
-      />
+      {/* ── Capital Flow Summary + Capital at a Glance ── */}
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: isMobile ? '1fr' : '0.9fr 1.1fr',
+        gap: 12, marginBottom: 16,
+      }}>
+        <CapitalFlowTable kpis={kpis} />
+        <CapitalAtGlanceChart kpis={kpis} height={isMobile ? 260 : 300} />
+      </div>
+      <div style={{ marginBottom: 20 }}>
+        <CapitalInfoBox kpis={kpis} />
+      </div>
 
       {/* ── Divider ── */}
-      <div style={{ height: 1, background: '#1E3A5F', margin: '20px 0 16px' }} />
+      <div style={{ height: 1, background: '#1E3A5F', margin: '4px 0 16px' }} />
 
       {/* ── Pod overview ── */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingBottom: 10 }}>
@@ -422,6 +448,7 @@ export default function Portfolio({ timeRange, initialTab }) {
             name={pod.name}
             color={pod.pod_color || POD_COLORS[idx % POD_COLORS.length]}
             kpis={pod.kpis}
+            isMobile={isMobile}
             onClick={() => navigate(`/drilldown/${pod.entity_id}`)}
           />
         ))}
@@ -442,6 +469,7 @@ export default function Portfolio({ timeRange, initialTab }) {
             name={strat.name}
             color={strat.pod_color || POD_COLORS[idx % POD_COLORS.length]}
             kpis={strat.kpis}
+            isMobile={isMobile}
             onClick={() => navigate(`/drilldown/${strat.entity_id}`)}
           />
         ))}

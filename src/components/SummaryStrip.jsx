@@ -14,8 +14,8 @@
  *   loading     {boolean}
  */
 
-import { useState, useEffect, useRef } from 'react'
-import { X, ArrowDownLeft, ArrowUpRight, ArrowLeftRight, Calendar, ChevronRight, Info, Plus, Trash2, Pencil } from 'lucide-react'
+import { useState, useEffect, useRef, forwardRef, useImperativeHandle } from 'react'
+import { X, ArrowDownLeft, ArrowUpRight, ArrowLeftRight, Calendar, ChevronRight, Info, Plus, Trash2, Pencil, Wallet, Layers, TrendingUp } from 'lucide-react'
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
 } from 'recharts'
@@ -23,6 +23,8 @@ import { useQueryClient, useQuery } from '@tanstack/react-query'
 import {
   createCapitalEvent, updateCapitalEvent, deleteCapitalEvent,
   fetchInternalTransfers, createInternalTransfer, updateInternalTransfer, deleteInternalTransfer,
+  fetchCapitalTransfers, createCapitalTransfer, updateCapitalTransfer, deleteCapitalTransfer,
+  fetchPods, fetchStrategies,
   fetchMiscEvents, createMiscEvent, updateMiscEvent, deleteMiscEvent,
   fetchExpenses, createExpense, updateExpense, deleteExpense,
   fetchWages, createWage, updateWage, deleteWage,
@@ -818,6 +820,353 @@ function InternalTransfersTab({ queryClient, capitalData }) {
   )
 }
 
+// ── Capital Transfers — Wallet ⇄ Pod ⇄ Strategy funding ledger ─────────────
+// Separate from Darwinex Transfers above. This is the generic ledger used
+// to record "we moved £X from the wallet into Strategy Y" (or Pod, or
+// strategy-to-strategy rebalancing) — feeds each strategy's real Total
+// Capital Invested figure on the Portfolio page.
+
+function encodeEndpoint(type, id) { return type === 'wallet' ? 'wallet' : `${type}:${id}` }
+function decodeEndpoint(val) {
+  if (!val || val === 'wallet') return { type: 'wallet', id: null }
+  const [type, id] = val.split(':')
+  return { type, id: Number(id) }
+}
+
+function EndpointBadge({ type, id, podsById, strategiesById }) {
+  if (type === 'wallet') {
+    return (
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '3px 9px',
+        borderRadius: 8, fontSize: 11, fontWeight: 600, color: '#94A3B8',
+        background: 'rgba(148,163,184,0.10)', border: '1px solid rgba(148,163,184,0.18)' }}>
+        <Wallet size={11} /> Wallet
+      </span>
+    )
+  }
+  if (type === 'pod') {
+    const pod = podsById[id]
+    const color = pod?.color || '#6366f1'
+    return (
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '3px 9px',
+        borderRadius: 8, fontSize: 11, fontWeight: 600, color,
+        background: `${color}18`, border: `1px solid ${color}40` }}>
+        <span style={{ width: 6, height: 6, borderRadius: '50%', background: color, flexShrink: 0 }} />
+        {pod?.name ?? `Pod ${id}`}
+      </span>
+    )
+  }
+  // strategy
+  const strat = strategiesById[id]
+  const pod   = strat ? podsById[strat.pod_id] : null
+  const color = pod?.color || '#6366f1'
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '3px 9px',
+      borderRadius: 8, fontSize: 11, fontWeight: 600, color,
+      background: `${color}18`, border: `1px solid ${color}40` }}>
+      <TrendingUp size={11} />
+      {strat?.name ?? `Strategy ${id}`}
+    </span>
+  )
+}
+
+function EndpointSelect({ value, onChange, pods, strategies }) {
+  return (
+    <select value={value} onChange={e => onChange(e.target.value)} style={INPUT_STYLE}>
+      <option value="wallet">Wallet</option>
+      {pods.map(pod => (
+        <optgroup key={pod.id} label={pod.name}>
+          <option value={`pod:${pod.id}`}>{pod.name} (Pod level)</option>
+          {strategies.filter(s => s.pod_id === pod.id).map(s => (
+            <option key={s.id} value={`strategy:${s.id}`}>{s.name}</option>
+          ))}
+        </optgroup>
+      ))}
+    </select>
+  )
+}
+
+function CapitalTransfersTab({ queryClient }) {
+  const { data: transfers = [], isLoading } = useQuery({
+    queryKey: ['capital_transfers'],
+    queryFn:  fetchCapitalTransfers,
+    staleTime: 30_000,
+  })
+  const { data: pods = [] } = useQuery({
+    queryKey: ['pods'], queryFn: fetchPods, staleTime: 60_000,
+  })
+  const { data: strategies = [] } = useQuery({
+    queryKey: ['strategies_all'], queryFn: () => fetchStrategies(), staleTime: 60_000,
+  })
+
+  const podsById       = Object.fromEntries(pods.map(p => [p.id, p]))
+  const strategiesById = Object.fromEntries(strategies.map(s => [s.id, s]))
+
+  const [showForm,   setShowForm]   = useState(false)
+  const [formDate,   setFormDate]   = useState(todayISO())
+  const [formFrom,   setFormFrom]   = useState('wallet')
+  const [formTo,     setFormTo]     = useState('wallet')
+  const [formAmount, setFormAmount] = useState('')
+  const [formRef,    setFormRef]    = useState('')
+  const [formNotes,  setFormNotes]  = useState('')
+  const [formError,  setFormError]  = useState(null)
+  const [submitting, setSubmitting] = useState(false)
+
+  const [editRec,    setEditRec]    = useState(null)
+  const [editDate,   setEditDate]   = useState('')
+  const [editFrom,   setEditFrom]   = useState('wallet')
+  const [editTo,     setEditTo]     = useState('wallet')
+  const [editAmount, setEditAmount] = useState('')
+  const [editRef,    setEditRef]    = useState('')
+  const [editNotes,  setEditNotes]  = useState('')
+  const [editError,  setEditError]  = useState(null)
+  const [editSaving, setEditSaving] = useState(false)
+
+  const [deletingId, setDeletingId] = useState(null)
+  const [deleting,   setDeleting]   = useState(false)
+
+  const formScrollRef = useRef(null)
+  useEffect(() => {
+    if (editRec) formScrollRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, [editRec])
+
+  function openAdd() {
+    setEditRec(null); setFormDate(todayISO()); setFormFrom('wallet'); setFormTo('wallet')
+    setFormAmount(''); setFormRef(''); setFormNotes(''); setFormError(null); setShowForm(true)
+  }
+
+  function openEdit(r) {
+    setShowForm(false); setEditRec(r); setEditDate(r.transfer_date)
+    setEditFrom(encodeEndpoint(r.from_type, r.from_id)); setEditTo(encodeEndpoint(r.to_type, r.to_id))
+    setEditAmount(String(r.amount)); setEditRef(r.reference ?? ''); setEditNotes(r.notes ?? ''); setEditError(null)
+  }
+
+  function validateEndpoints(from, to) {
+    if (from === to) return 'From and To cannot be the same'
+    return null
+  }
+
+  async function handleAdd(e) {
+    e.preventDefault(); setFormError(null)
+    const amt = parseFloat(formAmount)
+    if (isNaN(amt) || amt <= 0) return setFormError('Enter valid amount > 0')
+    if (!formDate) return setFormError('Select a date')
+    const vErr = validateEndpoints(formFrom, formTo)
+    if (vErr) return setFormError(vErr)
+    setSubmitting(true)
+    try {
+      const from = decodeEndpoint(formFrom), to = decodeEndpoint(formTo)
+      await createCapitalTransfer({
+        transfer_date: formDate, from_type: from.type, from_id: from.id,
+        to_type: to.type, to_id: to.id, amount: parseFloat(amt.toFixed(2)),
+        reference: formRef.trim(), notes: formNotes.trim(),
+      })
+      await queryClient.invalidateQueries({ queryKey: ['capital_transfers'] })
+      setShowForm(false)
+    } catch (err) { setFormError(err.message ?? 'Failed') }
+    finally { setSubmitting(false) }
+  }
+
+  async function handleUpdate(e) {
+    e.preventDefault(); setEditError(null)
+    const amt = parseFloat(editAmount)
+    if (isNaN(amt) || amt <= 0) return setEditError('Enter valid amount > 0')
+    if (!editDate) return setEditError('Select a date')
+    const vErr = validateEndpoints(editFrom, editTo)
+    if (vErr) return setEditError(vErr)
+    setEditSaving(true)
+    try {
+      const from = decodeEndpoint(editFrom), to = decodeEndpoint(editTo)
+      await updateCapitalTransfer(editRec.id, {
+        transfer_date: editDate, from_type: from.type, from_id: from.id,
+        to_type: to.type, to_id: to.id, amount: parseFloat(amt.toFixed(2)),
+        reference: editRef.trim(), notes: editNotes.trim(),
+      })
+      await queryClient.invalidateQueries({ queryKey: ['capital_transfers'] })
+      setEditRec(null)
+    } catch (err) { setEditError(err.message ?? 'Failed') }
+    finally { setEditSaving(false) }
+  }
+
+  async function handleDelete() {
+    setDeleting(true)
+    try {
+      await deleteCapitalTransfer(deletingId)
+      await queryClient.invalidateQueries({ queryKey: ['capital_transfers'] })
+    } finally { setDeleting(false); setDeletingId(null) }
+  }
+
+  function renderTransferForm(isEdit) {
+    const date    = isEdit ? editDate   : formDate
+    const from    = isEdit ? editFrom   : formFrom
+    const to      = isEdit ? editTo     : formTo
+    const amount  = isEdit ? editAmount : formAmount
+    const ref     = isEdit ? editRef    : formRef
+    const notes   = isEdit ? editNotes  : formNotes
+    const error   = isEdit ? editError  : formError
+    const saving  = isEdit ? editSaving : submitting
+    const setDate = isEdit ? setEditDate   : setFormDate
+    const setFrom = isEdit ? setEditFrom   : setFormFrom
+    const setTo   = isEdit ? setEditTo     : setFormTo
+    const setAmt  = isEdit ? setEditAmount : setFormAmount
+    const setRf   = isEdit ? setEditRef    : setFormRef
+    const setNts  = isEdit ? setEditNotes  : setFormNotes
+    const onSubmit = isEdit ? handleUpdate : handleAdd
+    const onCancel = isEdit ? () => setEditRec(null) : () => setShowForm(false)
+
+    return (
+      <form ref={isEdit ? formScrollRef : null} onSubmit={onSubmit} style={{
+        background: 'rgba(167,139,250,0.06)', border: '1px solid rgba(167,139,250,0.2)',
+        borderRadius: 10, padding: '14px 16px', marginBottom: 14,
+      }}>
+        <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
+          letterSpacing: '0.7px', color: '#a78bfa', display: 'block', marginBottom: 10 }}>
+          {isEdit ? 'Edit Capital Transfer' : 'New Capital Transfer'}
+        </span>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10, marginBottom: 10 }}>
+          <DateField value={date} onChange={setDate} />
+          <div>
+            <label style={{ fontSize: 10, color: '#64748B', textTransform: 'uppercase',
+              letterSpacing: '0.5px', display: 'block', marginBottom: 5 }}>Amount (£)</label>
+            <AmountInput value={amount} onChange={setAmt} style={INPUT_STYLE} required />
+          </div>
+          <div>
+            <label style={{ fontSize: 10, color: '#64748B', textTransform: 'uppercase',
+              letterSpacing: '0.5px', display: 'block', marginBottom: 5 }}>From</label>
+            <EndpointSelect value={from} onChange={setFrom} pods={pods} strategies={strategies} />
+          </div>
+          <div>
+            <label style={{ fontSize: 10, color: '#64748B', textTransform: 'uppercase',
+              letterSpacing: '0.5px', display: 'block', marginBottom: 5 }}>To</label>
+            <EndpointSelect value={to} onChange={setTo} pods={pods} strategies={strategies} />
+          </div>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10, marginBottom: 12 }}>
+          <div>
+            <label style={{ fontSize: 10, color: '#64748B', textTransform: 'uppercase',
+              letterSpacing: '0.5px', display: 'block', marginBottom: 5 }}>Reference (optional)</label>
+            <input type="text" value={ref} onChange={e => setRf(e.target.value)}
+              placeholder="e.g. Wire ref" style={INPUT_STYLE} />
+          </div>
+          <div>
+            <label style={{ fontSize: 10, color: '#64748B', textTransform: 'uppercase',
+              letterSpacing: '0.5px', display: 'block', marginBottom: 5 }}>Notes (optional)</label>
+            <input type="text" value={notes} onChange={e => setNts(e.target.value)}
+              placeholder="e.g. Initial funding tranche" style={INPUT_STYLE} />
+          </div>
+        </div>
+        {error && <p style={{ fontSize: 11, color: '#f87171', marginBottom: 10 }}>{error}</p>}
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button type="submit" disabled={saving} style={{ ...BTN_SM_STYLE, background: '#a78bfa', opacity: saving ? 0.65 : 1 }}>
+            {saving ? 'Saving…' : isEdit ? 'Update' : 'Save Transfer'}
+          </button>
+          <button type="button" onClick={onCancel} disabled={saving}
+            style={{ ...BTN_SM_STYLE, background: '#374151', opacity: saving ? 0.5 : 1 }}>Cancel</button>
+        </div>
+      </form>
+    )
+  }
+
+  const totalToStrategies  = transfers.filter(t => t.to_type === 'strategy').reduce((s, t) => s + t.amount, 0)
+  const totalBetween       = transfers.filter(t => t.from_type === 'strategy' && t.to_type === 'strategy').reduce((s, t) => s + t.amount, 0)
+  const totalReturned      = transfers.filter(t => (t.from_type === 'strategy' || t.from_type === 'pod') && t.to_type === 'wallet').reduce((s, t) => s + t.amount, 0)
+
+  return (
+    <>
+      <div style={{
+        background: 'rgba(56,189,248,0.06)', border: '1px solid rgba(56,189,248,0.15)',
+        borderRadius: 10, padding: '10px 14px', marginBottom: 14,
+        display: 'flex', gap: 8, alignItems: 'flex-start',
+      }}>
+        <Info size={13} color="#38bdf8" style={{ flexShrink: 0, marginTop: 1 }} />
+        <span style={{ fontSize: 11, color: '#94A3B8', lineHeight: 1.5 }}>
+          Records where wallet capital actually goes — into a Pod, into a specific Strategy, or moved
+          between strategies. Feeds each strategy's real Total Capital Invested figure on the Portfolio
+          page. Separate from Darwinex Transfers, which stays broker-account based.
+        </span>
+      </div>
+
+      {/* Summary cards */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10, marginBottom: 14 }}>
+        <div style={{ background: 'rgba(167,139,250,0.08)', border: '1px solid rgba(167,139,250,0.2)',
+          borderRadius: 10, padding: '10px 14px' }}>
+          <p style={{ fontSize: 10, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.6px', marginBottom: 4 }}>
+            Moved to Strategies</p>
+          <p style={{ fontSize: 16, fontWeight: 700, color: '#a78bfa', fontVariantNumeric: 'tabular-nums' }}>
+            {formatCurrencyAbs(totalToStrategies)}</p>
+        </div>
+        <div style={{ background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.2)',
+          borderRadius: 10, padding: '10px 14px' }}>
+          <p style={{ fontSize: 10, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.6px', marginBottom: 4 }}>
+            Between Strategies</p>
+          <p style={{ fontSize: 16, fontWeight: 700, color: '#f59e0b', fontVariantNumeric: 'tabular-nums' }}>
+            {formatCurrencyAbs(totalBetween)}</p>
+        </div>
+        <div style={{ background: 'rgba(52,211,153,0.08)', border: '1px solid rgba(52,211,153,0.2)',
+          borderRadius: 10, padding: '10px 14px' }}>
+          <p style={{ fontSize: 10, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.6px', marginBottom: 4 }}>
+            Returned to Wallet</p>
+          <p style={{ fontSize: 16, fontWeight: 700, color: '#34d399', fontVariantNumeric: 'tabular-nums' }}>
+            {formatCurrencyAbs(totalReturned)}</p>
+        </div>
+      </div>
+
+      {/* Add button */}
+      {!editRec && (
+        <div style={{ marginBottom: 14 }}>
+          <button onClick={openAdd} style={{ display: 'flex', alignItems: 'center', gap: 6,
+            padding: '7px 12px', borderRadius: 8, cursor: 'pointer', fontSize: 11, fontWeight: 600,
+            background: 'rgba(167,139,250,0.15)', color: '#a78bfa', border: '1px solid rgba(167,139,250,0.25)' }}>
+            <Plus size={12} /> Record Capital Transfer
+          </button>
+        </div>
+      )}
+
+      {showForm && !editRec && renderTransferForm(false)}
+      {editRec && renderTransferForm(true)}
+
+      {/* List */}
+      <p style={{ fontSize: 10, fontWeight: 600, color: '#475569', textTransform: 'uppercase',
+        letterSpacing: '0.8px', marginBottom: 8 }}>Transfer Log</p>
+      {isLoading
+        ? <p style={{ fontSize: 12, color: '#475569', textAlign: 'center', padding: '20px 0' }}>Loading…</p>
+        : transfers.length === 0
+          ? <p style={{ fontSize: 12, color: '#475569', textAlign: 'center', padding: '20px 0' }}>No capital transfers recorded</p>
+          : <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {transfers.map(t => (
+                <div key={t.id} style={{
+                  background: 'rgba(167,139,250,0.06)', border: '1px solid rgba(167,139,250,0.16)',
+                  borderRadius: 10, padding: '9px 12px',
+                }}>
+                  <EventRow onEdit={() => openEdit(t)} onDelete={() => setDeletingId(t.id)}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <EndpointBadge type={t.from_type} id={t.from_id} podsById={podsById} strategiesById={strategiesById} />
+                      <ArrowLeftRight size={12} color="#475569" />
+                      <EndpointBadge type={t.to_type} id={t.to_id} podsById={podsById} strategiesById={strategiesById} />
+                      {t.reference && <span style={{ fontSize: 10, color: '#475569' }}>Ref: {t.reference}</span>}
+                      {t.notes && <span style={{ fontSize: 10, color: '#475569' }}>{t.notes}</span>}
+                      <span style={{ marginLeft: 'auto', fontSize: 11, color: '#475569' }}>{t.transfer_date}</span>
+                      <span style={{ fontSize: 12, fontWeight: 700, fontVariantNumeric: 'tabular-nums',
+                        color: '#a78bfa', minWidth: 70, textAlign: 'right' }}>
+                        {formatCurrencyAbs(t.amount)}
+                      </span>
+                    </div>
+                  </EventRow>
+                </div>
+              ))}
+            </div>
+      }
+
+      {deletingId != null && (
+        <ConfirmModal
+          title="Delete Capital Transfer" message="Permanently delete this transfer record?"
+          variant="delete" confirmLabel="Delete"
+          onConfirm={handleDelete} onCancel={() => setDeletingId(null)} loading={deleting}
+        />
+      )}
+    </>
+  )
+}
+
 // ── Tab 3: Miscellaneous Events ───────────────────────────────────────────
 
 function MiscellaneousTab({ queryClient }) {
@@ -1595,11 +1944,12 @@ function LedgerModal({ data, onClose }) {
   const [activeTab, setActiveTab] = useState('capital')
 
   const TABS = [
-    { id: 'capital',   label: 'Capital Events',      count: data?.events?.length ?? 0 },
-    { id: 'transfers', label: 'Internal Transfers',   count: null },
-    { id: 'misc',      label: 'Miscellaneous',        count: null },
-    { id: 'expenses',  label: 'Expenses',             count: null },
-    { id: 'wages',     label: 'Wages/Invoices',       count: null },
+    { id: 'capital',       label: 'Capital Events',       count: data?.events?.length ?? 0 },
+    { id: 'transfers',     label: 'Darwinex Transfers',   count: null },
+    { id: 'capxfer',       label: 'Capital Transfers',    count: null },
+    { id: 'misc',          label: 'Miscellaneous',        count: null },
+    { id: 'expenses',      label: 'Expenses',             count: null },
+    { id: 'wages',         label: 'Wages/Invoices',       count: null },
   ]
 
   return (
@@ -1636,6 +1986,7 @@ function LedgerModal({ data, onClose }) {
       {/* Tab content */}
       {activeTab === 'capital'   && <CapitalEventsTab    data={data}         queryClient={queryClient} />}
       {activeTab === 'transfers' && <InternalTransfersTab capitalData={data}  queryClient={queryClient} />}
+      {activeTab === 'capxfer'   && <CapitalTransfersTab                     queryClient={queryClient} />}
       {activeTab === 'misc'      && <MiscellaneousTab                        queryClient={queryClient} />}
       {activeTab === 'expenses'  && <ExpensesTab                             queryClient={queryClient} />}
       {activeTab === 'wages'     && <WagesTab                                queryClient={queryClient} />}
@@ -1866,8 +2217,14 @@ function SkeletonCard() {
 // SummaryStrip — main export
 // ---------------------------------------------------------------------------
 
-export default function SummaryStrip({ data, equityCurve, loading }) {
+const SummaryStrip = forwardRef(function SummaryStrip({ data, equityCurve, loading, cardsVisible = true }, ref) {
   const [modal, setModal] = useState(null) // 'ledger' | 'twr' | 'equity' | null
+
+  useImperativeHandle(ref, () => ({
+    openLedger: () => setModal('ledger'),
+    openEquity: () => setModal('equity'),
+    openTwr:    () => setModal('twr'),
+  }))
 
   // Animated values
   const bankBalance    = data?.bank_balance    ?? 0
@@ -1883,11 +2240,11 @@ export default function SummaryStrip({ data, equityCurve, loading }) {
   const animPnl      = useCountUp(totalPnl)
 
   if (loading) {
-    return (
+    return cardsVisible ? (
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 16 }}>
         {[...Array(4)].map((_, i) => <SkeletonCard key={i} />)}
       </div>
-    )
+    ) : null
   }
 
   // ── Shared card styles ──
@@ -1955,6 +2312,7 @@ export default function SummaryStrip({ data, equityCurve, loading }) {
 
   return (
     <>
+      {cardsVisible && (
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 16 }}>
 
         {/* ── Card 1: Money Allocated ── */}
@@ -2067,10 +2425,13 @@ export default function SummaryStrip({ data, equityCurve, loading }) {
         </div>
 
       </div>
+      )}
 
       {modal === 'ledger' && <LedgerModal  data={data}         onClose={() => setModal(null)} />}
       {modal === 'twr'    && <TWRModal     data={data}         onClose={() => setModal(null)} />}
       {modal === 'equity' && <EquityModal  equityCurve={equityCurve} totalPnl={totalPnl} onClose={() => setModal(null)} />}
     </>
   )
-}
+})
+
+export default SummaryStrip

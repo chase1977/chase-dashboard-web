@@ -522,6 +522,88 @@ def delete_internal_transfer(transfer_id: int):
 
 
 # ---------------------------------------------------------------------------
+# Capital Transfers — Wallet / Pod / Strategy funding ledger
+# Separate from Darwinex Internal Transfers above.
+# ---------------------------------------------------------------------------
+
+_TRANSFER_ENDPOINTS = {"wallet", "pod", "strategy"}
+
+
+class CapitalTransferIn(BaseModel):
+    transfer_date: str            = Field(..., description="ISO date YYYY-MM-DD")
+    from_type:     str            = Field(..., description="wallet | pod | strategy")
+    from_id:       Optional[int]  = Field(None, description="pod_id or strategy_id; null for wallet")
+    to_type:       str            = Field(..., description="wallet | pod | strategy")
+    to_id:         Optional[int]  = Field(None, description="pod_id or strategy_id; null for wallet")
+    amount:        float          = Field(..., gt=0, description="Always positive")
+    reference:     Optional[str]  = None
+    notes:         Optional[str]  = None
+
+
+class CapitalTransferPatch(BaseModel):
+    transfer_date: Optional[str]   = None
+    from_type:     Optional[str]   = None
+    from_id:       Optional[int]   = None
+    to_type:       Optional[str]   = None
+    to_id:         Optional[int]   = None
+    amount:        Optional[float] = Field(None, gt=0)
+    reference:     Optional[str]   = None
+    notes:         Optional[str]   = None
+
+
+def _validate_endpoints(from_type: str, to_type: str):
+    if from_type not in _TRANSFER_ENDPOINTS or to_type not in _TRANSFER_ENDPOINTS:
+        raise HTTPException(status_code=400, detail="from_type/to_type must be wallet, pod, or strategy")
+
+
+@router.get("/capital-transfers")
+def list_capital_transfers():
+    try:
+        return sb.list_capital_transfers()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/capital-transfers", status_code=201)
+def create_capital_transfer(body: CapitalTransferIn):
+    _validate_endpoints(body.from_type, body.to_type)
+    try:
+        return sb.create_capital_transfer(
+            transfer_date = body.transfer_date,
+            from_type     = body.from_type,
+            from_id       = body.from_id,
+            to_type       = body.to_type,
+            to_id         = body.to_id,
+            amount        = body.amount,
+            reference     = body.reference or "",
+            notes         = body.notes or "",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.patch("/capital-transfers/{transfer_id}")
+def update_capital_transfer(transfer_id: int, body: CapitalTransferPatch):
+    fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    if "from_type" in fields or "to_type" in fields:
+        _validate_endpoints(fields.get("from_type", "wallet"), fields.get("to_type", "wallet"))
+    if not fields:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    try:
+        return sb.update_capital_transfer(transfer_id, **fields)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.delete("/capital-transfers/{transfer_id}", status_code=204)
+def delete_capital_transfer(transfer_id: int):
+    try:
+        sb.delete_capital_transfer(transfer_id)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
 # Miscellaneous Events
 # ---------------------------------------------------------------------------
 
