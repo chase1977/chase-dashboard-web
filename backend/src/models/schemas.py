@@ -31,6 +31,17 @@ class KpiData(BaseModel):
     performance:        float
     total_pnl:          float
     banked_profit:      float = 0.0
+    # True net realized P&L for display, wherever it differs from
+    # banked_profit. banked_profit itself stays the gross-cash bookkeeping
+    # figure Total P&L's formula needs internally (equity + banked_profit −
+    # invested must reconcile against the frozen Capital Invested baseline —
+    # see README §12.3/§9); for a CLOSED strategy that figure includes
+    # returned principal, not just profit, so it's not fit to *display* as
+    # "Banked Profit/Loss". banked_profit_true carries the real number
+    # (identical to banked_profit for any strategy where the two don't
+    # diverge, e.g. AXIA-TW's pure profit-skim withdrawals). None only if
+    # not computed for that response path.
+    banked_profit_true: Optional[float] = None
     capital_allocated:  float = 0.0
     pct_1d:             float
     pct_7d:             float
@@ -71,6 +82,14 @@ class StrategySummary(BaseModel):
     status:            Optional[str]   = "Active"
     watermark:         Optional[float] = None
     profit_share_pct:  Optional[float] = None
+    # True once ANY real performance source is matched for this strategy
+    # (live pfees feed, AXIA/fund/closed-Darwinex aggregator, or a
+    # brokerage_account match). False means only a capital figure exists
+    # (e.g. a Capital Transfers deposit) with nothing tracking performance
+    # yet — the KPI card shows Capital Invested at par (pnl 0) if Active,
+    # or zero everywhere if Inactive, instead of a fabricated 100% loss.
+    # See README §14 (three-state status model).
+    has_data:          Optional[bool]  = None
     kpis:              KpiData
 
 

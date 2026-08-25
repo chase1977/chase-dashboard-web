@@ -31,6 +31,10 @@ const NAV_LINKS = [
   { label: 'Analysis',    path: '/analysis'     },
 ]
 
+// Mobile only ever shows the Portfolio page for now — other pages hidden
+// from the mobile nav (desktop is unaffected, see NAV_LINKS above).
+const MOBILE_NAV_LINKS = NAV_LINKS.filter(l => l.label === 'Portfolio')
+
 const TIME_RANGES = ['1D', '7D', '30D', 'YTD', 'SI']
 
 
@@ -223,7 +227,7 @@ export default function Navbar({ timeRange, onTimeRange }) {
           flexDirection: 'column',
           gap: 4,
         }}>
-          {NAV_LINKS.map(({ label, path }) => {
+          {MOBILE_NAV_LINKS.map(({ label, path }) => {
             const active = path === '/'
               ? pathname === '/'
               : pathname.startsWith(path)

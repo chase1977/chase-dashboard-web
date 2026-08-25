@@ -714,12 +714,40 @@ def _banked_profit_by_strategy(strategies: list[dict]) -> dict[int, dict]:
     return agg
 
 
+def _banked_and_allocated(sid: int, initial: float, banked_agg: dict, darwinex_agg: dict) -> tuple[float, float]:
+    """
+    (banked_profit_gross, capital_allocated) for one strategy — the single
+    source of truth used at strategy/pod/portfolio level alike.
+
+    For a CLOSED Darwinex strategy (in darwinex_agg): banked_agg's ledger
+    sum (profit_loss_amount only) is NOT reliable here — the "Final
+    withdrawal" flow deliberately locks every leg as pure Capital Return
+    (profit_loss_amount = 0), so banked_agg's "banked_profit"/"total_withdrawn"
+    collapse to figures that don't reflect the strategy's true realized P&L
+    or its (zero) remaining allocation. Derive both algebraically instead —
+    identical to how banked_profit always worked before Final Withdrawal
+    existed (gross cash recovered), just computed from the aggregator's
+    true pnl instead of the ledger's classification:
+      banked_gross = initial (frozen baseline) + agg["pnl"] (true realized)
+                    = the full cash ever recovered, matching the identity
+                      equity(0) + banked_gross - initial == agg["pnl"].
+      allocated    = 0.0 — closed means nothing is left deployed, by
+                     definition, regardless of ledger withdrawal bookkeeping.
+    See README §14 / §9.
+    """
+    if sid in darwinex_agg:
+        banked_gross = round(initial + darwinex_agg[sid]["pnl"], 2)
+        return banked_gross, 0.0
+    contrib = banked_agg.get(sid, {"banked_profit": 0.0, "total_withdrawn": 0.0})
+    return contrib["banked_profit"], round(initial - contrib["total_withdrawn"], 2)
+
+
 def _strategy_capital_invested(s: dict, net_deployed: dict, axia_agg: dict,
                                 ct_by_strategy: dict, darwinex_agg: Optional[dict] = None) -> float:
     """
     Single source of truth for a strategy's "Total Capital Invested".
     Priority:
-      0. CLOSED Darwinex strategy (status == "Inactive", in darwinex_agg) →
+      0. CLOSED Darwinex strategy (status == "Closed", in darwinex_agg) →
          the frozen all-time Wallet->account deployed total from
          _darwinex_closed_strategy_agg. Takes priority over #1 below —
          net_deployed (a running NET of in/out flows) collapses toward the
@@ -727,6 +755,9 @@ def _strategy_capital_invested(s: dict, net_deployed: dict, axia_agg: dict,
          breaks the "never reduced by withdrawals" monotonic-invested
          principle (§4) and destroys Total ROI's denominator. See
          _darwinex_closed_strategy_agg's docstring for the full story.
+      0b. Inactive/Closed with no bespoke-aggregator match → 0.0 (paused or
+          wound down, nothing currently tracked — see README §14, three-state
+          status model).
       1. brokerage_account set (Darwinex, still active/open) →
          net_deployed_per_account (unchanged — correct while a position is
          still open, since net_deployed represents what's still committed).
@@ -739,8 +770,15 @@ def _strategy_capital_invested(s: dict, net_deployed: dict, axia_agg: dict,
          (transitional fallback).
     """
     darwinex_agg = darwinex_agg or {}
-    if s.get("status") == "Inactive" and s["id"] in darwinex_agg:
+    status = s.get("status") or "Active"
+    if s["id"] in darwinex_agg:
         return darwinex_agg[s["id"]]["baseline"]
+    # Inactive (paused) or Closed (wound down) with no bespoke-aggregator
+    # match: Capital Invested is 0 — a strategy with no real performance
+    # data tracked shouldn't show a stale deposit figure as "invested."
+    # Mark it Active once ready to record again (see README §14).
+    if status in ("Inactive", "Closed"):
+        return 0.0
     acct = s.get("brokerage_account")
     if acct:
         return net_deployed.get(acct, 0.0)
@@ -876,7 +914,7 @@ def _fund_statement_strategy_agg(strategies: list[dict]) -> dict[int, dict]:
 def _darwinex_closed_strategy_agg(strategies: list[dict]) -> dict[int, dict]:
     """
     strategy_id -> { invested, pnl, baseline, series } for CLOSED (status ==
-    "Inactive") Darwinex strategies — i.e. brokerage_account set, no live
+    "Closed") Darwinex strategies — i.e. brokerage_account set, no live
     user_pfees_estimation feed for that account (Darwinex is tracked purely
     via manually-entered internal_transfers, never had a daily broker feed).
 
@@ -921,10 +959,11 @@ def _darwinex_closed_strategy_agg(strategies: list[dict]) -> dict[int, dict]:
     capital_return_amount/profit_loss_amount) — it's neither a capital
     return nor a profit/loss event, just a relocation (§12.3).
 
-    Only applies to strategies with status == "Inactive" — an ACTIVE
+    Only applies to strategies with status == "Closed" — an ACTIVE
     Darwinex strategy with a matched live feed keeps using the existing
-    acct_agg/broker-matching path untouched (this function only ever
-    overrides the "no feed" case, and only once genuinely closed).
+    acct_agg/broker-matching path untouched, and "Inactive" (paused, not
+    genuinely wound down) is a separate state handled elsewhere (README
+    §14) — this function only ever overrides the fully-wound-down case.
     """
     transfers = list_internal_transfers()
     by_account: dict[str, dict] = {}
@@ -946,9 +985,15 @@ def _darwinex_closed_strategy_agg(strategies: list[dict]) -> dict[int, dict]:
     # ── Wallet-mediated inter-strategy rebalance detection ──────────────
     # Same-day, same-amount X->Wallet + Wallet->Y pair = a relocation, not
     # a real capital event for X. Reduce X's baseline only; leave pnl,
-    # and Y's baseline, untouched (see docstring).
+    # and Y's baseline, untouched (see docstring). Y MUST be a tracked
+    # Darwinex strategy's own brokerage_account — matching against ANY
+    # same-day/same-amount coincidence (e.g. a small pass-through account
+    # like XPF2026 that happens to move the same amount the same day) is a
+    # false positive that quietly shrinks X's baseline for no real reason.
+    tracked_accounts = {s["brokerage_account"] for s in strategies if s.get("brokerage_account")}
     outbound = [t for t in transfers if t["to_account"] == "Wallet" and t["from_account"] != "Wallet"]
-    inbound  = [t for t in transfers if t["from_account"] == "Wallet" and t["to_account"] != "Wallet"]
+    inbound  = [t for t in transfers if t["from_account"] == "Wallet" and t["to_account"] != "Wallet"
+                and t["to_account"] in tracked_accounts]
     matched_inbound = set()
     for o in outbound:
         for i in inbound:
@@ -962,7 +1007,7 @@ def _darwinex_closed_strategy_agg(strategies: list[dict]) -> dict[int, dict]:
 
     out: dict[int, dict] = {}
     for s in strategies:
-        if s.get("status") != "Inactive":
+        if s.get("status") != "Closed":
             continue
         acct = s.get("brokerage_account")
         if not acct or acct not in by_account:
@@ -1093,6 +1138,51 @@ def _build_pod_pfees_map() -> dict:
             pod_agg[pid] = {"invested": 0.0, "pnl": 0.0, "darwins": []}
         pod_agg[pid]["invested"] = round(pod_agg[pid]["invested"] + contrib["invested"], 2)
         pod_agg[pid]["pnl"]      = round(pod_agg[pid]["pnl"] + contrib["pnl"], 2)
+
+    # ── Active strategies with NO real performance source matched anywhere
+    #    (no pfees row via account_id/brokerage_account/darwin code, not
+    #    AXIA/fund/closed-Darwinex) — fold in at-par (equity == invested,
+    #    pnl 0.0) so pod-level Capital Allocated reflects real recorded
+    #    capital instead of silently omitting it. Inactive/Closed strategies
+    #    with no data contribute nothing (their `initial` is already 0.0 —
+    #    see _strategy_capital_invested). See README §14.
+    net_deployed_pm   = _get_net_deployed_per_account()
+    ct_by_strategy_pm = _capital_transfers_by_strategy()
+    broker_to_acct_pm = {v: k for k, v in acct_broker_map.items()}
+    darwin_agg_pm: dict = {}
+    acct_agg_pm:   dict = {}
+    for row in snapshot:
+        d_ = _darwin_display(row.get("Darwin") or "")
+        darwin_agg_pm[d_] = True
+        a_ = row.get("AccountId")
+        if a_ is not None:
+            acct_agg_pm[int(a_)] = True
+    for s in strategies:
+        code_pm    = (s.get("strategy_code") or "").upper()
+        acct_id_pm = s.get("account_id")
+        broker_pm  = s.get("brokerage_account")
+        has_data_pm = (
+            s["id"] in axia_agg
+            or s["id"] in fund_agg
+            or s["id"] in darwinex_agg
+            or (acct_id_pm is not None and int(acct_id_pm) in acct_agg_pm)
+            or (broker_pm is not None and broker_to_acct_pm.get(broker_pm) in acct_agg_pm)
+            or code_pm in darwin_agg_pm
+        )
+        if has_data_pm:
+            continue
+        status_pm = s.get("status") or "Active"
+        if status_pm != "Active":
+            continue
+        initial_pm = _strategy_capital_invested(s, net_deployed_pm, axia_agg, ct_by_strategy_pm, darwinex_agg)
+        if not initial_pm:
+            continue
+        pid = s.get("pod_id")
+        if pid is None:
+            pid = UNALLOCATED
+        if pid not in pod_agg:
+            pod_agg[pid] = {"invested": 0.0, "pnl": 0.0, "darwins": []}
+        pod_agg[pid]["invested"] = round(pod_agg[pid]["invested"] + initial_pm, 2)
 
     return {
         "pod_agg":       pod_agg,
@@ -1764,49 +1854,48 @@ def compute_fund_metrics_fast(events: list[dict], history: list[dict]) -> dict:
 
 def get_portfolio_kpis_fast(pod_pfees_map: dict, balance_hist: list[dict],
                              capital_evts: list[dict]) -> dict:
-    """get_portfolio_kpis() with pre-fetched data — 0 extra DB calls."""
-    snapshot      = pod_pfees_map.get("_snapshot", get_pfees_latest_snapshot())
-    current_equity = round(sum(float(r.get("Invested") or 0) for r in snapshot), 2)
-    total_pnl      = round(sum(float(r.get("Current PnL") or 0) for r in snapshot), 2)
+    """
+    get_portfolio_kpis() with pre-fetched data — 0 extra DB calls.
 
-    # Fund-statement strategies (e.g. 12-FLAGS) never appear in the pfees
-    # snapshot — there's no daily broker feed for a NAV-administrator
-    # statement — so fold their equity/pnl in explicitly, same as AXIA does
-    # via pod_agg at the pod level.
-    fund_agg = pod_pfees_map.get("_fund_agg") or {}
-    current_equity = round(current_equity + sum(v["invested"] for v in fund_agg.values()), 2)
-    total_pnl      = round(total_pnl + sum(v["pnl"] for v in fund_agg.values()), 2)
+    STRATEGY CALCULATIONS -> POD AGGREGATION -> PORTFOLIO AGGREGATION.
+    Portfolio = strict sum of Strategies (equivalently, sum of Pods — Pods
+    are themselves a sum of their Strategies, see get_pods_with_kpis_fast).
+    Every headline figure here is built by summing get_strategies_with_kpis_fast's
+    already-correct per-strategy kpis — never recomputed independently from
+    raw snapshot/fund/darwinex sources. This guarantees the portfolio hero
+    card always reconciles exactly against the Pod and Strategy overview
+    cards, by construction, with no separate "uninvested cash" concept —
+    per the Capital & Performance Overview spec (README §14).
+    """
+    strat_rows = get_strategies_with_kpis_fast(pod_pfees_map, balance_hist)
 
-    # Closed Darwinex strategies — same reasoning: no pfees feed at all, so
-    # their realized pnl (invested is always 0.0, closed) needs an explicit
-    # fold-in too, else it's invisible at the portfolio level.
-    darwinex_agg = pod_pfees_map.get("_darwinex_agg") or {}
-    current_equity = round(current_equity + sum(v["invested"] for v in darwinex_agg.values()), 2)
-    total_pnl      = round(total_pnl + sum(v["pnl"] for v in darwinex_agg.values()), 2)
+    invested      = round(sum(r["kpis"]["initial_investment"] for r in strat_rows), 2)
+    current_equity = round(sum(r["kpis"]["current_equity"] for r in strat_rows), 2)
+    banked         = round(sum(r["kpis"]["banked_profit"] for r in strat_rows), 2)
+    banked_true    = round(sum(r["kpis"]["banked_profit_true"] for r in strat_rows), 2)
+    allocated      = round(sum(r["kpis"]["capital_allocated"] for r in strat_rows), 2)
+    # Total P&L = Current Equity + Banked Profit − Total Capital Invested
+    # (uses gross `banked`, the internal formula input — identical
+    # derivation to computeCapitalMetrics on the frontend, and to every
+    # individual strategy card, so this always matches their sum exactly).
+    total_pnl = round(current_equity + banked - invested, 2)
+    roi       = round(total_pnl / invested, 6) if invested else 0.0
 
     pct_1d  = _period_return_from_hist(balance_hist, 1)
     pct_7d  = _period_return_from_hist(balance_hist, 7)
     pct_30d = _period_return_from_hist(balance_hist, 30)
     try:
-        metrics            = compute_fund_metrics_fast(capital_evts, balance_hist)
-        performance        = metrics["twr"]
-        initial_investment = metrics["total_deposited"]   # always £total bank deposits
+        performance = compute_fund_metrics_fast(capital_evts, balance_hist)["twr"]
     except Exception:
-        initial_investment = current_equity
-        performance        = 0.0
-
-    strategies = pod_pfees_map.get("strategies") or []
-    banked_agg = _banked_profit_by_strategy(strategies)
-    banked     = round(sum(v["banked_profit"] for v in banked_agg.values()), 2)
-    withdrawn  = round(sum(v["total_withdrawn"] for v in banked_agg.values()), 2)
-    allocated  = round(initial_investment - withdrawn, 2)
+        performance = 0.0
 
     return {
-        "initial_investment": initial_investment,
+        "initial_investment": invested,
         "current_equity":     current_equity,
         "performance":        performance,
         "total_pnl":          total_pnl,
         "banked_profit":      banked,
+        "banked_profit_true": banked_true,
         "capital_allocated":  allocated,
         "pct_1d":             pct_1d,
         "pct_7d":             pct_7d,
@@ -1842,9 +1931,22 @@ def get_pods_with_kpis_fast(pod_pfees_map: dict, balance_hist: list[dict]) -> li
                 _strategy_capital_invested(s, net_deployed, axia_agg, ct_by_strategy, darwinex_agg)
                 for s in pod_strats
             )
-            banked    = round(sum(banked_agg.get(s["id"], {}).get("banked_profit", 0.0) for s in pod_strats), 2)
-            withdrawn = round(sum(banked_agg.get(s["id"], {}).get("total_withdrawn", 0.0) for s in pod_strats), 2)
-            allocated = round(initial - withdrawn, 2)
+            per_strat = [
+                _banked_and_allocated(
+                    s["id"],
+                    _strategy_capital_invested(s, net_deployed, axia_agg, ct_by_strategy, darwinex_agg),
+                    banked_agg, darwinex_agg,
+                )
+                for s in pod_strats
+            ]
+            banked    = round(sum(b for b, _ in per_strat), 2)
+            allocated = round(sum(a for _, a in per_strat), 2)
+            # banked_profit_true: see get_portfolio_kpis_fast's identical note.
+            banked_true = round(sum(
+                darwinex_agg[s["id"]]["pnl"] if s["id"] in darwinex_agg
+                else banked_agg.get(s["id"], {}).get("banked_profit", 0.0)
+                for s in pod_strats
+            ), 2)
             result.append({
                 "entity_id": f"pod_{pid}",
                 "name":      pod.get("name", f"Pod {pid}"),
@@ -1857,6 +1959,7 @@ def get_pods_with_kpis_fast(pod_pfees_map: dict, balance_hist: list[dict]) -> li
                     "performance":        round(agg["pnl"] / initial, 6) if initial else 0.0,
                     "total_pnl":          agg["pnl"],
                     "banked_profit":      banked,
+                    "banked_profit_true": banked_true,
                     "capital_allocated":  allocated,
                     "pct_1d":             pct_1d,
                     "pct_7d":             pct_7d,
@@ -1965,6 +2068,20 @@ def get_strategies_with_kpis_fast(pod_pfees_map: dict, balance_hist: list[dict])
 
         initial = _strategy_capital_invested(s, net_deployed, axia_agg, ct_by_strategy, darwinex_agg)
 
+        # has_data: true once ANY real performance source is matched — a
+        # live pfees feed (by account_id/brokerage_account/darwin code), or
+        # one of the bespoke aggregators (AXIA/fund/closed-Darwinex). False
+        # means only a capital figure exists (e.g. a Capital Transfers
+        # deposit with nothing tracking performance yet) — see README §14.
+        has_data = (
+            axia_contrib is not None
+            or fund_contrib is not None
+            or darwinex_contrib is not None
+            or (acct_id is not None and int(acct_id) in acct_agg)
+            or (broker is not None and broker_to_acct_s.get(broker) in acct_agg)
+            or code in darwin_agg
+        )
+
         # AXIA-linked strategies are already watermark-adjusted inside
         # _axia_strategy_agg (baseline used there too); fund-statement and
         # closed-Darwinex strategies are already fully resolved (their own
@@ -1974,13 +2091,27 @@ def get_strategies_with_kpis_fast(pod_pfees_map: dict, balance_hist: list[dict])
         # raw pfees-derived baseline the watermark pass-through expects.
         # Apply here only for the remaining general case (Darwinex still
         # open, manual strategies) — not AXIA/fund/closed-Darwinex-specific.
-        if axia_contrib is None and fund_contrib is None and darwinex_contrib is None:
+        if not has_data:
+            # No real performance source tracked for this strategy yet.
+            # Active: show real Capital Invested at par (equity == invested,
+            # pnl 0) — NOT a fabricated 100% loss. Inactive/Closed with no
+            # data: `initial` is already 0.0 (see _strategy_capital_invested),
+            # so this naturally zeroes everywhere. See README §14.
+            agg = {"invested": initial, "pnl": 0.0}
+        elif axia_contrib is None and fund_contrib is None and darwinex_contrib is None:
             chase_equity, chase_pnl = _apply_watermark(s, agg["invested"], initial)
             agg = {"invested": chase_equity, "pnl": chase_pnl}
 
-        banked_contrib = banked_agg.get(s["id"], {"banked_profit": 0.0, "capital_returned": 0.0, "total_withdrawn": 0.0})
-        banked         = banked_contrib["banked_profit"]
-        allocated      = round(initial - banked_contrib["total_withdrawn"], 2)
+        banked, allocated = _banked_and_allocated(s["id"], initial, banked_agg, darwinex_agg)
+        # banked_profit_true: for a CLOSED Darwinex strategy, `banked` above
+        # is the gross-cash bookkeeping figure (needed for Total P&L's
+        # formula to reconcile, per §12.3) — not the real realized P&L.
+        # agg["pnl"] IS the real realized P&L there (returned − deployed,
+        # all-time, already correct — same figure the Breakdown table
+        # shows). Every other strategy type's banked figure is already the
+        # true one (a genuine profit-skim withdrawal), so it passes through
+        # unchanged.
+        banked_true = agg["pnl"] if darwinex_contrib is not None else banked
 
         pid        = s.get("pod_id")
         pod        = pods_idx.get(pid, {}) if pid else {}
@@ -2017,12 +2148,14 @@ def get_strategies_with_kpis_fast(pod_pfees_map: dict, balance_hist: list[dict])
             "status":           s.get("status") or "Active",
             "watermark":        s.get("watermark"),
             "profit_share_pct": s.get("profit_share_pct"),
+            "has_data":         has_data,
             "kpis": {
                 "initial_investment": round(initial, 2),
                 "current_equity":     agg["invested"],
                 "performance":        round(agg["pnl"] / initial, 6) if initial else 0.0,
                 "total_pnl":          agg["pnl"],
                 "banked_profit":      banked,
+                "banked_profit_true": round(banked_true, 2),
                 "capital_allocated":  allocated,
                 "pct_1d":             pct_1d,
                 "pct_7d":             pct_7d,

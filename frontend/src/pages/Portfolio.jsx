@@ -160,9 +160,6 @@ function GlassStyles() {
         display: flex; flex-direction: column;
         min-height: 172px;
       }
-      @media (max-width: 768px) {
-        .cap-hero-card { min-height: 120px; }
-      }
       .stat-box {
         position: relative;
         background: rgba(255,255,255,0.035);
@@ -228,17 +225,6 @@ function GlassStyles() {
       }
       .glass-table tbody tr:hover {
         background: rgba(56,189,248,0.07) !important;
-      }
-
-      /* ── Mobile: tighter type so cards/tables fit without overlap ── */
-      @media (max-width: 768px) {
-        .ov-card       { padding: 14px 14px; }
-        .ov-header     { margin-bottom: 10px; padding-bottom: 9px; gap: 7px; }
-        .ov-name       { font-size: 12px; }
-        .stat-grid     { gap: 6px; }
-        .stat-box      { padding: 7px 8px; }
-        .stat-label    { font-size: 7.8px; margin-bottom: 3px; }
-        .stat-value    { font-size: 11px; }
       }
     `}</style>
   )
@@ -314,9 +300,6 @@ function NoDataBadge() {
 }
 
 function OverviewCard({ name, color, kpis, onClick, isMobile, status, watermark, profitSharePct, hasData }) {
-  // Cards are non-interactive on mobile per current spec — desktop click-
-  // through to drill-down is untouched.
-  const clickHandler = isMobile ? undefined : onClick
   const vars = {
     '--accent':       color,
     '--accent-soft':  hexToRgba(color, 0.20),
@@ -341,7 +324,7 @@ function OverviewCard({ name, color, kpis, onClick, isMobile, status, watermark,
     : null
 
   return (
-    <div className="ov-card" onClick={clickHandler} style={{ ...vars, cursor: isMobile ? 'default' : 'pointer' }}>
+    <div className="ov-card" onClick={onClick} style={vars}>
       <div className="ov-header">
         <div className="ov-dot" />
         <div className="ov-name">{name}</div>
@@ -349,7 +332,7 @@ function OverviewCard({ name, color, kpis, onClick, isMobile, status, watermark,
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
           <StatusBadge status={status} />
           {hasData === false && <NoDataBadge />}
-          {!isMobile && <div className="ov-hint" style={{ marginLeft: 0 }}>Drill down →</div>}
+          <div className="ov-hint" style={{ marginLeft: 0 }}>Drill down →</div>
         </div>
       </div>
 
@@ -402,11 +385,11 @@ function ErrorMsg({ message }) {
 // Hierarchy tab — lazy-loads its own data per tab selection
 // ---------------------------------------------------------------------------
 
-function HierarchyTab({ entityType, onRowClick, isMobile }) {
+function HierarchyTab({ entityType, onRowClick }) {
   const { data, isLoading, error } = useHierarchyTable(entityType)
   if (isLoading) return <Spinner />
   if (error)     return <ErrorMsg message={error.message} />
-  return <BreakdownTable rows={data?.rows ?? []} onRowClick={onRowClick} isMobile={isMobile} />
+  return <BreakdownTable rows={data?.rows ?? []} onRowClick={onRowClick} />
 }
 
 
@@ -507,7 +490,7 @@ export default function Portfolio({ timeRange, initialTab }) {
         gap: 12, marginBottom: 16,
       }}>
         <CapitalFlowTable kpis={kpis} />
-        <CapitalAtGlanceChart kpis={kpis} height={isMobile ? 260 : 300} isMobile={isMobile} />
+        <CapitalAtGlanceChart kpis={kpis} height={isMobile ? 260 : 300} />
       </div>
       <div style={{ marginBottom: 20 }}>
         <CapitalInfoBox kpis={kpis} />
@@ -575,26 +558,24 @@ export default function Portfolio({ timeRange, initialTab }) {
       </div>
 
       {/* ── Divider ── */}
-      <div style={{ height: 1, background: '#1E3A5F', margin: isMobile ? '0 0 16px' : '0 0 20px' }} />
+      <div style={{ height: 1, background: '#1E3A5F', margin: '0 0 20px' }} />
 
-      {/* ── Charts row — hidden on mobile for now, desktop unaffected ── */}
-      {!isMobile && (
-        <div style={{
-          display: 'grid',
-          gridTemplateColumns: '2fr 1fr 1fr',
-          gap: 12, marginBottom: 28,
-        }}>
-          <ChartCard title="Equity (with drawdown)">
-            <EquityChart data={equity_curve} height={300} />
-          </ChartCard>
-          <ChartCard title="Allocation by Pod">
-            <DonutChart data={allocation} height={260} />
-          </ChartCard>
-          <ChartCard title="PnL Contribution (Pod)">
-            <PnlBarChart data={pnl_contribution} height={260} />
-          </ChartCard>
-        </div>
-      )}
+      {/* ── Charts row ── */}
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: isMobile ? '1fr' : '2fr 1fr 1fr',
+        gap: 12, marginBottom: 28,
+      }}>
+        <ChartCard title="Equity (with drawdown)">
+          <EquityChart data={equity_curve} height={isMobile ? 240 : 300} />
+        </ChartCard>
+        <ChartCard title="Allocation by Pod">
+          <DonutChart data={allocation} height={isMobile ? 220 : 260} />
+        </ChartCard>
+        <ChartCard title="PnL Contribution (Pod)">
+          <PnlBarChart data={pnl_contribution} height={isMobile ? 220 : 260} />
+        </ChartCard>
+      </div>
 
       {/* ── Hierarchy tabs ── */}
       <div className="glass-table">
@@ -610,7 +591,6 @@ export default function Portfolio({ timeRange, initialTab }) {
         <HierarchyTab
           entityType={activeTab}
           onRowClick={id => navigate(`/drilldown/${id}`)}
-          isMobile={isMobile}
         />
       </div>
 

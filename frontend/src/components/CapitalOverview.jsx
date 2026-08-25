@@ -31,7 +31,6 @@
 
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import useIsMobile from '../hooks/useIsMobile.js'
 import {
   Wallet, Landmark, PieChart, Activity, TrendingUp, TrendingDown, Percent, Info, X,
 } from 'lucide-react'
@@ -85,19 +84,6 @@ function fmtGBPAxis(v) {
   return `£${abs.toFixed(0)}`
 }
 
-// Compact bar-top label — 2dp, £2.37M / £104.35K, falls back to full £ for
-// anything under a thousand. Full precision stays in the click/hover tooltip.
-function fmtGBPShortSigned(v) {
-  if (v == null || Number.isNaN(v)) return '£0.00'
-  const sign = v < 0 ? '-' : '+'
-  const abs  = Math.abs(v)
-  let out
-  if (abs >= 1_000_000) out = `£${(abs / 1_000_000).toFixed(2)}M`
-  else if (abs >= 1_000) out = `£${(abs / 1_000).toFixed(2)}K`
-  else out = `£${abs.toFixed(2)}`
-  return `${sign}${out}`
-}
-
 export function fmtPctSigned(v) {
   if (v == null || Number.isNaN(v)) return '0.00%'
   const p = (v * 100).toFixed(2)
@@ -128,7 +114,6 @@ function fmtDate(str) {
 // ---------------------------------------------------------------------------
 
 export function BankedProfitModal({ onClose }) {
-  const isMobile = useIsMobile()
   const { data: capTransfers = [] } = useQuery({
     queryKey: ['capital_transfers'], queryFn: fetchCapitalTransfers, staleTime: 30_000,
   })
@@ -212,16 +197,14 @@ export function BankedProfitModal({ onClose }) {
     <div
       style={{
         position: 'fixed', inset: 0, zIndex: 50, display: 'flex',
-        alignItems: 'center', justifyContent: 'center', padding: isMobile ? 8 : 16,
+        alignItems: 'center', justifyContent: 'center', padding: 16,
       }}
       onClick={onClose}
     >
       <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)' }} />
       <div
         style={{
-          position: 'relative', zIndex: 10,
-          width: isMobile ? '92vw' : '100%', maxWidth: isMobile ? '92vw' : 640,
-          maxHeight: isMobile ? '90vh' : '85vh',
+          position: 'relative', zIndex: 10, width: '100%', maxWidth: 640, maxHeight: '85vh',
           overflow: 'hidden', background: '#0D1117', border: '1px solid rgba(148,163,184,0.2)',
           borderRadius: 16, boxShadow: '0 25px 80px rgba(0,0,0,0.6)', display: 'flex', flexDirection: 'column',
         }}
@@ -406,48 +389,37 @@ export function computeCapitalMetrics(kpis = {}) {
 // Hero card — big 6-box strip
 // ---------------------------------------------------------------------------
 
-function HeroCard({ icon: Icon, color, label, value, sub, onClick, isMobile }) {
+function HeroCard({ icon: Icon, color, label, value, sub, onClick }) {
   return (
     <div
       className="ov-card cap-hero-card"
-      style={{
-        '--accent': color, '--accent-soft': hexToRgba(color, 0.22),
-        cursor: onClick ? 'pointer' : 'default',
-        minHeight: isMobile ? 120 : undefined,
-        padding: isMobile ? '13px 14px' : undefined,
-      }}
+      style={{ '--accent': color, '--accent-soft': hexToRgba(color, 0.22), cursor: onClick ? 'pointer' : 'default' }}
       onClick={onClick}
     >
       <div style={{
-        width: isMobile ? 32 : 44, height: isMobile ? 32 : 44, borderRadius: isMobile ? 9 : 12, flexShrink: 0,
+        width: 44, height: 44, borderRadius: 12, flexShrink: 0,
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         background: `radial-gradient(circle at 32% 28%, ${hexToRgba(color, 0.38)}, ${hexToRgba(color, 0.10)})`,
         border: `1px solid ${hexToRgba(color, 0.28)}`,
         boxShadow: `0 0 16px 1px ${hexToRgba(color, 0.18)}`,
-        marginBottom: isMobile ? 8 : 14,
+        marginBottom: 14,
       }}>
-        <Icon size={isMobile ? 16 : 22} color={color} strokeWidth={2.1} />
+        <Icon size={22} color={color} strokeWidth={2.1} />
       </div>
       <div style={{
-        fontSize: isMobile ? 10 : 12, fontWeight: 600, color: TXT_SUB, marginBottom: isMobile ? 4 : 8,
+        fontSize: 12, fontWeight: 600, color: TXT_SUB, marginBottom: 8,
         letterSpacing: '0.2px',
       }}>
         {label}
       </div>
       <div style={{
-        fontSize: isMobile ? 16 : 24, fontWeight: 800, color, lineHeight: 1.15,
-        fontVariantNumeric: 'tabular-nums', marginBottom: isMobile ? 4 : 8,
+        fontSize: 24, fontWeight: 800, color, lineHeight: 1.15,
+        fontVariantNumeric: 'tabular-nums', marginBottom: 8,
         whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
       }}>
         {value}
       </div>
-      <div style={{
-        fontSize: isMobile ? 8.5 : 10.5, color: TXT_SOFT, lineHeight: 1.35,
-        display: isMobile ? '-webkit-box' : 'block',
-        WebkitLineClamp: isMobile ? 2 : undefined,
-        WebkitBoxOrient: isMobile ? 'vertical' : undefined,
-        overflow: isMobile ? 'hidden' : 'visible',
-      }}>
+      <div style={{ fontSize: 10.5, color: TXT_SOFT, lineHeight: 1.45 }}>
         {sub}
       </div>
     </div>
@@ -469,11 +441,9 @@ export function CapitalOverviewHero({ kpis, isMobile }) {
     {
       icon: banked >= 0 ? Landmark : TrendingDown, color: banked >= 0 ? '#34D399' : '#F87171', label: 'Banked Profit / Loss',
       value: fmtGBP(banked),
-      sub: isMobile
-        ? 'Click for details →'
-        : (banked >= 0
-          ? 'Profit withdrawn and returned to Chase. Click for breakdown.'
-          : 'Net realized loss on withdrawals — a closing withdrawal returned less than remaining allocated capital. Click for breakdown.'),
+      sub: banked >= 0
+        ? 'Profit withdrawn and returned to Chase. Click for breakdown.'
+        : 'Net realized loss on withdrawals — a closing withdrawal returned less than remaining allocated capital. Click for breakdown.',
       onClick: () => setShowBankedModal(true),
     },
     {
@@ -504,7 +474,7 @@ export function CapitalOverviewHero({ kpis, isMobile }) {
       gridTemplateColumns: isMobile ? 'repeat(2, minmax(0,1fr))' : 'repeat(6, minmax(0,1fr))',
       gap: 12,
     }}>
-      {cards.map(c => <HeroCard key={c.label} {...c} isMobile={isMobile} />)}
+      {cards.map(c => <HeroCard key={c.label} {...c} />)}
       {showBankedModal && <BankedProfitModal onClose={() => setShowBankedModal(false)} />}
     </div>
   )
@@ -594,44 +564,35 @@ function GlanceTooltip({ active, payload }) {
 }
 
 // Multi-line, centre-aligned X-axis tick — wraps on '\n' instead of overlapping
-function WrappedAxisTick({ x, y, payload, fontSize = 9.5 }) {
+function WrappedAxisTick({ x, y, payload }) {
   const lines = String(payload.value).split('\n')
   return (
     <g transform={`translate(${x},${y})`}>
-      <text textAnchor="middle" fontSize={fontSize} fill={TXT_SOFT}>
+      <text textAnchor="middle" fontSize={9.5} fill={TXT_SOFT}>
         {lines.map((line, i) => (
-          <tspan key={i} x={0} dy={i === 0 ? 12 : (fontSize + 1.5)}>{line}</tspan>
+          <tspan key={i} x={0} dy={i === 0 ? 12 : 11}>{line}</tspan>
         ))}
       </text>
     </g>
   )
 }
 
-export function CapitalAtGlanceChart({ kpis, height = 300, isMobile = false }) {
+export function CapitalAtGlanceChart({ kpis, height = 300 }) {
   const { invested, banked, allocated, equity, pnl } = computeCapitalMetrics(kpis)
 
-  // Shorter category labels on mobile — full names stay on desktop.
-  const data = isMobile
-    ? [
-        { name: 'Capital\nInvested',   fullName: 'Total Capital Invested',           amount: invested,  color: '#38BDF8' },
-        { name: 'Banked\nP/L',         fullName: 'Banked Profit / Loss (Withdrawn)', amount: banked,    color: banked >= 0 ? '#34D399' : '#F87171' },
-        { name: 'Capital\nAllocated',  fullName: 'Capital Allocated (Still Out)',    amount: allocated, color: '#F59E0B' },
-        { name: 'Current\nEquity',     fullName: 'Current Equity (Economic Interest)', amount: equity,  color: '#A78BFA' },
-        { name: 'Total\nP&L',          fullName: 'Total P&L',                        amount: pnl,       color: pnl >= 0 ? '#34D399' : '#F87171' },
-      ]
-    : [
-        { name: 'Total Capital\nInvested',       fullName: 'Total Capital Invested',        amount: invested,  color: '#38BDF8' },
-        { name: 'Banked Profit/Loss\n(Withdrawn)', fullName: 'Banked Profit / Loss (Withdrawn)', amount: banked, color: banked >= 0 ? '#34D399' : '#F87171' },
-        { name: 'Capital Allocated\n(Still Out)',fullName: 'Capital Allocated (Still Out)', amount: allocated, color: '#F59E0B' },
-        { name: 'Current Equity\n(Economic Interest)', fullName: 'Current Equity (Economic Interest)', amount: equity, color: '#A78BFA' },
-        { name: 'Total P&L',                     fullName: 'Total P&L',                     amount: pnl,       color: pnl >= 0 ? '#34D399' : '#F87171' },
-      ]
+  const data = [
+    { name: 'Total Capital\nInvested',       fullName: 'Total Capital Invested',        amount: invested,  color: '#38BDF8' },
+    { name: 'Banked Profit/Loss\n(Withdrawn)', fullName: 'Banked Profit / Loss (Withdrawn)', amount: banked, color: banked >= 0 ? '#34D399' : '#F87171' },
+    { name: 'Capital Allocated\n(Still Out)',fullName: 'Capital Allocated (Still Out)', amount: allocated, color: '#F59E0B' },
+    { name: 'Current Equity\n(Economic Interest)', fullName: 'Current Equity (Economic Interest)', amount: equity, color: '#A78BFA' },
+    { name: 'Total P&L',                     fullName: 'Total P&L',                     amount: pnl,       color: pnl >= 0 ? '#34D399' : '#F87171' },
+  ]
 
   return (
-    <div className="glass-table" style={{ padding: isMobile ? '14px 12px' : '16px 18px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, flexWrap: 'wrap', gap: 6 }}>
-        <div style={{ fontSize: isMobile ? 12 : 13, fontWeight: 700, color: '#F1F5F9' }}>Capital at a Glance</div>
-        <div style={{ display: 'flex', gap: isMobile ? 10 : 14, fontSize: isMobile ? 9.5 : 10.5, color: TXT_SUB }}>
+    <div className="glass-table" style={{ padding: '16px 18px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: '#F1F5F9' }}>Capital at a Glance</div>
+        <div style={{ display: 'flex', gap: 14, fontSize: 10.5, color: TXT_SUB }}>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
             <span style={{ width: 9, height: 9, borderRadius: 2, background: '#34D399', display: 'inline-block' }} /> Increase
           </span>
@@ -640,36 +601,27 @@ export function CapitalAtGlanceChart({ kpis, height = 300, isMobile = false }) {
           </span>
         </div>
       </div>
-      {isMobile && (
-        <div style={{ fontSize: 9.5, color: TXT_MUTED, marginBottom: 6 }}>
-          Tap a bar for the exact value
-        </div>
-      )}
       <ResponsiveContainer width="100%" height={height}>
-        <BarChart
-          data={data}
-          margin={isMobile ? { top: 26, right: 4, left: 0, bottom: 10 } : { top: 20, right: 8, left: 0, bottom: 12 }}
-          barCategoryGap={isMobile ? '18%' : '28%'}
-        >
+        <BarChart data={data} margin={{ top: 20, right: 8, left: 0, bottom: 12 }} barCategoryGap="28%">
           <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="#1E3A5F" strokeOpacity={0.4} />
           <XAxis
-            dataKey="name" height={isMobile ? 32 : 40}
-            tick={<WrappedAxisTick fontSize={isMobile ? 8 : 9.5} />}
+            dataKey="name" height={40}
+            tick={<WrappedAxisTick />}
             axisLine={false} tickLine={false} interval={0}
           />
           <YAxis
-            tickFormatter={fmtGBPAxis} tick={{ fill: TXT_MUTED, fontSize: isMobile ? 8.5 : 10 }}
-            axisLine={false} tickLine={false} width={isMobile ? 38 : 48}
+            tickFormatter={fmtGBPAxis} tick={{ fill: TXT_MUTED, fontSize: 10 }}
+            axisLine={false} tickLine={false} width={48}
           />
           <ReferenceLine y={0} stroke="#1E3A5F" strokeWidth={1} />
           <Tooltip content={<GlanceTooltip />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
-          <Bar dataKey="amount" radius={[4, 4, 0, 0]} maxBarSize={isMobile ? 44 : 64}>
+          <Bar dataKey="amount" radius={[4, 4, 0, 0]} maxBarSize={64}>
             {data.map((d, i) => <Cell key={i} fill={d.color} fillOpacity={0.88} />)}
             <LabelList
               dataKey="amount"
               position="top"
-              formatter={fmtGBPShortSigned}
-              style={{ fill: '#E0E6ED', fontSize: isMobile ? 8.5 : 10, fontWeight: 600 }}
+              formatter={fmtGBPSigned}
+              style={{ fill: '#E0E6ED', fontSize: 10, fontWeight: 600 }}
             />
           </Bar>
         </BarChart>

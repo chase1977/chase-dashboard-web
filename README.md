@@ -20,9 +20,10 @@ React (Vite) frontend, FastAPI backend, Supabase (Postgres) database.
 11. [Fund Monthly Statements & OANDA FX Bridge (12-FLAGS)](#11-fund-monthly-statements--oanda-fx-bridge-12-flags)
 12. [Darwinex Closed-Strategy P&L Bridge](#12-darwinex-closed-strategy-pl-bridge)
 13. [Roadmap — Completed](#13-roadmap--completed)
-14. [Roadmap — Outstanding](#14-roadmap--outstanding)
-15. [Known Limitations](#15-known-limitations)
-16. [Dev Workflow](#16-dev-workflow)
+14. [Capital Pipeline: Strategy → Pod → Portfolio](#14-capital-pipeline-strategy--pod--portfolio)
+15. [Roadmap — Outstanding](#15-roadmap--outstanding)
+16. [Known Limitations](#16-known-limitations)
+17. [Dev Workflow](#17-dev-workflow)
 
 ---
 
@@ -219,8 +220,8 @@ Implemented in `_apply_watermark(strategy, raw_equity, baseline)`,
 | Level | AXIA strategies | Non-AXIA (Darwinex/manual) strategies |
 |---|---|---|
 | Strategy | ✅ Applied | ✅ Applied |
-| Pod | ✅ Applied (additive from adjusted strategy figures) | ⚠️ Not applied — see [§15](#15-known-limitations) |
-| Portfolio | ✅ Applied | ⚠️ Not applied — see [§15](#15-known-limitations) |
+| Pod | ✅ Applied (additive from adjusted strategy figures) | ⚠️ Not applied — see [§16](#16-known-limitations) |
+| Portfolio | ✅ Applied | ⚠️ Not applied — see [§16](#16-known-limitations) |
 
 ---
 
@@ -316,6 +317,52 @@ signed profit/loss amount (green if ≥ 0, red if < 0), and date. A running
 `netTotal` (only the net figure, not the full breakdown) is shown wherever
 Banked Profit/Loss appears in preview form (hero card, table row) —
 matching the "only net shown in the preview" requirement.
+
+**Closed-strategy return legs are tagged neutrally, not "Profit," and the
+"Banked Profit/Loss" figure — everywhere it appears — now shows the true
+net realized P&L, not gross recovered cash.**
+
+For a closed Darwinex strategy (§12), `profit_loss_amount` on its return
+legs is set to the FULL cash amount by bookkeeping necessity (§12.3
+explains why — Total P&L/ROI have to reconcile against the frozen Capital
+Invested baseline, and there's no other field to carry that
+reconciliation). That figure is NOT trading profit — most of it is
+principal coming back from a strategy that may have lost money overall.
+Originally, EVERY use of "Banked Profit/Loss" (per-leg modal tags, the
+strategy/pod/portfolio KPI cards, the Capital Flow Summary row) summed this
+same gross figure directly, so a closed strategy's principal repayment
+inflated the headline number — e.g. the portfolio showed **£1,067,992.25**
+Banked P&L when the true realized figure (AXIA-TW's £180,000 genuine profit
+skim + Chase1's −£12,007.75 realized loss) is **£167,992.25**.
+
+**Fix — two parts, kept deliberately separate so Total P&L/ROI/Capital
+Allocated never move:**
+
+1. Backend: every KPI response (`get_strategies_with_kpis_fast`,
+   `get_pods_with_kpis_fast`, `get_portfolio_kpis_fast`) now also returns
+   `banked_profit_true` alongside the existing `banked_profit`. For a
+   closed Darwinex strategy, `banked_profit_true` = its aggregator's own
+   realized pnl (`_darwinex_closed_strategy_agg`'s `pnl`, already correct —
+   the same figure the Breakdown table shows). For every other strategy
+   type, `banked_profit_true` is identical to `banked_profit` (a genuine
+   profit-skim withdrawal already IS the true figure, e.g. AXIA-TW).
+   Summed at pod/portfolio level the same way, per strategy, before
+   summing — never derived by re-aggregating the gross figure.
+2. Frontend: `computeCapitalMetrics()` (`CapitalOverview.jsx`) now computes
+   `pnl` from `bankedGross` (`kpis.banked_profit`, unchanged, internal
+   only — never rendered) but *displays* `banked` from
+   `kpis.banked_profit_true` (falling back to `bankedGross` if absent).
+   `BankedProfitModal`'s net-total calculation was also fixed to match:
+   it sums ordinary (non-closing) legs' `profit_loss_amount` as before,
+   but counts a closed strategy's realized P&L **once per strategy** (via
+   `kpis.total_pnl`), not once per return leg — summing raw leg amounts
+   would double/triple-count a strategy with more than one closing leg
+   (Chase1 has two: £50 and £887,942.25, both gross).
+
+Net effect: Total P&L, Total ROI, and Capital Allocated are completely
+unaffected (still computed from the unchanged `bankedGross`/aggregator
+figures) — only "Banked Profit/Loss," wherever it's shown to a human, now
+reads as true realized profit/loss instead of gross recovered cash.
 
 ---
 
@@ -793,17 +840,265 @@ are both correct. Not requested to be fixed further.
   3-level bridge + Breakdown table + a watermark reapplication-guard fix.
   Verified standalone: DARWIN-1X −£12,007.75, DARWIN-3X −£11,950.50 (both
   ≈ realistic single-digit-% losses, not −100%).
+- [x] **Phase 5 — Three-state status model + `has_data` gate** (§14.4–14.5)
+  Added Closed as a third status alongside Active/Inactive (was previously
+  a binary Active/non-Active, with a dead "Paused" dropdown option).
+  `has_data` computed per strategy — an Active strategy with real recorded
+  capital but no performance source wired up now shows Capital Invested at
+  par instead of a fabricated −100% loss; Inactive-with-no-data now
+  contributes £0 everywhere. "No data yet" badge added to overview cards.
+- [x] **Final Withdrawal feature + gross/true Banked Profit split** (§14.6)
+  New checkbox on the Darwinex Transfers form's outbound leg — locks the
+  closing leg as pure Capital Return, live-previews the resulting P&L, and
+  auto-sets the strategy to Closed. `_banked_and_allocated()` derives
+  Banked Profit/Capital Allocated algebraically for any closed-strategy
+  aggregator match, since the ledger's `profit_loss_amount` classification
+  is now always £0 for those strategies.
+- [x] **Portfolio-level Capital & Performance Overview rebuilt as a strict
+  sum of Strategies** (§14.1)
+  Previously mixed two incompatible bases — Total Capital Invested from
+  all-time bank deposits, Equity/Banked/P&L from raw snapshot/aggregator
+  sources — producing a phantom multi-hundred-thousand-pound loss from
+  undeployed cash and Inactive strategies. `get_portfolio_kpis_fast()` now
+  sums straight from `get_strategies_with_kpis_fast()`'s per-strategy
+  figures, guaranteeing Portfolio always reconciles exactly against the Pod
+  and Strategy cards, per the manager's spec §13.
 
 ---
 
-## 14. Roadmap — Outstanding
+## 14. Capital Pipeline: Strategy → Pod → Portfolio
+
+This is the definitive reference for the six Capital & Performance Overview
+headline metrics — what each one means, its formula, and how it flows
+through the three-level hierarchy. Cross-checked line-by-line against the
+manager's own spec (quoted inline below); the one deliberate departure from
+that spec — how Banked Profit/Loss is now split into a gross/true pair — is
+flagged explicitly in §14.5.
+
+### 14.1 The hierarchy
+
+```
+STRATEGY CALCULATIONS  →  POD AGGREGATION  →  PORTFOLIO AGGREGATION
+```
+
+Every strategy calculates its own six numbers first (including its own
+watermark/profit-share economics, §5). A Pod is the straight sum of its
+member strategies' numbers — nothing is recalculated at pod level. The
+Portfolio is the straight sum of every strategy's numbers, portfolio-wide
+(equivalently, the sum of all pods — the two are identical because pods
+themselves are sums of strategies). No level ever re-derives a number from
+raw broker/ledger data independently of the level below it — this is what
+guarantees Portfolio always reconciles exactly against what the Pod and
+Strategy cards show, with no separate "uninvested cash" or reconciling
+item anywhere.
+
+Implementation: `get_strategies_with_kpis_fast()` computes every strategy's
+kpis dict once; `get_pods_with_kpis_fast()` and `get_portfolio_kpis_fast()`
+both sum straight from those same per-strategy figures — never from the
+pfees snapshot, AXIA table, or ledger directly. (Historically the portfolio
+level used `total_deposited` — all-time bank deposits — as its "Total
+Capital Invested," independent of what was actually deployed into any pod
+or strategy. That created a phantom loss whenever cash sat undeployed in
+the wallet, or in an Inactive strategy that legitimately contributes
+nothing: Equity/Banked only covered *deployed* capital, while Invested
+covered *all* capital ever banked, so the P&L formula effectively treated
+idle cash as a loss. Fixed by making Portfolio a strict sum of Strategies,
+per the manager's spec §13.)
+
+### 14.2 The six metrics
+
+**Total Capital Invested** — total Chase capital ever put into a Strategy,
+Pod, or Portfolio. Cumulative and monotonic: a withdrawal never reduces it.
+
+```
+Strategy:  Σ all capital ever deployed into this strategy
+Pod:       Σ Total Capital Invested across its strategies
+Portfolio: Σ Total Capital Invested across every strategy
+```
+
+**Banked Profit / Loss** — profit (or realized loss) physically withdrawn
+and returned to Chase. Answers "how much have we actually banked?" Signed —
+a closing withdrawal that returns less than was deployed is a realized
+loss, shown negative.
+
+```
+Strategy:  Σ profit/loss distributions received from this strategy
+Pod:       Σ Banked Profit/Loss across its strategies
+Portfolio: Σ Banked Profit/Loss across every strategy
+```
+
+**Capital Allocated** — how much of Chase's original capital is still
+economically out. Reduced by *everything* that's left the strategy,
+whether that departure was profit or a return of principal.
+
+```
+Capital Allocated = Total Capital Invested − Banked Profit/Loss
+```
+
+**Current Equity** — the value of Chase's economic interest today, after
+any watermark/profit-share adjustment (§5). Summed straight from strategy
+level — never recalculated with a pod- or portfolio-level watermark
+(watermarks are a strategy-specific economic arrangement; aggregating them
+first and adjusting second would double-count or misattribute the fee).
+
+**Total P&L** — total economic profit or loss since inception, banked and
+unbanked combined.
+
+```
+Total P&L = Current Equity + Banked Profit/Loss − Total Capital Invested
+```
+
+**Total ROI** — Total P&L as a percentage of Total Capital Invested.
+
+```
+Total ROI = Total P&L ÷ Total Capital Invested × 100
+```
+
+### 14.3 Worked example (AXIA pod, matches the manager's own spec exactly)
+
+| Strategy | Capital Invested | Current Balance | Status | Chase Current Equity |
+|---|---|---|---|---|
+| AXIA 01 | £0 | £0 | Inactive | £0 |
+| AXIA 02 | £0 | £0 | Inactive | £0 |
+| AXIA JJ | £250,000 | £275,000 | Active | £261,250 (below/above-watermark split, §5) |
+| AXIA TW | £500,000 | £430,000 | Active | £430,000 (below its £500,000 watermark) |
+
+AXIA TW has separately banked £180,000 of profit historically.
+
+| Metric | AXIA Pod |
+|---|---|
+| Total Capital Invested | £750,000 |
+| Banked Profit/Loss | £180,000 |
+| Capital Allocated | £570,000 |
+| Current Equity | £691,250 |
+| Total P&L | £121,250 |
+| Total ROI | +16.17% |
+
+Live numbers differ slightly from this illustration (AXIA JJ has since
+banked profit of its own) — the mechanics above are exact.
+
+### 14.4 Three-state status model
+
+Every Pod and Strategy carries one of three statuses. This determines
+whether it contributes to the portfolio at all:
+
+- **Active** — currently running. Contributes its real Capital Invested and
+  Current Equity once it has a genuine performance source wired up (see
+  §14.5, `has_data`). Until then, it contributes Capital Invested "at par"
+  (Current Equity = Capital Invested, Total P&L = £0) rather than a
+  fabricated loss.
+- **Inactive** — paused, not currently running, but could restart. With no
+  performance source wired up, contributes **£0 everywhere** — Capital
+  Invested, Capital Allocated, Current Equity, Total P&L. This is the
+  recommended parking state for any strategy you haven't wired up data for
+  yet ("if nothing recorded yet, mark it Inactive for now").
+- **Closed** — fully wound down, all money returned or banked. Uses its own
+  bespoke aggregator when one exists (e.g. `_darwinex_closed_strategy_agg`
+  for a closed Darwinex account, §12) to compute the true realized P&L from
+  all-time cash in vs all-time cash out — never a ledger-classification
+  guess.
+
+Any strategy can move between all three states at any time (e.g. re-funding
+a Closed strategy moves it back to Active). Status is a manual field, set
+via Manage Pods & Strategies → Strategies → Status.
+
+### 14.5 `has_data` — what happens automatically when you add a new Pod or Strategy
+
+**New Pod:** nothing to configure. A pod's numbers are always the sum of
+whatever strategies are assigned to it — add a strategy to a pod, its
+numbers flow up on the next page load. No separate pod-level setup exists
+or is needed.
+
+**New Strategy:** the backend computes a `has_data` flag per strategy —
+true the moment ANY real performance source is matched (a live pfees feed
+via `account_id`/`brokerage_account`/Darwin code, or one of the bespoke
+aggregators: AXIA, 12-FLAGS fund statements, or closed-Darwinex). Until
+then `has_data` is false, and:
+
+- **Active + no data** → Capital Invested shows the real amount recorded
+  (e.g. via a Capital Transfers deposit), Current Equity = Capital Invested,
+  Total P&L = £0. A grey "No data yet" badge appears next to the strategy's
+  status badge on its overview card, in every location strategies are shown.
+- **Inactive + no data** → everything shows £0, as described in §14.4.
+
+Practically: create a new strategy, deposit capital into it via Capital
+Transfers, leave it Active — the dashboard shows real Capital Invested at
+par immediately, with no misleading -100% loss, until a live feed or
+aggregator is wired up (at which point `has_data` flips true automatically
+and real performance takes over).
+
+Implementation: `has_data` computed once per strategy inside
+`get_strategies_with_kpis_fast()`, returned on `StrategySummary.has_data`
+(`schemas.py`). `_strategy_capital_invested()` and `_build_pod_pfees_map()`
+apply the matching Inactive/Closed-with-no-data zeroing at pod level so pod
+and portfolio sums always agree with what the strategy card shows.
+
+### 14.6 Gross vs true Banked Profit/Loss — and the Final Withdrawal feature
+
+**Deliberate departure from the manager's spec.** The spec's Banked Profit
+formula assumes every withdrawal is already correctly classified as either
+profit or return-of-capital at the moment it's recorded. In practice, for a
+strategy that's fully closing out, that classification is often not known
+leg-by-leg — you only know the true profit/loss once the LAST withdrawal
+lands and you can compare total-in vs total-out. Two internal fields exist
+to solve this without ever showing a misleading number:
+
+- `banked_profit` (**gross**, internal only, never displayed) — feeds the
+  Total P&L formula (§14.2). For a Closed strategy with no bespoke
+  aggregator match, this is `Capital Invested + true realized P&L` — i.e.
+  the full cash ever recovered, algebraically derived, not summed from the
+  ledger's `profit_loss_amount` column (see below for why).
+- `banked_profit_true` (**displayed everywhere** — hero card, pod/strategy
+  cards, Capital Flow Summary, Breakdown modal) — the real net realized
+  P&L. For a Closed strategy with a bespoke aggregator, this is that
+  aggregator's own realized pnl (all-time cash returned − all-time cash
+  deployed). For every other strategy type, identical to the gross figure
+  (a genuine profit-skim withdrawal already IS the true number).
+
+**Final Withdrawal feature** (Darwinex Transfers tab): recording a strategy's
+last withdrawal leg is done differently from a partial/early profit-take.
+Tick "Final withdrawal — closes X" on the outbound leg:
+
+1. The leg is locked as pure Capital Return in the ledger
+   (`capital_return_amount = amount`, `profit_loss_amount = 0`) — no manual
+   profit/loss guess is required or possible for the closing leg.
+2. The strategy's status is automatically set to Closed.
+3. A live preview shows Deployed / Returned / Resulting P&L before you
+   save, computed the same way the dashboard will show it afterward.
+
+Because every leg (including the final one) is now pure Capital Return,
+the ledger's `profit_loss_amount` sum for a Closed strategy is always
+£0 — it can no longer be used to derive Banked Profit/Loss or Capital
+Allocated. `_banked_and_allocated()` in `supabase_service.py` is the single
+override used at strategy/pod/portfolio level: for any strategy present in
+a closed-strategy aggregator (e.g. `_darwinex_closed_strategy_agg`), it
+derives `banked_profit` (gross) and `capital_allocated` algebraically —
+
+```
+banked_profit (gross) = Capital Invested + true realized P&L
+capital_allocated      = £0   (Closed means nothing is left deployed, by definition)
+```
+
+— instead of summing the ledger's classification, which the Final
+Withdrawal feature deliberately leaves at zero. Every other strategy type
+(AXIA, fund-statement, still-open Darwinex, manual) is unaffected — those
+continue to sum the ledger's `capital_return_amount`/`profit_loss_amount`
+columns exactly as before, per the manager's spec.
+
+**Non-final legs** (a partial/early profit-take while the strategy is still
+running) still use the manual Capital Return / Profit-Loss split — only the
+strategy's actual final withdrawal is auto-computed.
+
+---
+
+## 15. Roadmap — Outstanding
 
 - [ ] **Pod/portfolio-level watermark adjustment for non-AXIA strategies**
   See [§15](#15-known-limitations) — documented gap, not yet requested.
 
 ---
 
-## 15. Known Limitations
+## 16. Known Limitations
 
 **Watermark not applied at pod/portfolio level for non-AXIA strategies.**
 `get_pods_with_kpis_fast` / `get_portfolio_kpis_fast` aggregate Darwinex/
@@ -825,7 +1120,7 @@ strategy.
 
 ---
 
-## 16. Dev Workflow
+## 17. Dev Workflow
 
 ```bash
 # Frontend

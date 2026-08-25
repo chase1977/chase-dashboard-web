@@ -219,7 +219,7 @@ const COLUMNS = [
 // Main component
 // ---------------------------------------------------------------------------
 
-export default function BreakdownTable({ rows = [], onRowClick, title }) {
+export default function BreakdownTable({ rows = [], onRowClick, title, isMobile = false }) {
   // Sort state — default A-Z by name
   const [sortKey, setSortKey] = useState('name')
   const [sortDir, setSortDir] = useState('asc')
@@ -413,39 +413,48 @@ export default function BreakdownTable({ rows = [], onRowClick, title }) {
         </div>
       </div>
 
-      {/* ── Table — horizontal scroll on narrow viewports keeps columns readable ── */}
+      {/* ── Table — horizontal scroll on narrow viewports keeps columns readable ──
+           Mobile: header row AND first ("Name") column both frozen via sticky
+           positioning, so the table stays legible while scrolling in either
+           direction. Desktop behaviour (header-only sticky) is unchanged. */}
       <div style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: 'calc(100vh - 220px)', WebkitOverflowScrolling: 'touch' }}>
-        <table style={{ width: '100%', minWidth: 720, borderCollapse: 'collapse', fontSize: 12 }}>
+        <table style={{ width: '100%', minWidth: isMobile ? 560 : 720, borderCollapse: 'collapse', fontSize: isMobile ? 10.5 : 12 }}>
           <thead>
             <tr style={{ borderBottom: '1px solid #1E3A5F' }}>
-              {COLUMNS.map(col => (
-                <th
-                  key={col.key}
-                  onClick={() => col.sortable && handleSort(col.key)}
-                  style={{
-                    padding:       '7px 10px',
-                    textAlign:     col.align,
-                    fontWeight:    500,
-                    fontSize:      10,
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.4px',
-                    color:         sortKey === col.key ? '#38BDF8' : '#475569',
-                    background:    '#0D1B2E',
-                    cursor:        col.sortable ? 'pointer' : 'default',
-                    whiteSpace:    'nowrap',
-                    userSelect:    'none',
-                    position:      'sticky',
-                    top:           0,
-                    zIndex:        2,
-                    boxShadow:     '0 1px 0 #1E3A5F',
-                  }}
-                >
-                  <span style={{ display: 'inline-flex', alignItems: 'center' }}>
-                    {col.label}
-                    <SortIcon col={col} />
-                  </span>
-                </th>
-              ))}
+              {COLUMNS.map((col, ci) => {
+                const frozenFirst = isMobile && ci === 0
+                return (
+                  <th
+                    key={col.key}
+                    onClick={() => col.sortable && handleSort(col.key)}
+                    style={{
+                      padding:       isMobile ? '6px 8px' : '7px 10px',
+                      textAlign:     col.align,
+                      fontWeight:    500,
+                      fontSize:      isMobile ? 9 : 10,
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.4px',
+                      color:         sortKey === col.key ? '#38BDF8' : '#475569',
+                      background:    '#0D1B2E',
+                      cursor:        col.sortable ? 'pointer' : 'default',
+                      whiteSpace:    'nowrap',
+                      userSelect:    'none',
+                      position:      'sticky',
+                      top:           0,
+                      left:          frozenFirst ? 0 : undefined,
+                      zIndex:        frozenFirst ? 4 : 2,
+                      boxShadow:     frozenFirst
+                        ? '0 1px 0 #1E3A5F, 2px 0 4px -2px rgba(0,0,0,0.5)'
+                        : '0 1px 0 #1E3A5F',
+                    }}
+                  >
+                    <span style={{ display: 'inline-flex', alignItems: 'center' }}>
+                      {col.label}
+                      <SortIcon col={col} />
+                    </span>
+                  </th>
+                )
+              })}
             </tr>
           </thead>
           <tbody>
@@ -462,18 +471,26 @@ export default function BreakdownTable({ rows = [], onRowClick, title }) {
                   transition:   'background 0.15s',
                 }}
               >
-                {COLUMNS.map(col => (
-                  <td
-                    key={col.key}
-                    style={{
-                      padding:   '7px 10px',
-                      textAlign: col.align,
-                      whiteSpace: col.key === 'name' ? 'nowrap' : 'normal',
-                    }}
-                  >
-                    {renderCell(col, row)}
-                  </td>
-                ))}
+                {COLUMNS.map((col, ci) => {
+                  const frozenFirst = isMobile && ci === 0
+                  return (
+                    <td
+                      key={col.key}
+                      style={{
+                        padding:   isMobile ? '6px 8px' : '7px 10px',
+                        textAlign: col.align,
+                        whiteSpace: col.key === 'name' ? 'nowrap' : 'normal',
+                        position:   frozenFirst ? 'sticky' : undefined,
+                        left:       frozenFirst ? 0 : undefined,
+                        zIndex:     frozenFirst ? 1 : undefined,
+                        background: frozenFirst ? (i % 2 === 0 ? '#0D1728' : '#0B1220') : undefined,
+                        boxShadow:  frozenFirst ? '2px 0 4px -2px rgba(0,0,0,0.5)' : undefined,
+                      }}
+                    >
+                      {renderCell(col, row)}
+                    </td>
+                  )
+                })}
               </tr>
             ))}
 

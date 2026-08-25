@@ -30,7 +30,6 @@ import {
   fetchWages, createWage, updateWage, deleteWage,
 } from '../services/api.js'
 import ConfirmModal from './ConfirmModal.jsx'
-import useIsMobile from '../hooks/useIsMobile.js'
 
 // ---------------------------------------------------------------------------
 // Account list — Darwinex investor accounts
@@ -124,20 +123,19 @@ function useEscClose(onClose) {
 
 function Modal({ title, subtitle, onClose, children, wide = false }) {
   useEscClose(onClose)
-  const isMobile = useIsMobile()
   return (
     <div
-      className={`fixed inset-0 z-50 flex items-center justify-center ${isMobile ? 'p-1' : 'p-4'}`}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
       onClick={onClose}
     >
       {/* Backdrop */}
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
 
-      {/* Panel — mobile covers ~90% of the viewport regardless of `wide` */}
+      {/* Panel */}
       <div
-        className={`relative z-10 overflow-hidden bg-[#0d1117] border border-slate-700/50 rounded-2xl
-                    shadow-[0_25px_80px_rgba(0,0,0,0.6)] flex flex-col
-                    ${isMobile ? 'w-[92vw] max-h-[90vh]' : `w-full ${wide ? 'max-w-3xl' : 'max-w-2xl'} max-h-[85vh]`}`}
+        className={`relative z-10 w-full ${wide ? 'max-w-3xl' : 'max-w-2xl'} max-h-[85vh]
+                    overflow-hidden bg-[#0d1117] border border-slate-700/50 rounded-2xl
+                    shadow-[0_25px_80px_rgba(0,0,0,0.6)] flex flex-col`}
         onClick={e => e.stopPropagation()}
       >
         {/* Modal header */}
@@ -157,10 +155,8 @@ function Modal({ title, subtitle, onClose, children, wide = false }) {
           </button>
         </div>
 
-        {/* Scrollable body — horizontal overflow hidden here so only an
-            explicitly-scrollable inner element (e.g. the Ledger tab bar)
-            can ever scroll sideways; nothing else gets clipped/shifted. */}
-        <div className="overflow-y-auto overflow-x-hidden flex-1 px-6 py-5
+        {/* Scrollable body */}
+        <div className="overflow-y-auto flex-1 px-6 py-5
                         scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-transparent">
           {children}
         </div>
@@ -2266,20 +2262,14 @@ function LedgerModal({ data, onClose }) {
       onClose={onClose}
       wide
     >
-      {/* Tab bar — only this row scrolls sideways on narrow viewports;
-          the rest of the modal never overflows horizontally. */}
-      <div style={{
-        display: 'flex', gap: 4, marginBottom: 18,
-        borderBottom: '1px solid rgba(51,65,85,0.4)', paddingBottom: 0,
-        overflowX: 'auto', WebkitOverflowScrolling: 'touch', flexWrap: 'nowrap',
-      }}>
+      {/* Tab bar */}
+      <div style={{ display: 'flex', gap: 4, marginBottom: 18, borderBottom: '1px solid rgba(51,65,85,0.4)', paddingBottom: 0 }}>
         {TABS.map(tab => {
           const active = activeTab === tab.id
           return (
             <button key={tab.id} onClick={() => setActiveTab(tab.id)} style={{
               padding: '8px 14px', borderRadius: '8px 8px 0 0', border: 'none', cursor: 'pointer',
-              fontSize: 11, fontWeight: 600, transition: 'all 0.15s', flexShrink: 0,
-              whiteSpace: 'nowrap',
+              fontSize: 11, fontWeight: 600, transition: 'all 0.15s',
               background: active ? 'rgba(56,189,248,0.12)' : 'transparent',
               color: active ? '#38bdf8' : '#475569',
               borderBottom: active ? '2px solid #38bdf8' : '2px solid transparent',
