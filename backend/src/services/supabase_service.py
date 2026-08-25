@@ -903,9 +903,23 @@ def _darwinex_closed_strategy_agg(strategies: list[dict]) -> dict[int, dict]:
     type's Capital Invested semantics), pnl is ALL-TIME returned minus
     ALL-TIME deployed (the true realized gain/loss, since the account is
     closed and current equity is definitionally 0 — nothing left open).
-    Account<->account rebalances (e.g. Chase1->Chase3xA reallocations) are
-    excluded from both sides, same convention as _get_net_deployed_per_account
-    — they're not a Chase-level capital event, just a relocation.
+
+    Wallet-mediated inter-strategy rebalances (e.g. Chase1->Chase3xA,
+    27-03-2026, £100,000): Darwinex has no direct account->account
+    transfer row — every relocation between two live strategies shows up
+    as TWO separate internal_transfers legs on the same day for the same
+    amount (X->Wallet, then Wallet->Y). That's not trading profit for X
+    and not a fresh capital raise for Y — it's Chase's own capital moving
+    between two of its own strategies. Y's baseline already correctly
+    counts the inbound leg as genuine new capital (untouched). X's
+    baseline (Capital Invested) is reduced by the matched amount instead,
+    so X isn't shown as having "earned back" money it actually just
+    handed to a sibling strategy — this is a pure display/ROI-denominator
+    adjustment: pnl (= returned − deployed, both left unreduced) is
+    algebraically identical either way, so realized P&L never moves.
+    The row itself stays unclassified in the ledger (no
+    capital_return_amount/profit_loss_amount) — it's neither a capital
+    return nor a profit/loss event, just a relocation (§12.3).
 
     Only applies to strategies with status == "Inactive" — an ACTIVE
     Darwinex strategy with a matched live feed keeps using the existing
@@ -917,15 +931,34 @@ def _darwinex_closed_strategy_agg(strategies: list[dict]) -> dict[int, dict]:
     for t in transfers:
         frm, to, amt = t["from_account"], t["to_account"], float(t["amount"])
         if frm == "Wallet" and to != "Wallet":
-            entry = by_account.setdefault(to, {"deployed": 0.0, "returned": 0.0, "legs": []})
+            entry = by_account.setdefault(to, {"deployed": 0.0, "returned": 0.0, "rebalance_out": 0.0, "legs": []})
             entry["deployed"] += amt
             entry["legs"].append(t)
         elif to == "Wallet" and frm != "Wallet":
-            entry = by_account.setdefault(frm, {"deployed": 0.0, "returned": 0.0, "legs": []})
+            entry = by_account.setdefault(frm, {"deployed": 0.0, "returned": 0.0, "rebalance_out": 0.0, "legs": []})
             entry["returned"] += amt
             entry["legs"].append(t)
-        # account<->account rebalance: excluded from both sides — not a
-        # Chase-level inflow/outflow, just a relocation between accounts
+        # account<->account rebalance (direct, no Wallet hop): excluded
+        # from both sides entirely — not a Chase-level inflow/outflow.
+        # (Darwinex data never actually has this row shape — see the
+        # Wallet-mediated matching pass below for the real-world case.)
+
+    # ── Wallet-mediated inter-strategy rebalance detection ──────────────
+    # Same-day, same-amount X->Wallet + Wallet->Y pair = a relocation, not
+    # a real capital event for X. Reduce X's baseline only; leave pnl,
+    # and Y's baseline, untouched (see docstring).
+    outbound = [t for t in transfers if t["to_account"] == "Wallet" and t["from_account"] != "Wallet"]
+    inbound  = [t for t in transfers if t["from_account"] == "Wallet" and t["to_account"] != "Wallet"]
+    matched_inbound = set()
+    for o in outbound:
+        for i in inbound:
+            if (id(i) not in matched_inbound
+                    and i["to_account"] != o["from_account"]
+                    and i["transfer_date"] == o["transfer_date"]
+                    and round(float(i["amount"]), 2) == round(float(o["amount"]), 2)):
+                by_account[o["from_account"]]["rebalance_out"] += float(o["amount"])
+                matched_inbound.add(id(i))
+                break
 
     out: dict[int, dict] = {}
     for s in strategies:
@@ -935,7 +968,7 @@ def _darwinex_closed_strategy_agg(strategies: list[dict]) -> dict[int, dict]:
         if not acct or acct not in by_account:
             continue
         agg      = by_account[acct]
-        baseline = round(agg["deployed"], 2)
+        baseline = round(agg["deployed"] - agg["rebalance_out"], 2)
         pnl      = round(agg["returned"] - agg["deployed"], 2)
         out[s["id"]] = {
             "invested": 0.0,   # closed — nothing left open

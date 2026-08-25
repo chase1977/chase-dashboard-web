@@ -583,10 +583,17 @@ and darwinex_contrib is None:`).
 **Verified** by extracting the aggregator logic and running it standalone
 against the corrected `internal_transfers` rows (§12.3):
 
-| Strategy | Capital Invested (frozen) | Closing return | Realized P&L | ROI |
+| Strategy | Capital Invested | Closing return | Realized P&L | ROI |
 |---|---|---|---|---|
-| DARWIN-1X (Chase1) | £1,000,000.00 | £887,942.25 | **−£12,007.75** | ≈ −1.20% |
+| DARWIN-1X (Chase1) | £900,000.00¹ | £887,942.25 | **−£12,007.75** | ≈ −1.33% |
 | DARWIN-3X (Chase3xA) | £238,173.76 | £226,223.26 | **−£11,950.50** | ≈ −5.02% |
+
+¹ £1,000,000.00 ever deployed to Chase1, less £100,000.00 rebalanced
+straight through to Chase3xA on 27-03-2026 (§12.3) — not a withdrawal, a
+same-day relocation between two Chase strategies, so it's excluded from
+Chase1's own Capital Invested/ROI base. Chase1's realized P&L is unaffected
+either way (the rebalance leg cancels out of the P&L formula regardless of
+whether it's included).
 
 Combined real Darwinex P&L: **−£23,958.25** — versus the −£999,950+ the bug
 was contributing before the fix.
@@ -642,22 +649,40 @@ on 17/18-03-2026):
   (two £500,000 deposits, 17 & 18-03-2026) and £976,223.26 out (£750,000 on
   22-05-2026 + £226,223.26 on 27-07-2026, both "Withdrawal | Transfer" rows).
 
-**Classification IS required — on every `Wallet`-bound return leg.** §12.2
-explains why: the Breakdown table only needs the backend aggregator, but the
-Portfolio page's `computeCapitalMetrics()` needs `banked_profit`, which comes
-from `_banked_profit_by_strategy()` — and that function only counts
+**One leg is a rebalance, not a return — handled in code, not classification.**
+The 27-03-2026 £100,000 leg (Chase1 → Wallet) isn't Chase1 taking profit —
+same day, that exact £100,000 was redeployed Wallet → Chase3xA (it's the
+seed capital for DARWIN-3X). Classifying it as Profit/Loss would falsely
+show Chase1 "earning" £100,000 it just handed to a sibling strategy. Since
+Capital Invested is architecturally frozen (§4, never reduced by any
+withdrawal, classified or not), the only place this can be corrected without
+distorting Chase1's realized P&L is the backend aggregator itself:
+`_darwinex_closed_strategy_agg` now detects same-day, same-amount
+`X → Wallet` + `Wallet → Y` pairs and reduces **X's baseline only** (Capital
+Invested) by the matched amount — Y's baseline is untouched (that £100,000
+is genuine new capital to Chase3xA). `pnl = returned − deployed` uses the
+*unreduced* deployed figure, so this is algebraically invariant on realized
+P&L — Chase1's loss stays exactly −£12,007.75, only its Capital
+Invested/ROI base shrinks (£1,000,000 → £900,000, ROI −1.20% → −1.33%,
+reflecting that only £900,000 was ever truly at risk *within* Chase1 for
+its full life — the other £100,000 was passed straight through to
+Chase3xA). **This row stays unclassified in the ledger** — no
+`capital_return_amount`, no `profit_loss_amount` — it's neither, it's a
+relocation.
+
+**Every other `→ Wallet` return leg (not part of a same-day matched pair)
+does need classification**, for the reason given above: the Breakdown table
+only needs the backend aggregator, but the Portfolio page's
+`computeCapitalMetrics()` needs `banked_profit`, which comes from
+`_banked_profit_by_strategy()` — and that function only counts
 `internal_transfers` rows carrying an explicit `capital_return_amount` /
-`profit_loss_amount` split. Because Capital Invested is frozen and never
-reduced by any withdrawal (§4), the only way `banked_profit` can make
-`computeCapitalMetrics`'s formula (`equity + banked_profit − invested`)
-reproduce the correct realized P&L is: **Capital Return = £0.00, Profit/Loss
-= the full leg amount, on every `→ Wallet` return leg** (interim returns
-*and* final closing legs alike — inbound `Wallet →` legs are never
-classified, they're capital deployment, not a return).
+`profit_loss_amount` split. Convention: **Capital Return = £0.00,
+Profit/Loss = the full leg amount**, on every genuine (non-rebalance)
+return leg.
 
 | `internal_transfers` row | Direction | Amount | Capital Return | Profit/Loss |
 |---|---|---|---|---|
-| 27-03-2026, id=4 (existing — edit) | Chase1 → Wallet | £100,000.00 | £0.00 | £100,000.00 |
+| 27-03-2026, id=4 (existing) | Chase1 → Wallet | £100,000.00 | — | — (unclassified — rebalance to Chase3xA, see above) |
 | 14-04-2026, id=6 (existing — edit) | Chase1 → Wallet | £50.00 | £0.00 | £50.00 |
 | 22-05-2026 (new) | Chase1 → Wallet | £887,942.25 | £0.00 | £887,942.25 |
 | 27-07-2026 (new, leg 1/4) | Chase3xA → Wallet | £100,000.00 | £0.00 | £100,000.00 |
@@ -665,13 +690,14 @@ classified, they're capital deployment, not a return).
 | 27-07-2026 (new, leg 3/4) | Chase3xA → Wallet | £25,000.00 | £0.00 | £25,000.00 |
 | 27-07-2026 (new, leg 4/4) | Chase3xA → Wallet | £1,223.26 | £0.00 | £1,223.26 |
 
-Sum of Profit/Loss classified above = −£12,007.75 (DARWIN-1X: 100,000 + 50 +
-887,942.25 = 987,992.25 returned − £1,000,000.00 invested) and −£11,950.50
-(DARWIN-3X: 100,000 + 100,000 + 25,000 + 1,223.26 = £226,223.26 returned −
-£238,173.76 invested) — matching §12.2's verification table exactly.
-Inbound `Wallet →` legs (the £1,000 / £499,000 / £500,000 deployments to
-Chase1, the £100,000 initial + £138,173.76 top-up to Chase3xA) are **not**
-classified — they're capital going out, not coming back.
+Sum of Profit/Loss classified above = −£12,007.75 for DARWIN-1X (50 +
+887,942.25 = £887,992.25 banked − £900,000.00 reduced-baseline invested)
+and −£11,950.50 for DARWIN-3X (100,000 + 100,000 + 25,000 + 1,223.26 =
+£226,223.26 returned − £238,173.76 invested) — matching §12.2's
+verification table exactly. Inbound `Wallet →` legs (the £1,000 / £499,000 /
+£500,000 deployments to Chase1, the £100,000 initial + £138,173.76 top-up
+to Chase3xA) are **not** classified — they're capital going out, not
+coming back.
 
 ### 12.4 Known caveat
 
@@ -679,9 +705,10 @@ classified — they're capital going out, not coming back.
 £12,007.75 for DARWIN-1X) as "still allocated," even though the strategy is
 fully closed with nothing actually outstanding.** This stat is computed via
 a separate formula (`Capital Invested − Total Withdrawn`, §4), and even with
-the §12.3 classification in place (Capital Return = £0.00 on every leg),
-`Total Withdrawn` only ever sums to the amount actually returned
-(£987,992.25 of £1,000,000.00 for DARWIN-1X) — the unrecovered £12,007.75
+the §12.3 classification in place (Capital Return = £0.00 on every
+classified leg), `Total Withdrawn` only ever sums to the amount actually
+returned (£887,992.25 of £900,000.00 for DARWIN-1X) — the unrecovered
+£12,007.75
 necessarily remains "allocated" by this formula's definition, because it
 was never returned. This is expected, not a bug: it's the realized loss
 amount, correctly surfaced as the gap between what was invested and what
