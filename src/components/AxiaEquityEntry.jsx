@@ -210,6 +210,11 @@ export default function AxiaEquityEntry() {
   const [error,      setError]      = useState(null)
   const [success,    setSuccess]    = useState(null)
 
+  // Pagination — 50 per page, applies to every client/account
+  const PAGE_SIZE = 50
+  const [page,       setPage]       = useState(0)   // 0-indexed
+  const [totalCount, setTotalCount] = useState(0)
+
   // Form
   const [selClient,  setSelClient]  = useState(null)   // { id, client, account, label }
   const [date,       setDate]       = useState(todayISO())
@@ -278,20 +283,27 @@ export default function AxiaEquityEntry() {
     ? strategies.find(s => s.axia_client_id === selClient.id)
     : null
 
-  // ---- Load records when client changes ----
+  // ---- Load records when client changes — reset to page 1 ----
   useEffect(() => {
-    if (selClient) loadRecords()
+    if (selClient) { setPage(0); loadRecords(0) }
   }, [selClient])
 
-  const loadRecords = async () => {
+  // ---- Load records when page changes ----
+  useEffect(() => {
+    if (selClient) loadRecords(page)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page])
+
+  const loadRecords = async (p = page) => {
     if (!selClient) return
     setLoading(true)
     try {
       const res  = await fetch(
-        `${BASE}/api/axia/equity?client=${selClient.client}&account=${selClient.account}&limit=60`
+        `${BASE}/api/axia/equity?client=${selClient.client}&account=${selClient.account}&limit=${PAGE_SIZE}&offset=${p * PAGE_SIZE}`
       )
       const data = await res.json()
-      setRecords(data)
+      setRecords(data.rows ?? [])
+      setTotalCount(data.total ?? 0)
     } catch { /* silent */ }
     finally { setLoading(false) }
   }
@@ -392,7 +404,8 @@ export default function AxiaEquityEntry() {
       setEquityRaw('')
       setChgNlv(null)
       setChgOverride('')
-      await loadRecords()
+      setPage(0)
+      await loadRecords(0)
     } catch (e) { setError(e.message) }
     finally { setLoading(false) }
   }
@@ -765,13 +778,22 @@ export default function AxiaEquityEntry() {
       </div>
 
       {/* ── Records table ── */}
-      <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.8px',
-        textTransform: 'uppercase', color: C.textSub, marginBottom: 10 }}>
-        Recent Records
-        {selClient && (
-          <span style={{ fontWeight: 400, textTransform: 'none', marginLeft: 8, color: C.textSub }}>
-            — {selClient.client} / {selClient.account}
-          </span>
+      <div style={{
+        display: 'flex', alignItems: 'baseline', justifyContent: 'space-between',
+        flexWrap: 'wrap', gap: 8, marginBottom: 10,
+      }}>
+        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.8px', textTransform: 'uppercase', color: C.textSub }}>
+          All Records
+          {selClient && (
+            <span style={{ fontWeight: 400, textTransform: 'none', marginLeft: 8, color: C.textSub }}>
+              — {selClient.client} / {selClient.account}
+            </span>
+          )}
+        </div>
+        {totalCount > 0 && (
+          <div style={{ fontSize: 10.5, color: C.textSub }}>
+            {totalCount.toLocaleString('en-GB')} total record{totalCount === 1 ? '' : 's'}
+          </div>
         )}
       </div>
 
@@ -860,6 +882,33 @@ export default function AxiaEquityEntry() {
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* ── Pagination — 50 per page, all clients/accounts ── */}
+      {totalCount > PAGE_SIZE && (
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          marginTop: 12, flexWrap: 'wrap', gap: 10,
+        }}>
+          <div style={{ fontSize: 11, color: C.textSub }}>
+            Showing {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, totalCount)} of {totalCount.toLocaleString('en-GB')}
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Btn variant="default" disabled={page === 0 || loading}
+              onClick={() => setPage(p => Math.max(0, p - 1))}
+              style={{ padding: '6px 14px', fontSize: 11 }}>
+              ← Previous
+            </Btn>
+            <div style={{ fontSize: 11, color: C.textMid, minWidth: 90, textAlign: 'center' }}>
+              Page {page + 1} of {Math.max(1, Math.ceil(totalCount / PAGE_SIZE))}
+            </div>
+            <Btn variant="default" disabled={(page + 1) * PAGE_SIZE >= totalCount || loading}
+              onClick={() => setPage(p => p + 1)}
+              style={{ padding: '6px 14px', fontSize: 11 }}>
+              Next →
+            </Btn>
+          </div>
         </div>
       )}
 

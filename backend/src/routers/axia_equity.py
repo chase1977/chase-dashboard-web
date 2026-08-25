@@ -11,7 +11,9 @@ Endpoints:
                                          history stays linked
   DELETE /api/axia/clients/{id}         Delete client
 
-  GET    /api/axia/equity               List records ?client=&account=&limit=
+  GET    /api/axia/equity               Paginated records ?client=&account=&limit=&offset=
+                                         Returns {rows, total} — total lets the
+                                         frontend render Page X of Y / Next-Prev.
   GET    /api/axia/equity/prev          Most recent record before a date
   POST   /api/axia/equity               Create record (409 on duplicate)
   PATCH  /api/axia/equity/{id}          Update record
@@ -166,20 +168,25 @@ def delete_client(client_id: str):
 def list_equity(
     client:  str = Query(...),
     account: str = Query(...),
-    limit:   int = Query(60),
+    limit:   int = Query(50),
+    offset:  int = Query(0),
 ):
+    """
+    Paginated — applies to every client/account, not just AXIA-TW. Returns
+    {rows, total} so the frontend can render "Page X of Y" and a Next/Prev
+    control instead of silently truncating older history past `limit`.
+    """
     sb = get_client()
-    rows = (
+    res = (
         sb.table("axia_daily_equity")
-        .select("*")
+        .select("*", count="exact")
         .eq("client", client)
         .eq("account", account)
         .order("trade_date", desc=True)
-        .limit(limit)
+        .range(offset, offset + limit - 1)
         .execute()
-        .data or []
     )
-    return rows
+    return {"rows": res.data or [], "total": res.count or 0}
 
 
 @router.get("/equity/prev")
@@ -233,8 +240,12 @@ def create_equity(body: EquityCreate):
 
 @router.patch("/equity/{record_id}")
 def update_equity(record_id: str, body: EquityUpdate):
-    sb      = get_client()
-    payload = {k: v for k, v in body.model_dump().items() if v is not None}
+    sb = get_client()
+    # exclude_unset (not "is not None") — a field the client actually sent as
+    # null (e.g. clearing Notes) must still reach the update. Filtering on
+    # "v is not None" silently dropped explicit nulls, so clearing Notes in
+    # the edit row never persisted.
+    payload = body.model_dump(exclude_unset=True)
     if not payload:
         raise HTTPException(status_code=400, detail="No fields to update.")
     try:

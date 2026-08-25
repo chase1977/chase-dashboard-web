@@ -28,14 +28,13 @@ export default function App() {
           {/* Portfolio home */}
           <Route path="/" element={<Portfolio timeRange={timeRange} />} />
 
-          {/* Drill-down — pod / strategy / trader / venue */}
+          {/* Drill-down — pod / strategy / trader */}
           <Route path="/drilldown/:entityId" element={<DrillDown timeRange={timeRange} />} />
 
           {/* Hierarchy shortcut tabs */}
           <Route path="/pods"       element={<Portfolio timeRange={timeRange} initialTab="pod"      />} />
           <Route path="/strategies" element={<Portfolio timeRange={timeRange} initialTab="strategy" />} />
           <Route path="/traders"    element={<Portfolio timeRange={timeRange} initialTab="trader"   />} />
-          <Route path="/venues"     element={<Portfolio timeRange={timeRange} initialTab="venue"    />} />
 
           {/* Reports */}
           <Route path="/reports"  element={<Reports />} />

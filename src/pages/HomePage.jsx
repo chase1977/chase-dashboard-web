@@ -220,7 +220,7 @@ export default function HomePage() {
             {/* Sub */}
             <p className="text-slate-400 text-base sm:text-lg max-w-xl mx-auto mb-8 animate-fade-up delay-200 leading-relaxed">
               Real-time visibility across your entire fund hierarchy.
-              Portfolio → Pod → Strategy → Trader → Venue.
+              Portfolio → Pod → Strategy → Trader.
               Built for quant professionals.
             </p>
 
@@ -257,7 +257,7 @@ export default function HomePage() {
             <StatCard label="Total AUM"       value="£4.2M"   sub="↑ +2.4% MTD"   up />
             <StatCard label="Live Strategies" value="14"      sub="Across 3 pods"  up />
             <StatCard label="Portfolio TWR"   value="+18.3%"  sub="Since inception" up />
-            <StatCard label="Active Venues"   value="3"       sub="DWX · ALT · IB" up />
+            <StatCard label="Active Traders"  value="9"       sub="Across all pods" up />
           </div>
         </section>
 

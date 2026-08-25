@@ -30,9 +30,19 @@ class KpiData(BaseModel):
     current_equity:     float
     performance:        float
     total_pnl:          float
+    banked_profit:      float = 0.0
+    capital_allocated:  float = 0.0
     pct_1d:             float
     pct_7d:             float
     pct_30d:            float
+    # Fund-statement-backed strategies only (e.g. 12-FLAGS): the fund's own
+    # latest USD net income / return %, straight from the NAV administrator
+    # statement — NOT GBP-translated. Shown as a sub-line under total_pnl /
+    # performance so a GBP FX-translation effect never reads as a
+    # discrepancy against the fund's own quoted numbers. None for every
+    # other strategy type.
+    fund_usd_net_income: Optional[float] = None
+    fund_usd_return_pct: Optional[float] = None
 
 
 # ---------------------------------------------------------------------------
@@ -44,6 +54,7 @@ class PodSummary(BaseModel):
     name:       str
     pod_code:   Optional[str]
     pod_color:  Optional[str]
+    status:     Optional[str] = "Active"
     kpis:       KpiData
 
 
@@ -52,12 +63,15 @@ class PodSummary(BaseModel):
 # ---------------------------------------------------------------------------
 
 class StrategySummary(BaseModel):
-    entity_id:      str
-    name:           str
-    strategy_code:  Optional[str]
-    pod_code:       Optional[str]
-    pod_color:      Optional[str]
-    kpis:           KpiData
+    entity_id:         str
+    name:              str
+    strategy_code:     Optional[str]
+    pod_code:          Optional[str]
+    pod_color:         Optional[str]
+    status:            Optional[str]   = "Active"
+    watermark:         Optional[float] = None
+    profit_share_pct:  Optional[float] = None
+    kpis:              KpiData
 
 
 # ---------------------------------------------------------------------------
@@ -113,16 +127,15 @@ class BreakdownRow(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Trader context — 3-tab breakdown shown when drilling into a trader
-# Returns venues (children), pods (all pods this trader appears in),
-# and strategies (all strategies this trader appears in),
-# resolved by matching trader display name across all entity rows.
+# Trader context — 2-tab breakdown shown when drilling into a trader
+# Returns pods (all pods this trader appears in) and strategies (all
+# strategies this trader appears in), resolved by matching trader display
+# name across all entity rows.
 # ---------------------------------------------------------------------------
 
 class TraderContextResponse(BaseModel):
     entity_id:   str
     entity_name: str
-    venues:      List[BreakdownRow]
     pods:        List[BreakdownRow]
     strategies:  List[BreakdownRow]
 

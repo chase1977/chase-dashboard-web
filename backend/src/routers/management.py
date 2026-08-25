@@ -97,6 +97,8 @@ class StrategyIn(BaseModel):
     notes:              Optional[str]  = None
     brokerage_account:  Optional[str]  = None  # e.g. "Chase1", "Chase3xA", "XPF2026"
     axia_client_id:     Optional[str]  = None  # FK -> axia_clients.id
+    watermark:          Optional[float] = Field(None, ge=0, description="Equity level below which Chase retains 100%")
+    profit_share_pct:   Optional[float] = Field(None, ge=0, le=100, description="% of equity above watermark Chase retains")
 
 
 class StrategyPatch(BaseModel):
@@ -110,6 +112,8 @@ class StrategyPatch(BaseModel):
     account_id:         Optional[int]   = None
     brokerage_account:  Optional[str]   = None  # e.g. "Chase1", "Chase3xA", "XPF2026"
     axia_client_id:     Optional[str]   = None  # FK -> axia_clients.id
+    watermark:          Optional[float] = Field(None, ge=0)
+    profit_share_pct:   Optional[float] = Field(None, ge=0, le=100)
 
 
 # ---------------------------------------------------------------------------
@@ -431,6 +435,8 @@ def create_strategy(body: StrategyIn):
             notes              = body.notes or "",
             brokerage_account  = body.brokerage_account,
             axia_client_id     = body.axia_client_id,
+            watermark          = body.watermark,
+            profit_share_pct   = body.profit_share_pct,
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -464,12 +470,32 @@ def delete_strategy(strategy_id: int):
 _ACCOUNTS = {"Wallet", "Chase1", "Chase3xA", "XPF2026"}
 
 
+def _validate_split(amount: float, capital_return_amount: Optional[float],
+                     profit_loss_amount: Optional[float]):
+    """
+    Both split fields optional (un-classified rows stay null), but if EITHER
+    is set, both must be set and must sum to the transfer's total amount —
+    profit_loss_amount may be negative (a realized loss).
+    """
+    if capital_return_amount is None and profit_loss_amount is None:
+        return
+    if capital_return_amount is None or profit_loss_amount is None:
+        raise HTTPException(status_code=400, detail="Provide both capital_return_amount and profit_loss_amount, or neither")
+    if round(capital_return_amount + profit_loss_amount, 2) != round(amount, 2):
+        raise HTTPException(
+            status_code=400,
+            detail=f"capital_return_amount + profit_loss_amount ({capital_return_amount + profit_loss_amount:.2f}) must equal amount ({amount:.2f})",
+        )
+
+
 class InternalTransferIn(BaseModel):
     transfer_date: str   = Field(..., description="ISO date YYYY-MM-DD")
     from_account:  str   = Field(..., description="Wallet | Chase1 | Chase3xA | XPF2026")
     to_account:    str   = Field(..., description="Wallet | Chase1 | Chase3xA | XPF2026")
     amount:        float = Field(..., gt=0, description="Always positive")
     notes:         Optional[str] = None
+    capital_return_amount: Optional[float] = Field(None, description="Portion of amount returning capital (outbound-to-Wallet legs only)")
+    profit_loss_amount:    Optional[float] = Field(None, description="Portion of amount that is realized profit (+) or loss (-)")
 
 
 class InternalTransferPatch(BaseModel):
@@ -478,6 +504,8 @@ class InternalTransferPatch(BaseModel):
     to_account:    Optional[str]   = None
     amount:        Optional[float] = Field(None, gt=0)
     notes:         Optional[str]   = None
+    capital_return_amount: Optional[float] = None
+    profit_loss_amount:    Optional[float] = None
 
 
 @router.get("/internal-transfers")
@@ -490,6 +518,7 @@ def list_internal_transfers():
 
 @router.post("/internal-transfers", status_code=201)
 def create_internal_transfer(body: InternalTransferIn):
+    _validate_split(body.amount, body.capital_return_amount, body.profit_loss_amount)
     try:
         return sb.create_internal_transfer(
             transfer_date = body.transfer_date,
@@ -497,6 +526,8 @@ def create_internal_transfer(body: InternalTransferIn):
             to_account    = body.to_account,
             amount        = body.amount,
             notes         = body.notes or "",
+            capital_return_amount = body.capital_return_amount,
+            profit_loss_amount    = body.profit_loss_amount,
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -507,6 +538,11 @@ def update_internal_transfer(transfer_id: int, body: InternalTransferPatch):
     fields = {k: v for k, v in body.model_dump().items() if v is not None}
     if not fields:
         raise HTTPException(status_code=400, detail="No fields to update")
+    if "capital_return_amount" in fields or "profit_loss_amount" in fields:
+        amt = fields.get("amount")
+        if amt is None:
+            raise HTTPException(status_code=400, detail="amount required alongside a profit/loss split update")
+        _validate_split(amt, fields.get("capital_return_amount"), fields.get("profit_loss_amount"))
     try:
         return sb.update_internal_transfer(transfer_id, **fields)
     except Exception as e:
@@ -538,6 +574,8 @@ class CapitalTransferIn(BaseModel):
     amount:        float          = Field(..., gt=0, description="Always positive")
     reference:     Optional[str]  = None
     notes:         Optional[str]  = None
+    capital_return_amount: Optional[float] = Field(None, description="Portion of amount returning capital (Strategy→Wallet/Pod legs only)")
+    profit_loss_amount:    Optional[float] = Field(None, description="Portion of amount that is realized profit (+) or loss (-)")
 
 
 class CapitalTransferPatch(BaseModel):
@@ -549,6 +587,8 @@ class CapitalTransferPatch(BaseModel):
     amount:        Optional[float] = Field(None, gt=0)
     reference:     Optional[str]   = None
     notes:         Optional[str]   = None
+    capital_return_amount: Optional[float] = None
+    profit_loss_amount:    Optional[float] = None
 
 
 def _validate_endpoints(from_type: str, to_type: str):
@@ -567,6 +607,7 @@ def list_capital_transfers():
 @router.post("/capital-transfers", status_code=201)
 def create_capital_transfer(body: CapitalTransferIn):
     _validate_endpoints(body.from_type, body.to_type)
+    _validate_split(body.amount, body.capital_return_amount, body.profit_loss_amount)
     try:
         return sb.create_capital_transfer(
             transfer_date = body.transfer_date,
@@ -577,6 +618,8 @@ def create_capital_transfer(body: CapitalTransferIn):
             amount        = body.amount,
             reference     = body.reference or "",
             notes         = body.notes or "",
+            capital_return_amount = body.capital_return_amount,
+            profit_loss_amount    = body.profit_loss_amount,
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -589,6 +632,11 @@ def update_capital_transfer(transfer_id: int, body: CapitalTransferPatch):
         _validate_endpoints(fields.get("from_type", "wallet"), fields.get("to_type", "wallet"))
     if not fields:
         raise HTTPException(status_code=400, detail="No fields to update")
+    if "capital_return_amount" in fields or "profit_loss_amount" in fields:
+        amt = fields.get("amount")
+        if amt is None:
+            raise HTTPException(status_code=400, detail="amount required alongside a profit/loss split update")
+        _validate_split(amt, fields.get("capital_return_amount"), fields.get("profit_loss_amount"))
     try:
         return sb.update_capital_transfer(transfer_id, **fields)
     except Exception as e:

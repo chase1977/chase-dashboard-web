@@ -262,6 +262,8 @@ function StrategyForm({ initial, pods, onSave, onCancel, saving, error }) {
   )
   const [brokerageAccount, setBrokerageAccount] = useState(initial?.brokerage_account ?? '')
   const [axiaClientId,     setAxiaClientId]     = useState(initial?.axia_client_id ?? '')
+  const [watermark,        setWatermark]        = useState(initial?.watermark != null ? String(initial.watermark) : '')
+  const [profitSharePct,   setProfitSharePct]   = useState(initial?.profit_share_pct != null ? String(initial.profit_share_pct) : '')
 
   // ── Live AccountIds from user_accounts_equity ──
   const { data: accountIds = [], isLoading: loadingAccIds } = useQuery({
@@ -304,6 +306,8 @@ function StrategyForm({ initial, pods, onSave, onCancel, saving, error }) {
       notes,
       brokerage_account:  brokerageAccount || null,
       axia_client_id:     axiaClientId || null,
+      watermark:          watermark.trim()      !== '' ? parseFloat(watermark)      : null,
+      profit_share_pct:   profitSharePct.trim() !== '' ? parseFloat(profitSharePct) : null,
       ...(accountId !== '' ? { account_id: parseInt(accountId, 10) } : {}),
     })
   }
@@ -421,6 +425,30 @@ function StrategyForm({ initial, pods, onSave, onCancel, saving, error }) {
                 : 'Links this strategy to daily equity entered on the AXIA tab. AUM/PnL then computed from that equity, not manual Initial Investment.'}
           </span>
         </FormField>
+      </div>
+
+      {/* Watermark / Profit Share — general to any strategy type */}
+      <div style={{
+        marginTop: 12, background: 'rgba(167,139,250,0.05)', border: '1px solid rgba(167,139,250,0.18)',
+        borderRadius: 8, padding: '10px 12px',
+      }}>
+        <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.6px',
+          color: '#a78bfa', display: 'block', marginBottom: 8 }}>
+          Watermark / Profit Share (optional)
+        </span>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
+          <FormField label="Watermark (£)">
+            <AmountInput value={watermark} onChange={setWatermark} style={INPUT} />
+          </FormField>
+          <FormField label="Chase Profit Share Above Watermark (%)">
+            <input type="text" inputMode="decimal" style={INPUT}
+              value={profitSharePct} onChange={e => setProfitSharePct(e.target.value)} placeholder="e.g. 45" />
+          </FormField>
+        </div>
+        <div style={{ marginTop: 6, fontSize: 10, color: '#475569' }}>
+          Below watermark, Chase retains 100% of equity. Above it, Chase retains only this % of
+          the excess — the rest is the trader's/counterparty's share. Leave both blank for no adjustment.
+        </div>
       </div>
 
       <div style={{ marginTop: 10 }}>

@@ -5,12 +5,12 @@
  * For TRADER entities the layout is specialised:
  *   1. KPI strip (top)
  *   2. Trader info card (pod, strategy, style, status)
- *   3. Context overview — tabbed mini KPI strips for Venues / Pods / Strategies
+ *   3. Context overview — tabbed mini KPI strips for Pods / Strategies
  *   4. Charts — adaptive grid:
  *        Left (60%): Equity curve + drawdown
- *        Right (40%): Stacked donuts (Venue always, Pod if multi, Strategy if multi)
+ *        Right (40%): Stacked donuts (Pod always, Strategy if multi)
  *        Full width: PnL bar charts — one per dimension that has >1 slice
- *   5. Breakdown tables — 3-tab panel (Venues | Pods | Strategies)
+ *   5. Breakdown tables — 2-tab panel (Pods | Strategies)
  *
  * For all other entity types the layout is the standard:
  *   1. KPI strip
@@ -40,19 +40,15 @@ const TYPE_COLORS = {
   pod:       { bg: 'rgba(245,158,11,0.15)',  text: '#F59E0B' },
   strategy:  { bg: 'rgba(167,139,250,0.15)', text: '#A78BFA' },
   trader:    { bg: 'rgba(52,211,153,0.15)',  text: '#34D399' },
-  venue:     { bg: 'rgba(248,113,113,0.15)', text: '#F87171' },
 }
 
 const CHILD_LABEL = {
   portfolio: 'Pod',
   pod:       'Strategy',
   strategy:  'Trader',
-  trader:    'Venue',
-  venue:     'Venue',
 }
 
 const CONTEXT_TABS = [
-  { key: 'venues',     label: 'Venues'     },
   { key: 'pods',       label: 'Pods'       },
   { key: 'strategies', label: 'Strategies' },
 ]
@@ -216,7 +212,7 @@ function TraderInfoCard({ podCode, podColor, strategyCode, tradingStyle, entityS
 
 
 // ---------------------------------------------------------------------------
-// Context overview — mini KPI strips for each venue/pod/strategy
+// Context overview — mini KPI strips for each pod/strategy
 // Same visual language as the pod overview on the Portfolio home page
 // ---------------------------------------------------------------------------
 
@@ -243,7 +239,7 @@ function MiniKpiStrip({ row }) {
 }
 
 function ContextOverview({ ctx }) {
-  const [activeTab, setActiveTab] = useState('venues')
+  const [activeTab, setActiveTab] = useState('pods')
 
   const rows = ctx?.[activeTab] ?? []
 
@@ -329,9 +325,8 @@ function ContextOverview({ ctx }) {
 // Smart adaptive charts for trader pages
 //
 // Donuts and PnL bars auto-appear/hide based on whether the trader has
-// data in multiple pods, strategies or venues:
-//   - By Venue:    always shown (every trader has at least 1 venue)
-//   - By Pod:      only if trader appears in >1 pod
+// data in multiple pods or strategies:
+//   - By Pod:      always shown (every trader belongs to at least 1 pod)
 //   - By Strategy: only if trader appears in >1 strategy
 // ---------------------------------------------------------------------------
 
@@ -352,25 +347,20 @@ function buildPnlBars(rows) {
 
 function SmartTraderCharts({ entityId, equityCurve, ctx }) {
   const isMobile   = useIsMobile()
-  const venues     = ctx?.venues     ?? []
   const pods       = ctx?.pods       ?? []
   const strategies = ctx?.strategies ?? []
 
-  const multiPod      = pods.length > 1
   const multiStrategy = strategies.length > 1
 
   // Build chart data sets
-  const venueAlloc    = buildAllocationSlices(venues)
   const podAlloc      = buildAllocationSlices(pods)
   const stratAlloc    = buildAllocationSlices(strategies)
-  const venuePnl      = buildPnlBars(venues)
   const podPnl        = buildPnlBars(pods)
   const stratPnl      = buildPnlBars(strategies)
 
   // How many donut charts to stack on the right?
   const donutCharts = [
-    { key: 'venue',    label: 'Allocation by Venue',    data: venueAlloc,    always: true  },
-    { key: 'pod',      label: 'Allocation by Pod',      data: podAlloc,      always: false, show: multiPod      },
+    { key: 'pod',      label: 'Allocation by Pod',      data: podAlloc,      always: true  },
     { key: 'strategy', label: 'Allocation by Strategy', data: stratAlloc,    always: false, show: multiStrategy },
   ].filter(d => d.always || d.show)
 
@@ -379,8 +369,7 @@ function SmartTraderCharts({ entityId, equityCurve, ctx }) {
 
   // PnL bar charts — one column per dimension with data
   const barCharts = [
-    { key: 'venue',    label: 'PnL by Venue',    data: venuePnl,   always: true  },
-    { key: 'pod',      label: 'PnL by Pod',      data: podPnl,     always: false, show: multiPod      },
+    { key: 'pod',      label: 'PnL by Pod',      data: podPnl,     always: true  },
     { key: 'strategy', label: 'PnL by Strategy', data: stratPnl,   always: false, show: multiStrategy },
   ].filter(d => d.always || d.show)
 
@@ -460,7 +449,7 @@ function ContextTabButton({ label, count, active, onClick }) {
 }
 
 function TraderBreakdownPanel({ entityId, ctx, navigate }) {
-  const [activeTab, setActiveTab] = useState('venues')
+  const [activeTab, setActiveTab] = useState('pods')
   return (
     <div>
       <SectionLabel>Breakdown</SectionLabel>
@@ -519,7 +508,7 @@ export default function DrillDown({ timeRange }) {
   } = data
 
   const isTrader      = entity_type === 'trader'
-  const showPodTag    = ['trader', 'strategy', 'venue'].includes(entity_type)
+  const showPodTag    = ['trader', 'strategy'].includes(entity_type)
   const childLabel    = CHILD_LABEL[entity_type] ?? 'Child'
   const sparklineData = equity_curve.slice(-20).map(p => p.equity)
 
@@ -630,7 +619,7 @@ export default function DrillDown({ timeRange }) {
 
       ) : (
       /* ══════════════════════════════════════════
-          STANDARD LAYOUT (pod / strategy / venue)
+          STANDARD LAYOUT (pod / strategy)
       ══════════════════════════════════════════ */
         <>
           {/* Charts row */}

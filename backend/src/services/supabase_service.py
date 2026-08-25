@@ -659,13 +659,77 @@ def _capital_transfers_by_strategy() -> dict[int, dict]:
     return _get_cached("capital_transfers_by_strategy", _fetch)
 
 
+def _banked_profit_by_strategy(strategies: list[dict]) -> dict[int, dict]:
+    """
+    strategy_id -> { "banked_profit": float, "capital_returned": float, "total_withdrawn": float }
+
+    Banked Profit = realized profit AND loss withdrawn from a strategy —
+    NOT just positive distributions. A closing withdrawal that returns less
+    than the capital still allocated is a realized loss (negative value).
+
+    total_withdrawn = capital_returned + banked_profit — the FULL cash amount
+    that physically left the strategy, whichever portion it was. This is
+    what reduces Capital Allocated (money that left is no longer "still
+    out", whether it was profit or return of capital) — capital_returned
+    alone is NOT enough, a pure-profit withdrawal (capital_returned == 0)
+    must still reduce Capital Allocated by the amount withdrawn.
+
+    Sourced from the OUTBOUND leg of each ledger (the leg that actually
+    carries strategy identity):
+      - capital_transfers: rows where from_type == "strategy"
+      - internal_transfers (Darwinex): rows where to_account == "Wallet",
+        matched to a strategy via its brokerage_account
+
+    Rows with both capital_return_amount and profit_loss_amount still null
+    are un-classified (pre-Phase-1 data) and are skipped — they don't
+    silently count as profit or loss until tagged.
+    """
+    agg: dict[int, dict] = {}
+
+    def _bump(sid, capital_return, profit_loss):
+        agg.setdefault(sid, {"banked_profit": 0.0, "capital_returned": 0.0, "total_withdrawn": 0.0})
+        cr = capital_return or 0.0
+        pl = profit_loss or 0.0
+        agg[sid]["banked_profit"]    = round(agg[sid]["banked_profit"] + pl, 2)
+        agg[sid]["capital_returned"] = round(agg[sid]["capital_returned"] + cr, 2)
+        agg[sid]["total_withdrawn"]  = round(agg[sid]["total_withdrawn"] + cr + pl, 2)
+
+    for r in list_capital_transfers():
+        if r.get("from_type") == "strategy" and r.get("from_id") is not None:
+            cr = r.get("capital_return_amount")
+            pl = r.get("profit_loss_amount")
+            if cr is None and pl is None:
+                continue
+            _bump(int(r["from_id"]), cr, pl)
+
+    broker_to_sid = {s["brokerage_account"]: s["id"] for s in strategies if s.get("brokerage_account")}
+    for t in list_internal_transfers():
+        if t.get("to_account") == "Wallet" and t.get("from_account") in broker_to_sid:
+            cr = t.get("capital_return_amount")
+            pl = t.get("profit_loss_amount")
+            if cr is None and pl is None:
+                continue
+            _bump(broker_to_sid[t["from_account"]], cr, pl)
+
+    return agg
+
+
 def _strategy_capital_invested(s: dict, net_deployed: dict, axia_agg: dict,
-                                ct_by_strategy: dict) -> float:
+                                ct_by_strategy: dict, darwinex_agg: Optional[dict] = None) -> float:
     """
     Single source of truth for a strategy's "Total Capital Invested".
     Priority:
-      1. brokerage_account set (Darwinex) → net_deployed_per_account
-         (unchanged — Darwinex keeps its own internal_transfers mechanism).
+      0. CLOSED Darwinex strategy (status == "Inactive", in darwinex_agg) →
+         the frozen all-time Wallet->account deployed total from
+         _darwinex_closed_strategy_agg. Takes priority over #1 below —
+         net_deployed (a running NET of in/out flows) collapses toward the
+         residual/loss amount once an account is fully closed out, which
+         breaks the "never reduced by withdrawals" monotonic-invested
+         principle (§4) and destroys Total ROI's denominator. See
+         _darwinex_closed_strategy_agg's docstring for the full story.
+      1. brokerage_account set (Darwinex, still active/open) →
+         net_deployed_per_account (unchanged — correct while a position is
+         still open, since net_deployed represents what's still committed).
       2. capital_transfers ledger has inbound entries → sum of those
          (new source of truth, once a strategy has been funded through
          the Wallet/Pod/Strategy picker).
@@ -674,6 +738,9 @@ def _strategy_capital_invested(s: dict, net_deployed: dict, axia_agg: dict,
       4. else → manual initial_investment field on the strategy row
          (transitional fallback).
     """
+    darwinex_agg = darwinex_agg or {}
+    if s.get("status") == "Inactive" and s["id"] in darwinex_agg:
+        return darwinex_agg[s["id"]]["baseline"]
     acct = s.get("brokerage_account")
     if acct:
         return net_deployed.get(acct, 0.0)
@@ -685,17 +752,49 @@ def _strategy_capital_invested(s: dict, net_deployed: dict, axia_agg: dict,
     return float(s.get("initial_investment") or 0)
 
 
+def _apply_watermark(strategy: dict, raw_equity: float, baseline: float):
+    """
+    Adjust raw fund/broker equity down to Chase's actual economic equity,
+    per the strategy's watermark/profit_share_pct fields (general to any
+    strategy type — not AXIA-specific).
+
+    Below watermark: Chase retains 100% (no adjustment).
+    Above watermark: Chase retains profit_share_pct% of the excess only —
+    the rest is the trader's/counterparty's profit share, not Chase's.
+
+    Both fields optional; either unset => pass-through (pre-Phase-2 behavior,
+    current_equity == raw_equity).
+
+    Returns (chase_equity, chase_pnl) where chase_pnl = chase_equity - baseline.
+    """
+    wm    = strategy.get("watermark")
+    share = strategy.get("profit_share_pct")
+    if wm is None or share is None:
+        return round(raw_equity, 2), round(raw_equity - baseline, 2)
+    wm    = float(wm)
+    share = float(share)
+    if raw_equity <= wm:
+        chase_equity = raw_equity
+    else:
+        chase_equity = wm + (raw_equity - wm) * (share / 100.0)
+    chase_equity = round(chase_equity, 2)
+    return chase_equity, round(chase_equity - baseline, 2)
+
+
 def _axia_strategy_agg(strategies: list[dict]) -> dict[int, dict]:
     """
     strategy_id -> { invested, pnl, baseline, series } for strategies with
-    axia_client_id set. invested = latest GBP equity (current equity).
+    axia_client_id set. invested = Chase's economic equity — the raw latest
+    GBP equity, adjusted for watermark/profit_share_pct if the strategy has
+    them set (see _apply_watermark); pass-through (== raw latest) otherwise.
 
-    baseline (cost basis / "Total Capital Invested"):
+    baseline (cost basis / "Total Capital Invested") — NOT watermark-adjusted,
+    it's the cost basis, not the current value:
       - if the strategy has inbound capital_transfers logged, use that sum
         (accounts for multi-tranche funding, e.g. £100k then +£150k later)
       - else fall back to first GBP equity entry (transitional, pre-backfill)
 
-    pnl = latest − baseline, so it stays correct under either source.
+    pnl = chase_equity − baseline, so it stays correct under either source.
     """
     clients_idx    = _axia_clients_by_id()
     ct_by_strategy = _capital_transfers_by_strategy()
@@ -717,11 +816,132 @@ def _axia_strategy_agg(strategies: list[dict]) -> dict[int, dict]:
             baseline = round(ct["in"], 2)
         else:
             baseline = series[0]["equity"]
+        chase_equity, chase_pnl = _apply_watermark(s, latest, baseline)
         out[s["id"]] = {
-            "invested": latest,
-            "pnl":      round(latest - baseline, 2),
+            "invested": chase_equity,
+            "pnl":      chase_pnl,
             "baseline": baseline,
             "series":   series,
+        }
+    return out
+
+
+def _fund_statement_strategy_agg(strategies: list[dict]) -> dict[int, dict]:
+    """
+    strategy_id -> { invested, pnl, baseline, series } for strategies fed by
+    fund_monthly_statements (e.g. 12-FLAGS) — NAV-administrator-reported
+    funds with no daily broker feed, keyed directly by strategy_id (one
+    statement stream per strategy; no separate "clients" table needed the
+    way AXIA has, since there's no multi-account concept here).
+
+    invested = latest period's ending_balance_gbp (already FX-converted by
+    OANDA at entry time). A strategy whose latest row has no fx_rate yet
+    (OANDA fetch failed / pending retry) is EXCLUDED here rather than fed a
+    USD number mislabelled as GBP — falls through to the strategy's
+    existing 0.0 default until FX is fetched or manually retried.
+
+    baseline mirrors _strategy_capital_invested's own fallback chain:
+    capital_transfers ledger inbound sum if logged, else manual
+    initial_investment — so pnl stays sane before the funding transfer
+    (Wallet -> Strategy) has been entered.
+    """
+    rows = list_fund_statements()
+    by_strategy: dict[int, list[dict]] = {}
+    for r in rows:
+        by_strategy.setdefault(r["strategy_id"], []).append(r)
+
+    ct_by_strategy = _capital_transfers_by_strategy()
+    out: dict[int, dict] = {}
+    for s in strategies:
+        sid    = s["id"]
+        srows  = by_strategy.get(sid)
+        if not srows:
+            continue
+        srows.sort(key=lambda r: r["period_end_date"])
+        latest = srows[-1]
+        if latest.get("ending_balance_gbp") is None:
+            continue
+        ct       = ct_by_strategy.get(sid)
+        baseline = round(ct["in"], 2) if ct and ct["in"] > 0 else float(s.get("initial_investment") or 0)
+        invested = round(float(latest["ending_balance_gbp"]), 2)
+        out[sid] = {
+            "invested": invested,
+            "pnl":      round(invested - baseline, 2),
+            "baseline": baseline,
+            "series":   srows,
+        }
+    return out
+
+
+def _darwinex_closed_strategy_agg(strategies: list[dict]) -> dict[int, dict]:
+    """
+    strategy_id -> { invested, pnl, baseline, series } for CLOSED (status ==
+    "Inactive") Darwinex strategies — i.e. brokerage_account set, no live
+    user_pfees_estimation feed for that account (Darwinex is tracked purely
+    via manually-entered internal_transfers, never had a daily broker feed).
+
+    Why this exists (bug found during the post-12-FLAGS bridge audit):
+    without it, a closed Darwinex strategy falls through to the generic
+    brokerage_account -> net_deployed path, which feeds _apply_watermark a
+    raw_equity of 0.0 (no feed => darwin_agg lookup always misses) against a
+    baseline of net_deployed (Wallet<->account NET, all time). Two problems:
+      1. pnl = 0 - net_deployed wipes out the ENTIRE historical capital as
+         "loss", not just the amount actually unrecovered (e.g. DARWIN-1X
+         showed -£899,950 instead of its real closed-out loss of
+         -£11,007.75 — net_deployed hadn't even had the final closing leg
+         entered yet, and even once it is, see point 2).
+      2. Once the closing leg IS entered, net_deployed collapses toward the
+         residual/loss amount itself (since it's returns netted against
+         inflows) — so while the raw P&L happens to come out right, both
+         "Capital Invested" (no longer the true historical total, breaking
+         the monotonic-invested principle, §4) and Total ROI (denominator
+         collapses alongside the numerator, producing a nonsensical ~-100%
+         instead of the true ~-1% of capital actually lost) break instead.
+
+    This function sidesteps both: baseline is the frozen ALL-TIME sum of
+    Wallet->account inflows (never reduced — matches every other strategy
+    type's Capital Invested semantics), pnl is ALL-TIME returned minus
+    ALL-TIME deployed (the true realized gain/loss, since the account is
+    closed and current equity is definitionally 0 — nothing left open).
+    Account<->account rebalances (e.g. Chase1->Chase3xA reallocations) are
+    excluded from both sides, same convention as _get_net_deployed_per_account
+    — they're not a Chase-level capital event, just a relocation.
+
+    Only applies to strategies with status == "Inactive" — an ACTIVE
+    Darwinex strategy with a matched live feed keeps using the existing
+    acct_agg/broker-matching path untouched (this function only ever
+    overrides the "no feed" case, and only once genuinely closed).
+    """
+    transfers = list_internal_transfers()
+    by_account: dict[str, dict] = {}
+    for t in transfers:
+        frm, to, amt = t["from_account"], t["to_account"], float(t["amount"])
+        if frm == "Wallet" and to != "Wallet":
+            entry = by_account.setdefault(to, {"deployed": 0.0, "returned": 0.0, "legs": []})
+            entry["deployed"] += amt
+            entry["legs"].append(t)
+        elif to == "Wallet" and frm != "Wallet":
+            entry = by_account.setdefault(frm, {"deployed": 0.0, "returned": 0.0, "legs": []})
+            entry["returned"] += amt
+            entry["legs"].append(t)
+        # account<->account rebalance: excluded from both sides — not a
+        # Chase-level inflow/outflow, just a relocation between accounts
+
+    out: dict[int, dict] = {}
+    for s in strategies:
+        if s.get("status") != "Inactive":
+            continue
+        acct = s.get("brokerage_account")
+        if not acct or acct not in by_account:
+            continue
+        agg      = by_account[acct]
+        baseline = round(agg["deployed"], 2)
+        pnl      = round(agg["returned"] - agg["deployed"], 2)
+        out[s["id"]] = {
+            "invested": 0.0,   # closed — nothing left open
+            "pnl":      pnl,
+            "baseline": baseline,
+            "series":   sorted(agg["legs"], key=lambda t: t["transfer_date"]),
         }
     return out
 
@@ -812,13 +1032,44 @@ def _build_pod_pfees_map() -> dict:
         pod_agg[pid]["invested"] = round(pod_agg[pid]["invested"] + contrib["invested"], 2)
         pod_agg[pid]["pnl"]      = round(pod_agg[pid]["pnl"] + contrib["pnl"], 2)
 
+    # ── Fund-statement strategies (e.g. 12-FLAGS) — same fold-in as AXIA ──
+    fund_agg = _fund_statement_strategy_agg(strategies)
+    for s in strategies:
+        contrib = fund_agg.get(s["id"])
+        if not contrib:
+            continue
+        pid = s.get("pod_id")
+        if pid is None:
+            pid = UNALLOCATED
+        if pid not in pod_agg:
+            pod_agg[pid] = {"invested": 0.0, "pnl": 0.0, "darwins": []}
+        pod_agg[pid]["invested"] = round(pod_agg[pid]["invested"] + contrib["invested"], 2)
+        pod_agg[pid]["pnl"]      = round(pod_agg[pid]["pnl"] + contrib["pnl"], 2)
+
+    # ── Closed Darwinex strategies — same fold-in pattern, invested is
+    #    always 0.0 here (closed) so only pnl actually contributes ──
+    darwinex_agg = _darwinex_closed_strategy_agg(strategies)
+    for s in strategies:
+        contrib = darwinex_agg.get(s["id"])
+        if not contrib:
+            continue
+        pid = s.get("pod_id")
+        if pid is None:
+            pid = UNALLOCATED
+        if pid not in pod_agg:
+            pod_agg[pid] = {"invested": 0.0, "pnl": 0.0, "darwins": []}
+        pod_agg[pid]["invested"] = round(pod_agg[pid]["invested"] + contrib["invested"], 2)
+        pod_agg[pid]["pnl"]      = round(pod_agg[pid]["pnl"] + contrib["pnl"], 2)
+
     return {
-        "pod_agg":     pod_agg,
-        "pods_list":   pods_list,
-        "strategies":  strategies,
-        "UNALLOCATED": UNALLOCATED,
-        "_snapshot":   snapshot,   # reused by _fast variants to avoid extra DB call
-        "_axia_agg":   axia_agg,   # strategy_id -> { invested, pnl, baseline, series }
+        "pod_agg":       pod_agg,
+        "pods_list":     pods_list,
+        "strategies":    strategies,
+        "UNALLOCATED":   UNALLOCATED,
+        "_snapshot":     snapshot,   # reused by _fast variants to avoid extra DB call
+        "_axia_agg":     axia_agg,   # strategy_id -> { invested, pnl, baseline, series }
+        "_darwinex_agg": darwinex_agg,   # strategy_id -> { invested, pnl, baseline, series }
+        "_fund_agg":   fund_agg,   # strategy_id -> { invested, pnl, baseline, series }
     }
 
 
@@ -979,19 +1230,19 @@ def get_pnl_contribution_data() -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Hierarchy table rows (Pods / Strategies / Traders / Venues tabs)
+# Hierarchy table rows (Pods / Strategies / Traders tabs)
 # ---------------------------------------------------------------------------
 
 def get_hierarchy_rows(entity_type: str) -> list[dict]:
     """
     Returns BreakdownRow-compatible dicts for the hierarchy tabs.
 
-    entity_type in {"pod", "strategy", "trader", "venue"}
+    entity_type in {"pod", "strategy", "trader"}
 
     Sources:
       - pods       + pfees → pod rows
       - strategies + pfees → strategy rows
-      - trader / venue     → empty list (populate when data available)
+      - trader             → empty list (populate when data available)
     """
     pct_1d  = get_period_return(1)
     pct_7d  = get_period_return(7)
@@ -1004,11 +1255,12 @@ def get_hierarchy_rows(entity_type: str) -> list[dict]:
         UNALLOCATED = data["UNALLOCATED"]
         pods_idx    = {p["id"]: p for p in pods_list}
 
-        total_aum      = sum(v["invested"] for v in pod_agg.values()) or 1.0
-        net_deployed   = _get_net_deployed_per_account()
-        hier_axia_agg  = data.get("_axia_agg") or {}
-        ct_by_strategy = _capital_transfers_by_strategy()
-        rows           = []
+        total_aum        = sum(v["invested"] for v in pod_agg.values()) or 1.0
+        net_deployed     = _get_net_deployed_per_account()
+        hier_axia_agg    = data.get("_axia_agg") or {}
+        hier_darwinex_agg = data.get("_darwinex_agg") or {}
+        ct_by_strategy   = _capital_transfers_by_strategy()
+        rows             = []
 
         for pid, agg in pod_agg.items():
             if pid == UNALLOCATED:
@@ -1017,7 +1269,7 @@ def get_hierarchy_rows(entity_type: str) -> list[dict]:
                 pod = pods_idx.get(pid, {"name": f"Pod {pid}", "pod_code": "", "color": "#6366f1", "id": pid})
 
             initial = sum(
-                _strategy_capital_invested(s, net_deployed, hier_axia_agg, ct_by_strategy)
+                _strategy_capital_invested(s, net_deployed, hier_axia_agg, ct_by_strategy, hier_darwinex_agg)
                 for s in data["strategies"]
                 if s.get("pod_id") == pid
             ) if pid != UNALLOCATED else agg["invested"]
@@ -1073,9 +1325,12 @@ def get_hierarchy_rows(entity_type: str) -> list[dict]:
             acct_agg[acct]["pnl"]      = round(acct_agg[acct]["pnl"] + pnl, 2)
 
         strat_axia_agg     = _axia_strategy_agg(strategies)
+        strat_fund_agg     = _fund_statement_strategy_agg(strategies)
+        strat_darwinex_agg = _darwinex_closed_strategy_agg(strategies)
         total_aum          = (
             sum(v["invested"] for v in darwin_agg.values())
             + sum(v["invested"] for v in strat_axia_agg.values())
+            + sum(v["invested"] for v in strat_fund_agg.values())
         ) or 1.0
         rows                = []
         strat_net_deployed  = _get_net_deployed_per_account()
@@ -1107,12 +1362,20 @@ def get_hierarchy_rows(entity_type: str) -> list[dict]:
 
                 # Lookup priority:
                 # 1. axia_client_id — AXIA broker-statement equity (its own tier, not pfees)
-                # 2. account_id column directly (if set + matches pfees AccountId)
-                # 3. brokerage_account → AccountId via invest-vs-deploy matching
-                # 4. strategy_code → Darwin display name fallback
-                axia_contrib = strat_axia_agg.get(s["id"]) if s.get("axia_client_id") else None
+                # 2. fund_monthly_statements — NAV-administrator-reported funds (12-FLAGS)
+                # 3. closed Darwinex strategy — realized P&L from internal_transfers
+                # 4. account_id column directly (if set + matches pfees AccountId)
+                # 5. brokerage_account → AccountId via invest-vs-deploy matching
+                # 6. strategy_code → Darwin display name fallback
+                axia_contrib     = strat_axia_agg.get(s["id"]) if s.get("axia_client_id") else None
+                fund_contrib     = strat_fund_agg.get(s["id"])
+                darwinex_contrib = strat_darwinex_agg.get(s["id"])
                 if axia_contrib is not None:
                     agg = {"invested": axia_contrib["invested"], "pnl": axia_contrib["pnl"]}
+                elif fund_contrib is not None:
+                    agg = {"invested": fund_contrib["invested"], "pnl": fund_contrib["pnl"]}
+                elif darwinex_contrib is not None:
+                    agg = {"invested": darwinex_contrib["invested"], "pnl": darwinex_contrib["pnl"]}
                 elif acct_id is not None and int(acct_id) in acct_agg:
                     agg = acct_agg[int(acct_id)]
                 elif broker and broker_to_acct_s.get(broker) in acct_agg:
@@ -1126,7 +1389,7 @@ def get_hierarchy_rows(entity_type: str) -> list[dict]:
                 pod_color  = pod_joined.get("color") or pod.get("color") or "#6366f1"
                 pod_code_s = pod_joined.get("pod_code") or pod.get("pod_code") or ""
 
-                initial = _strategy_capital_invested(s, strat_net_deployed, strat_axia_agg, strat_ct_by_strategy)
+                initial = _strategy_capital_invested(s, strat_net_deployed, strat_axia_agg, strat_ct_by_strategy, strat_darwinex_agg)
 
                 # Per-strategy period returns — AXIA equity series if AXIA-linked,
                 # else per-account equity series from user_accounts_equity
@@ -1294,7 +1557,7 @@ def get_hierarchy_rows(entity_type: str) -> list[dict]:
         rows.sort(key=lambda x: x["aum"], reverse=True)
         return rows
 
-    # venue — return empty until venue-level data available
+    # trader — return empty until trader-level data available
     return []
 
 
@@ -1472,6 +1735,22 @@ def get_portfolio_kpis_fast(pod_pfees_map: dict, balance_hist: list[dict],
     snapshot      = pod_pfees_map.get("_snapshot", get_pfees_latest_snapshot())
     current_equity = round(sum(float(r.get("Invested") or 0) for r in snapshot), 2)
     total_pnl      = round(sum(float(r.get("Current PnL") or 0) for r in snapshot), 2)
+
+    # Fund-statement strategies (e.g. 12-FLAGS) never appear in the pfees
+    # snapshot — there's no daily broker feed for a NAV-administrator
+    # statement — so fold their equity/pnl in explicitly, same as AXIA does
+    # via pod_agg at the pod level.
+    fund_agg = pod_pfees_map.get("_fund_agg") or {}
+    current_equity = round(current_equity + sum(v["invested"] for v in fund_agg.values()), 2)
+    total_pnl      = round(total_pnl + sum(v["pnl"] for v in fund_agg.values()), 2)
+
+    # Closed Darwinex strategies — same reasoning: no pfees feed at all, so
+    # their realized pnl (invested is always 0.0, closed) needs an explicit
+    # fold-in too, else it's invisible at the portfolio level.
+    darwinex_agg = pod_pfees_map.get("_darwinex_agg") or {}
+    current_equity = round(current_equity + sum(v["invested"] for v in darwinex_agg.values()), 2)
+    total_pnl      = round(total_pnl + sum(v["pnl"] for v in darwinex_agg.values()), 2)
+
     pct_1d  = _period_return_from_hist(balance_hist, 1)
     pct_7d  = _period_return_from_hist(balance_hist, 7)
     pct_30d = _period_return_from_hist(balance_hist, 30)
@@ -1482,11 +1761,20 @@ def get_portfolio_kpis_fast(pod_pfees_map: dict, balance_hist: list[dict],
     except Exception:
         initial_investment = current_equity
         performance        = 0.0
+
+    strategies = pod_pfees_map.get("strategies") or []
+    banked_agg = _banked_profit_by_strategy(strategies)
+    banked     = round(sum(v["banked_profit"] for v in banked_agg.values()), 2)
+    withdrawn  = round(sum(v["total_withdrawn"] for v in banked_agg.values()), 2)
+    allocated  = round(initial_investment - withdrawn, 2)
+
     return {
         "initial_investment": initial_investment,
         "current_equity":     current_equity,
         "performance":        performance,
         "total_pnl":          total_pnl,
+        "banked_profit":      banked,
+        "capital_allocated":  allocated,
         "pct_1d":             pct_1d,
         "pct_7d":             pct_7d,
         "pct_30d":            pct_30d,
@@ -1506,28 +1794,37 @@ def get_pods_with_kpis_fast(pod_pfees_map: dict, balance_hist: list[dict]) -> li
 
     net_deployed   = _get_net_deployed_per_account()
     axia_agg       = pod_pfees_map.get("_axia_agg") or {}
+    darwinex_agg   = pod_pfees_map.get("_darwinex_agg") or {}
     ct_by_strategy = _capital_transfers_by_strategy()
+    banked_agg     = _banked_profit_by_strategy(strategies)
 
     result = []
 
     if pods_list:
         for pod in pods_list:
-            pid     = pod["id"]
-            agg     = pod_agg.get(pid, {"invested": 0.0, "pnl": 0.0})
-            initial = sum(
-                _strategy_capital_invested(s, net_deployed, axia_agg, ct_by_strategy)
-                for s in strategies if s.get("pod_id") == pid
+            pid       = pod["id"]
+            agg       = pod_agg.get(pid, {"invested": 0.0, "pnl": 0.0})
+            pod_strats = [s for s in strategies if s.get("pod_id") == pid]
+            initial   = sum(
+                _strategy_capital_invested(s, net_deployed, axia_agg, ct_by_strategy, darwinex_agg)
+                for s in pod_strats
             )
+            banked    = round(sum(banked_agg.get(s["id"], {}).get("banked_profit", 0.0) for s in pod_strats), 2)
+            withdrawn = round(sum(banked_agg.get(s["id"], {}).get("total_withdrawn", 0.0) for s in pod_strats), 2)
+            allocated = round(initial - withdrawn, 2)
             result.append({
                 "entity_id": f"pod_{pid}",
                 "name":      pod.get("name", f"Pod {pid}"),
                 "pod_code":  pod.get("pod_code", ""),
                 "pod_color": pod.get("color", "#6366f1"),
+                "status":    pod.get("status") or "Active",
                 "kpis": {
                     "initial_investment": round(initial, 2),
                     "current_equity":     agg["invested"],
                     "performance":        round(agg["pnl"] / initial, 6) if initial else 0.0,
                     "total_pnl":          agg["pnl"],
+                    "banked_profit":      banked,
+                    "capital_allocated":  allocated,
                     "pct_1d":             pct_1d,
                     "pct_7d":             pct_7d,
                     "pct_30d":            pct_30d,
@@ -1555,6 +1852,8 @@ def get_pods_with_kpis_fast(pod_pfees_map: dict, balance_hist: list[dict]) -> li
                     "current_equity":     agg["invested"],
                     "performance":        0.0,
                     "total_pnl":          agg["pnl"],
+                    "banked_profit":      0.0,
+                    "capital_allocated":  agg["invested"],
                     "pct_1d":             pct_1d,
                     "pct_7d":             pct_7d,
                     "pct_30d":            pct_30d,
@@ -1575,11 +1874,13 @@ def get_strategies_with_kpis_fast(pod_pfees_map: dict, balance_hist: list[dict])
     Strategies already come back ordered by name (list_strategies() query),
     so new strategies slot into alphabetical position automatically.
     """
-    strategies  = pod_pfees_map["strategies"]
-    pods_list   = pod_pfees_map["pods_list"]
-    pods_idx    = {p["id"]: p for p in pods_list}
-    axia_agg    = pod_pfees_map.get("_axia_agg") or {}
-    snapshot    = pod_pfees_map.get("_snapshot", get_pfees_latest_snapshot())
+    strategies   = pod_pfees_map["strategies"]
+    pods_list    = pod_pfees_map["pods_list"]
+    pods_idx     = {p["id"]: p for p in pods_list}
+    axia_agg     = pod_pfees_map.get("_axia_agg") or {}
+    fund_agg     = pod_pfees_map.get("_fund_agg") or {}
+    darwinex_agg = pod_pfees_map.get("_darwinex_agg") or {}
+    snapshot     = pod_pfees_map.get("_snapshot", get_pfees_latest_snapshot())
 
     pct_1d  = _period_return_from_hist(balance_hist, 1)
     pct_7d  = _period_return_from_hist(balance_hist, 7)
@@ -1587,6 +1888,7 @@ def get_strategies_with_kpis_fast(pod_pfees_map: dict, balance_hist: list[dict])
 
     net_deployed   = _get_net_deployed_per_account()
     ct_by_strategy = _capital_transfers_by_strategy()
+    banked_agg     = _banked_profit_by_strategy(strategies)
 
     darwin_agg: dict = {}
     acct_agg:   dict = {}
@@ -1612,9 +1914,15 @@ def get_strategies_with_kpis_fast(pod_pfees_map: dict, balance_hist: list[dict])
         acct_id = s.get("account_id")
         broker  = s.get("brokerage_account")
 
-        axia_contrib = axia_agg.get(s["id"]) if s.get("axia_client_id") else None
+        axia_contrib     = axia_agg.get(s["id"]) if s.get("axia_client_id") else None
+        fund_contrib     = fund_agg.get(s["id"])
+        darwinex_contrib = darwinex_agg.get(s["id"])
         if axia_contrib is not None:
             agg = {"invested": axia_contrib["invested"], "pnl": axia_contrib["pnl"]}
+        elif fund_contrib is not None:
+            agg = {"invested": fund_contrib["invested"], "pnl": fund_contrib["pnl"]}
+        elif darwinex_contrib is not None:
+            agg = {"invested": darwinex_contrib["invested"], "pnl": darwinex_contrib["pnl"]}
         elif acct_id is not None and int(acct_id) in acct_agg:
             agg = acct_agg[int(acct_id)]
         elif broker and broker_to_acct_s.get(broker) in acct_agg:
@@ -1622,7 +1930,24 @@ def get_strategies_with_kpis_fast(pod_pfees_map: dict, balance_hist: list[dict])
         else:
             agg = darwin_agg.get(code, {"invested": 0.0, "pnl": 0.0})
 
-        initial = _strategy_capital_invested(s, net_deployed, axia_agg, ct_by_strategy)
+        initial = _strategy_capital_invested(s, net_deployed, axia_agg, ct_by_strategy, darwinex_agg)
+
+        # AXIA-linked strategies are already watermark-adjusted inside
+        # _axia_strategy_agg (baseline used there too); fund-statement and
+        # closed-Darwinex strategies are already fully resolved (their own
+        # bespoke aggregators compute the correct realized figures directly,
+        # against their own frozen baselines) — re-applying watermark here
+        # would clobber them, since `initial` above may now differ from the
+        # raw pfees-derived baseline the watermark pass-through expects.
+        # Apply here only for the remaining general case (Darwinex still
+        # open, manual strategies) — not AXIA/fund/closed-Darwinex-specific.
+        if axia_contrib is None and fund_contrib is None and darwinex_contrib is None:
+            chase_equity, chase_pnl = _apply_watermark(s, agg["invested"], initial)
+            agg = {"invested": chase_equity, "pnl": chase_pnl}
+
+        banked_contrib = banked_agg.get(s["id"], {"banked_profit": 0.0, "capital_returned": 0.0, "total_withdrawn": 0.0})
+        banked         = banked_contrib["banked_profit"]
+        allocated      = round(initial - banked_contrib["total_withdrawn"], 2)
 
         pid        = s.get("pod_id")
         pod        = pods_idx.get(pid, {}) if pid else {}
@@ -1630,20 +1955,47 @@ def get_strategies_with_kpis_fast(pod_pfees_map: dict, balance_hist: list[dict])
         pod_color  = pod_joined.get("color") or pod.get("color") or "#6366f1"
         pod_code_s = pod_joined.get("pod_code") or pod.get("pod_code") or ""
 
+        # Fund-statement strategies (12-FLAGS): surface the fund's own YTD
+        # USD net income / return % as a sub-line (NOT just the latest
+        # month's MTD figure) — matches the NAV administrator statement's
+        # own ITD/YTD convention: cumulative sum of net_income within the
+        # latest row's calendar year, divided by that year's FIRST
+        # beginning_balance. Same convention as fund_statements.py's
+        # /api/fund-statements list endpoint's ytd_net_income/ytd_return_pct
+        # (kept in sync here since the strategy-card KPI response has no
+        # access to that router's per-request enrichment).
+        fund_usd_net_income = None
+        fund_usd_return_pct = None
+        if fund_contrib is not None and fund_contrib.get("series"):
+            series = fund_contrib["series"]  # sorted ascending by period_end_date
+            latest_year = series[-1]["period_end_date"][:4]
+            year_rows   = [r for r in series if r["period_end_date"][:4] == latest_year]
+            year_start  = float(year_rows[0]["beginning_balance"])
+            ytd_income  = round(sum(float(r["net_income"]) for r in year_rows), 2)
+            fund_usd_net_income = ytd_income
+            fund_usd_return_pct = round(ytd_income / year_start * 100, 2) if year_start else 0.0
+
         result.append({
-            "entity_id":     f"strategy_{s['id']}",
-            "name":          s.get("name", code),
-            "strategy_code": s.get("strategy_code", ""),
-            "pod_code":      pod_code_s,
-            "pod_color":     pod_color,
+            "entity_id":        f"strategy_{s['id']}",
+            "name":             s.get("name", code),
+            "strategy_code":    s.get("strategy_code", ""),
+            "pod_code":         pod_code_s,
+            "pod_color":        pod_color,
+            "status":           s.get("status") or "Active",
+            "watermark":        s.get("watermark"),
+            "profit_share_pct": s.get("profit_share_pct"),
             "kpis": {
                 "initial_investment": round(initial, 2),
                 "current_equity":     agg["invested"],
                 "performance":        round(agg["pnl"] / initial, 6) if initial else 0.0,
                 "total_pnl":          agg["pnl"],
+                "banked_profit":      banked,
+                "capital_allocated":  allocated,
                 "pct_1d":             pct_1d,
                 "pct_7d":             pct_7d,
                 "pct_30d":            pct_30d,
+                "fund_usd_net_income": fund_usd_net_income,
+                "fund_usd_return_pct": fund_usd_return_pct,
             },
         })
 
@@ -1775,7 +2127,9 @@ def create_strategy(name: str, strategy_code: str, pod_id: Optional[int],
                     initial_investment: float, date_created: str,
                     status: str = "Active", notes: str = "",
                     brokerage_account: Optional[str] = None,
-                    axia_client_id: Optional[str] = None) -> dict:
+                    axia_client_id: Optional[str] = None,
+                    watermark: Optional[float] = None,
+                    profit_share_pct: Optional[float] = None) -> dict:
     sb  = get_client()
     res = sb.table("strategies").insert({
         "name":               name,
@@ -1787,6 +2141,8 @@ def create_strategy(name: str, strategy_code: str, pod_id: Optional[int],
         "notes":              notes or None,
         "brokerage_account":  brokerage_account or None,
         "axia_client_id":     axia_client_id or None,
+        "watermark":          round(watermark, 2) if watermark is not None else None,
+        "profit_share_pct":   round(profit_share_pct, 2) if profit_share_pct is not None else None,
     }).execute()
     _invalidate("strategies_all")
     return res.data[0] if res.data else {}
@@ -2116,7 +2472,9 @@ def _match_pfees_accounts_to_brokerage() -> dict[int, str]:
 
 def create_internal_transfer(transfer_date: str, from_account: str,
                               to_account: str, amount: float,
-                              notes: str = "") -> dict:
+                              notes: str = "",
+                              capital_return_amount: Optional[float] = None,
+                              profit_loss_amount: Optional[float] = None) -> dict:
     sb  = get_client()
     res = sb.table("internal_transfers").insert({
         "transfer_date": transfer_date,
@@ -2124,6 +2482,8 @@ def create_internal_transfer(transfer_date: str, from_account: str,
         "to_account":    to_account,
         "amount":        round(abs(amount), 2),
         "notes":         notes or None,
+        "capital_return_amount": round(capital_return_amount, 2) if capital_return_amount is not None else None,
+        "profit_loss_amount":    round(profit_loss_amount, 2) if profit_loss_amount is not None else None,
     }).execute()
     _invalidate("internal_transfers")
     return res.data[0] if res.data else {}
@@ -2168,7 +2528,9 @@ def list_capital_transfers() -> list[dict]:
 
 def create_capital_transfer(transfer_date: str, from_type: str, from_id,
                              to_type: str, to_id, amount: float,
-                             reference: str = "", notes: str = "") -> dict:
+                             reference: str = "", notes: str = "",
+                             capital_return_amount: Optional[float] = None,
+                             profit_loss_amount: Optional[float] = None) -> dict:
     sb  = get_client()
     res = sb.table("capital_transfers").insert({
         "transfer_date": transfer_date,
@@ -2179,6 +2541,8 @@ def create_capital_transfer(transfer_date: str, from_type: str, from_id,
         "amount":        round(abs(amount), 2),
         "reference":     reference or None,
         "notes":         notes or None,
+        "capital_return_amount": round(capital_return_amount, 2) if capital_return_amount is not None else None,
+        "profit_loss_amount":    round(profit_loss_amount, 2) if profit_loss_amount is not None else None,
     }).execute()
     _invalidate("capital_transfers", "capital_transfers_by_strategy")
     return res.data[0] if res.data else {}
@@ -2197,6 +2561,156 @@ def delete_capital_transfer(transfer_id: int) -> bool:
     sb = get_client()
     sb.table("capital_transfers").delete().eq("id", transfer_id).execute()
     _invalidate("capital_transfers", "capital_transfers_by_strategy")
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Fund Monthly Statements — NAV-administrator-reported funds (e.g. 12-FLAGS)
+# One row per strategy per period_end_date. Keyed directly by strategy_id —
+# no separate "clients" table, unlike AXIA (no multi-account concept here).
+# net_income / rate_of_return_pct / ending_balance_gbp are always computed
+# server-side (never trust client-sent values for these) so the numbers
+# that feed the strategy's Current Equity are always internally consistent.
+# ---------------------------------------------------------------------------
+
+def list_fund_statements(strategy_id: Optional[int] = None) -> list[dict]:
+    """All rows, optionally filtered to one strategy. Sorted period_end_date ASC."""
+    def _fetch():
+        rows = (
+            get_client()
+            .table("fund_monthly_statements")
+            .select("*")
+            .execute()
+            .data or []
+        )
+        rows.sort(key=lambda r: (r["period_end_date"], r["id"]))
+        return rows
+    rows = _get_cached("fund_monthly_statements", _fetch)
+    if strategy_id is not None:
+        rows = [r for r in rows if r["strategy_id"] == strategy_id]
+    return rows
+
+
+def get_fund_statement_prev(strategy_id: int, before_date: str) -> Optional[dict]:
+    """Most recent statement for this strategy strictly before `before_date`."""
+    rows = [r for r in list_fund_statements(strategy_id) if r["period_end_date"] < before_date]
+    return rows[-1] if rows else None
+
+
+def _compute_fund_statement_fields(beginning_balance: float, additions: float,
+                                    redemptions: float, ending_balance: float) -> dict:
+    """
+    net_income      = ending - beginning - additions + redemptions
+    rate_of_return  = net_income / beginning_balance * 100
+    Matches the NAV administrator statement's own MTD Net Income / Rate of
+    Return exactly (verified against the 12-FLAGS July 2026 statement:
+    Beginning 648,756.57, Net Income (15,544.59), Rate of Return (2.40%)).
+    """
+    net_income = round(ending_balance - beginning_balance - additions + redemptions, 2)
+    rate_of_return_pct = round(net_income / beginning_balance * 100, 4) if beginning_balance else 0.0
+    return {"net_income": net_income, "rate_of_return_pct": rate_of_return_pct}
+
+
+def create_fund_statement(strategy_id: int, period_end_date: str, ending_balance: float,
+                           beginning_balance: float, additions: float = 0.0,
+                           redemptions: float = 0.0, currency: str = "USD",
+                           notes: str = "") -> dict:
+    from src.services.oanda_service import get_monthly_close
+    from datetime import date as _date
+
+    computed = _compute_fund_statement_fields(beginning_balance, additions, redemptions, ending_balance)
+
+    fx = None
+    if currency == "USD":
+        fx = get_monthly_close(_date.fromisoformat(period_end_date))
+
+    payload = {
+        "strategy_id":        strategy_id,
+        "period_end_date":    period_end_date,
+        "currency":           currency,
+        "beginning_balance":  round(beginning_balance, 2),
+        "additions":          round(additions, 2),
+        "redemptions":        round(redemptions, 2),
+        "ending_balance":     round(ending_balance, 2),
+        "net_income":         computed["net_income"],
+        "rate_of_return_pct": computed["rate_of_return_pct"],
+        "fx_rate":            fx["rate"]        if fx else None,
+        "fx_rate_date":       fx["candle_date"] if fx else None,
+        "ending_balance_gbp": round(ending_balance / fx["rate"], 2) if fx else (
+            round(ending_balance, 2) if currency == "GBP" else None
+        ),
+        "notes": notes or None,
+    }
+    res = get_client().table("fund_monthly_statements").insert(payload).execute()
+    _invalidate("fund_monthly_statements")
+    return res.data[0] if res.data else {}
+
+
+def update_fund_statement(record_id: int, **fields) -> dict:
+    """
+    Recomputes net_income/rate_of_return_pct whenever any of the four input
+    numbers change, and re-fetches FX whenever period_end_date or currency
+    changes — same server-side-source-of-truth approach as create.
+    """
+    existing_rows = get_client().table("fund_monthly_statements").select("*").eq("id", record_id).execute().data
+    if not existing_rows:
+        return {}
+    existing = existing_rows[0]
+    merged   = {**existing, **fields}
+
+    if any(k in fields for k in ("beginning_balance", "additions", "redemptions", "ending_balance")):
+        computed = _compute_fund_statement_fields(
+            float(merged["beginning_balance"]), float(merged["additions"]),
+            float(merged["redemptions"]), float(merged["ending_balance"]),
+        )
+        fields.update(computed)
+
+    if "period_end_date" in fields or "currency" in fields:
+        from src.services.oanda_service import get_monthly_close
+        from datetime import date as _date
+        if merged.get("currency") == "USD":
+            fx = get_monthly_close(_date.fromisoformat(merged["period_end_date"]))
+            fields["fx_rate"]      = fx["rate"]        if fx else None
+            fields["fx_rate_date"] = fx["candle_date"] if fx else None
+            fields["ending_balance_gbp"] = round(float(merged["ending_balance"]) / fx["rate"], 2) if fx else None
+        else:
+            fields["fx_rate"] = fields["fx_rate_date"] = None
+            fields["ending_balance_gbp"] = round(float(merged["ending_balance"]), 2)
+    elif "ending_balance" in fields and merged.get("fx_rate"):
+        # Ending balance changed but FX didn't — reconvert with the existing rate
+        fields["ending_balance_gbp"] = round(float(merged["ending_balance"]) / float(merged["fx_rate"]), 2)
+
+    res = get_client().table("fund_monthly_statements").update(fields).eq("id", record_id).execute()
+    _invalidate("fund_monthly_statements")
+    return res.data[0] if res.data else {}
+
+
+def refetch_fund_statement_fx(record_id: int) -> dict:
+    """Manual retry — re-attempt the OANDA lookup for a row whose FX fetch failed."""
+    rows = get_client().table("fund_monthly_statements").select("*").eq("id", record_id).execute().data
+    if not rows:
+        return {}
+    row = rows[0]
+    if row.get("currency") != "USD":
+        return row
+    from src.services.oanda_service import get_monthly_close
+    from datetime import date as _date
+    fx = get_monthly_close(_date.fromisoformat(row["period_end_date"]))
+    if not fx:
+        return row
+    fields = {
+        "fx_rate":            fx["rate"],
+        "fx_rate_date":       fx["candle_date"],
+        "ending_balance_gbp": round(float(row["ending_balance"]) / fx["rate"], 2),
+    }
+    res = get_client().table("fund_monthly_statements").update(fields).eq("id", record_id).execute()
+    _invalidate("fund_monthly_statements")
+    return res.data[0] if res.data else row
+
+
+def delete_fund_statement(record_id: int) -> bool:
+    get_client().table("fund_monthly_statements").delete().eq("id", record_id).execute()
+    _invalidate("fund_monthly_statements")
     return True
 
 

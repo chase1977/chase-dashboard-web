@@ -8,7 +8,7 @@
  *   3. Portfolio KPIs    — 7-card strip
  *   4. Pod overview      — one KPI strip per pod, clickable to drill down
  *   5. Charts row        — Equity curve | Allocation donut | PnL bars
- *   6. Hierarchy tabs    — Pods | Strategies | Traders | Venues
+ *   6. Hierarchy tabs    — Pods | Strategies | Traders
  */
 
 import { useState, useEffect, useRef } from 'react'
@@ -34,7 +34,7 @@ import PodStrategyManager  from '../components/PodStrategyManager.jsx'
 // ---------------------------------------------------------------------------
 
 const POD_COLORS     = ['#0EA5E9', '#F59E0B', '#34D399', '#A78BFA', '#F472B6']
-const HIERARCHY_TABS = ['pod', 'strategy', 'trader', 'venue']
+const HIERARCHY_TABS = ['pod', 'strategy', 'trader']
 
 
 // ---------------------------------------------------------------------------
@@ -67,7 +67,6 @@ const TAB_LABELS = {
   pod:      'Pods',
   strategy: 'Strategies',
   trader:   'Traders',
-  venue:    'Venues',
 }
 
 function TabButton({ label, active, onClick }) {
@@ -231,7 +230,7 @@ function GlassStyles() {
   )
 }
 
-function StatBox({ label, value, tone = 'default' }) {
+function StatBox({ label, value, tone = 'default', subLine }) {
   const color = tone === 'pos' ? '#34D399' : tone === 'neg' ? '#F87171' : '#F1F5F9'
   const arrow = tone === 'pos' ? '▲' : tone === 'neg' ? '▼' : null
   return (
@@ -241,11 +240,46 @@ function StatBox({ label, value, tone = 'default' }) {
         {arrow && <span style={{ fontSize: 9 }}>{arrow}</span>}
         {value}
       </div>
+      {subLine && (
+        <div style={{ fontSize: 9.5, color: '#64748B', marginTop: 2, fontFamily: 'monospace' }}>
+          {subLine}
+        </div>
+      )}
     </div>
   )
 }
 
-function OverviewCard({ name, color, kpis, onClick, isMobile }) {
+function WatermarkBadge({ watermark, profitSharePct }) {
+  if (watermark == null) return null
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 8px',
+      borderRadius: 6, fontSize: 9.5, fontWeight: 700, color: '#A78BFA',
+      background: 'rgba(167,139,250,0.12)', border: '1px solid rgba(167,139,250,0.28)',
+      whiteSpace: 'nowrap',
+    }}>
+      WM {fmtGBP(watermark)}{profitSharePct != null ? ` · ${profitSharePct}%` : ''}
+    </span>
+  )
+}
+
+function StatusBadge({ status }) {
+  const isActive = (status || 'Active').toLowerCase() === 'active'
+  const color = isActive ? '#34D399' : '#F87171'
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', padding: '2px 8px',
+      borderRadius: 6, fontSize: 9.5, fontWeight: 800, letterSpacing: '0.4px',
+      textTransform: 'uppercase', color,
+      background: `${color}1F`, border: `1px solid ${color}50`,
+      whiteSpace: 'nowrap',
+    }}>
+      {(status || 'Active').toUpperCase()}
+    </span>
+  )
+}
+
+function OverviewCard({ name, color, kpis, onClick, isMobile, status, watermark, profitSharePct }) {
   const vars = {
     '--accent':       color,
     '--accent-soft':  hexToRgba(color, 0.20),
@@ -253,28 +287,50 @@ function OverviewCard({ name, color, kpis, onClick, isMobile }) {
   }
   const { invested, banked, allocated, equity, pnl, roi } = computeCapitalMetrics(kpis)
 
+  // Fund-statement strategies (12-FLAGS): the fund's own USD net income /
+  // return % from its NAV administrator statement — undefined for every
+  // other strategy type, so this sub-line only ever appears there. Shown
+  // so a GBP FX-translation effect (baseline converted at deposit-date rate
+  // vs current equity at latest rate) never reads as a discrepancy against
+  // the fund's own quoted numbers.
+  const fundUsdNet = kpis?.fund_usd_net_income
+  const fundUsdPct = kpis?.fund_usd_return_pct
+  const hasFundUsd = fundUsdNet != null && fundUsdPct != null
+  const fundUsdPnlLine = hasFundUsd
+    ? `USD YTD: ${fundUsdNet >= 0 ? '+' : '-'}$${Math.abs(fundUsdNet).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    : null
+  const fundUsdRoiLine = hasFundUsd
+    ? `USD YTD: ${fundUsdPct >= 0 ? '+' : ''}${fundUsdPct.toFixed(2)}%`
+    : null
+
   return (
     <div className="ov-card" onClick={onClick} style={vars}>
       <div className="ov-header">
         <div className="ov-dot" />
         <div className="ov-name">{name}</div>
-        <div className="ov-hint">Drill down →</div>
+        <WatermarkBadge watermark={watermark} profitSharePct={profitSharePct} />
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+          <StatusBadge status={status} />
+          <div className="ov-hint" style={{ marginLeft: 0 }}>Drill down →</div>
+        </div>
       </div>
 
       <div className={`stat-grid${isMobile ? ' stat-grid-2col' : ''}`}>
         <StatBox label="Capital Invested" value={fmtGBP(invested)} />
-        <StatBox label="Banked Profit"    value={fmtGBP(banked)} />
+        <StatBox label="Banked Profit / Loss" value={fmtGBP(banked)} tone={banked >= 0 ? 'pos' : 'neg'} />
         <StatBox label="Capital Allocated" value={fmtGBP(allocated)} />
         <StatBox label="Current Equity"   value={fmtGBP(equity)} />
         <StatBox
           label="Total P&L"
           value={fmtGBP(pnl)}
           tone={pnl >= 0 ? 'pos' : 'neg'}
+          subLine={fundUsdPnlLine}
         />
         <StatBox
           label="Total ROI"
           value={fmtPctSigned(roi)}
           tone={roi >= 0 ? 'pos' : 'neg'}
+          subLine={fundUsdRoiLine}
         />
       </div>
     </div>
@@ -449,6 +505,7 @@ export default function Portfolio({ timeRange, initialTab }) {
             color={pod.pod_color || POD_COLORS[idx % POD_COLORS.length]}
             kpis={pod.kpis}
             isMobile={isMobile}
+            status={pod.status}
             onClick={() => navigate(`/drilldown/${pod.entity_id}`)}
           />
         ))}
@@ -470,6 +527,9 @@ export default function Portfolio({ timeRange, initialTab }) {
             color={strat.pod_color || POD_COLORS[idx % POD_COLORS.length]}
             kpis={strat.kpis}
             isMobile={isMobile}
+            status={strat.status}
+            watermark={strat.watermark}
+            profitSharePct={strat.profit_share_pct}
             onClick={() => navigate(`/drilldown/${strat.entity_id}`)}
           />
         ))}

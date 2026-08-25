@@ -41,7 +41,7 @@ export function useDrillDown(entityId, timeRange = 'SI') {
 }
 
 // ---------------------------------------------------------------------------
-// Hierarchy table tabs (pods / strategies / traders / venues)
+// Hierarchy table tabs (pods / strategies / traders)
 // ---------------------------------------------------------------------------
 
 export function useHierarchyTable(entityType) {
@@ -54,7 +54,7 @@ export function useHierarchyTable(entityType) {
 }
 
 // ---------------------------------------------------------------------------
-// Trader context — 3-tab breakdown (Venues | Pods | Strategies)
+// Trader context — 2-tab breakdown (Pods | Strategies)
 // Only fires when entityId is a trader — enabled guard in DrillDown.jsx
 // ---------------------------------------------------------------------------
 

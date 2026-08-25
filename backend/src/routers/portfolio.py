@@ -78,6 +78,7 @@ def get_portfolio(time_range: str = Query("SI")):
             name      = p["name"],
             pod_code  = p.get("pod_code", ""),
             pod_color = p.get("pod_color", "#6366f1"),
+            status    = p.get("status", "Active"),
             kpis      = KpiData(**p["kpis"]),
         )
         for p in pod_data
@@ -90,12 +91,15 @@ def get_portfolio(time_range: str = Query("SI")):
     )
     strategies = [
         StrategySummary(
-            entity_id     = s["entity_id"],
-            name          = s["name"],
-            strategy_code = s.get("strategy_code", ""),
-            pod_code      = s.get("pod_code", ""),
-            pod_color     = s.get("pod_color", "#6366f1"),
-            kpis          = KpiData(**s["kpis"]),
+            entity_id        = s["entity_id"],
+            name             = s["name"],
+            strategy_code    = s.get("strategy_code", ""),
+            pod_code         = s.get("pod_code", ""),
+            pod_color        = s.get("pod_color", "#6366f1"),
+            status           = s.get("status", "Active"),
+            watermark        = s.get("watermark"),
+            profit_share_pct = s.get("profit_share_pct"),
+            kpis             = KpiData(**s["kpis"]),
         )
         for s in strategy_data
     ]
@@ -125,7 +129,7 @@ def get_portfolio(time_range: str = Query("SI")):
 
 
 # ---------------------------------------------------------------------------
-# Hierarchy tables (Pods / Strategies / Traders / Venues tabs) — live Supabase
+# Hierarchy tables (Pods / Strategies / Traders tabs) — live Supabase
 # ---------------------------------------------------------------------------
 
 @router.get("/hierarchy/{entity_type}", response_model=HierarchyTableResponse)
@@ -133,9 +137,9 @@ def get_hierarchy_table(entity_type: str):
     """
     Returns hierarchy tab rows from live Supabase data.
 
-    entity_type: pod | strategy | trader | venue
+    entity_type: pod | strategy | trader
     - pod / strategy: aggregated from user_pfees_estimation + pods/strategies tables
-    - trader / venue: returns empty rows until trader data is available
+    - trader: returns empty rows until trader data is available
     """
     rows = [BreakdownRow(**r) for r in sb_svc.get_hierarchy_rows(entity_type)]
     return HierarchyTableResponse(entity_type=entity_type, rows=rows)
@@ -261,7 +265,6 @@ def get_trader_context(entity_id: str):
     return TraderContextResponse(
         entity_id   = entity_id,
         entity_name = entity_id,
-        venues      = [],
         pods        = [],
         strategies  = [],
     )

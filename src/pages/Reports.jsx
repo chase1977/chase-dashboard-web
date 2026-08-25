@@ -29,6 +29,7 @@ import { downloadExcel, downloadPdf, downloadCsv } from '../services/api.js'
 import StatementUpload                             from '../components/StatementUpload.jsx'
 import StatementMerge                             from '../components/StatementMerge.jsx'
 import AxiaEquityEntry                            from '../components/AxiaEquityEntry.jsx'
+import Flags12StatementEntry                       from '../components/Flags12StatementEntry.jsx'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Config
@@ -36,7 +37,7 @@ import AxiaEquityEntry                            from '../components/AxiaEquity
 
 const REPORT_CARDS = [
   { id: 'excel', icon: FileSpreadsheet, title: 'Excel Workbook',
-    desc: 'Full institutional metrics workbook — Summary, Pods, Strategies, Traders, Venues, Equity Curve.',
+    desc: 'Full institutional metrics workbook — Summary, Pods, Strategies, Traders, Equity Curve.',
     label: 'Download .xlsx', color: '#34D399', action: () => downloadExcel() },
   { id: 'pdf',   icon: FileText,        title: 'Investor PDF',
     desc: 'Clean investor-facing summary report. Portfolio KPIs, pod overview, performance tables.',
@@ -704,6 +705,26 @@ export default function Reports() {
           borderRadius:10, overflow:'hidden',
         }}>
           <AxiaEquityEntry />
+        </div>
+      </div>
+
+      {/* 12-FLAGS Monthly Statement Entry */}
+      <div style={{ marginTop:36 }}>
+        <div style={{ marginBottom:14 }}>
+          <div style={{ fontSize:13, fontWeight:600, color:'#F1F5F9', marginBottom:3 }}>
+            12-FLAGS Monthly Statement (USD)
+          </div>
+          <div style={{ fontSize:11, color:'#475569' }}>
+            Record the monthly NAV Fund Services Investor Statement Ending Balance — Net Income and
+            Rate of Return auto-computed. GBP converted via OANDA GBP/USD monthly close, feeds the
+            12-FLAGS strategy's Current Equity automatically.
+          </div>
+        </div>
+        <div style={{
+          background:'#111C2B', border:'1px solid #1E3A5F',
+          borderRadius:10, overflow:'hidden',
+        }}>
+          <Flags12StatementEntry />
         </div>
       </div>
     </div>

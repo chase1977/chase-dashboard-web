@@ -1,7 +1,7 @@
 // frontend/src/components/layout/Navbar.jsx
 /**
  * Top navigation bar.
- * Contains: logo | nav links (Portfolio/Pods/Strategies/Traders/Venues/Reports)
+ * Contains: logo | nav links (Portfolio/Pods/Strategies/Traders/Reports)
  *           | time range chips | user avatar
  *
  * Desktop layout is untouched. On phone widths (<=768px) the nav links and
@@ -27,7 +27,6 @@ const NAV_LINKS = [
   { label: 'Pods',        path: '/pods'         },
   { label: 'Strategies',  path: '/strategies'   },
   { label: 'Traders',     path: '/traders'      },
-  { label: 'Venues',      path: '/venues'       },
   { label: 'Reports',     path: '/reports'      },
   { label: 'Analysis',    path: '/analysis'     },
 ]

@@ -15,7 +15,7 @@
  */
 
 import { useState, useEffect, useRef, forwardRef, useImperativeHandle } from 'react'
-import { X, ArrowDownLeft, ArrowUpRight, ArrowLeftRight, Calendar, ChevronRight, Info, Plus, Trash2, Pencil, Wallet, Layers, TrendingUp } from 'lucide-react'
+import { X, ArrowDownLeft, ArrowUpRight, ArrowLeftRight, Calendar, ChevronRight, Info, Plus, Trash2, Pencil, Wallet, Layers, TrendingUp, TrendingDown } from 'lucide-react'
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
 } from 'recharts'
@@ -593,6 +593,8 @@ function InternalTransfersTab({ queryClient, capitalData }) {
   const [formTo,       setFormTo]       = useState('Chase1')
   const [formAmount,   setFormAmount]   = useState('')
   const [formNotes,    setFormNotes]    = useState('')
+  const [formCapRet,   setFormCapRet]   = useState('')
+  const [formProfLo,   setFormProfLo]   = useState('')
   const [formError,    setFormError]    = useState(null)
   const [submitting,   setSubmitting]   = useState(false)
 
@@ -602,6 +604,8 @@ function InternalTransfersTab({ queryClient, capitalData }) {
   const [editTo,       setEditTo]       = useState('Chase1')
   const [editAmount,   setEditAmount]   = useState('')
   const [editNotes,    setEditNotes]    = useState('')
+  const [editCapRet,   setEditCapRet]   = useState('')
+  const [editProfLo,   setEditProfLo]   = useState('')
   const [editError,    setEditError]    = useState(null)
   const [editSaving,   setEditSaving]   = useState(false)
 
@@ -615,13 +619,34 @@ function InternalTransfersTab({ queryClient, capitalData }) {
 
   function openAdd() {
     setEditRec(null); setFormDate(todayISO()); setFormFrom('Wallet'); setFormTo('Chase1')
-    setFormAmount(''); setFormNotes(''); setFormError(null); setShowForm(true)
+    setFormAmount(''); setFormNotes('')
+    setFormCapRet(''); setFormProfLo(''); setFormError(null); setShowForm(true)
   }
 
   function openEdit(r) {
     setShowForm(false); setEditRec(r); setEditDate(r.transfer_date)
     setEditFrom(r.from_account); setEditTo(r.to_account)
-    setEditAmount(String(r.amount)); setEditNotes(r.notes ?? ''); setEditError(null)
+    setEditAmount(String(r.amount)); setEditNotes(r.notes ?? '')
+    setEditCapRet(r.capital_return_amount != null ? String(r.capital_return_amount) : '')
+    setEditProfLo(r.profit_loss_amount != null ? String(r.profit_loss_amount) : '')
+    setEditError(null)
+  }
+
+  // Outbound account→Wallet leg is the only place profit/loss is classified.
+  function isClassifiableLeg(from, to) {
+    return from !== 'Wallet' && to === 'Wallet'
+  }
+
+  function validateSplit(amt, capRet, profLo) {
+    const crRaw = capRet.trim(), plRaw = profLo.trim()
+    if (!crRaw && !plRaw) return { ok: true, cr: null, pl: null }
+    if (!crRaw || !plRaw) return { ok: false, msg: 'Enter both Capital Return and Profit/Loss (or leave both blank)' }
+    const cr = parseFloat(crRaw), pl = parseFloat(plRaw)
+    if (isNaN(cr) || isNaN(pl)) return { ok: false, msg: 'Capital Return / Profit-Loss must be numbers' }
+    if (Math.round((cr + pl) * 100) !== Math.round(amt * 100)) {
+      return { ok: false, msg: `Capital Return + Profit/Loss (${(cr + pl).toFixed(2)}) must equal Amount (${amt.toFixed(2)})` }
+    }
+    return { ok: true, cr: parseFloat(cr.toFixed(2)), pl: parseFloat(pl.toFixed(2)) }
   }
 
   async function handleAdd(e) {
@@ -629,10 +654,13 @@ function InternalTransfersTab({ queryClient, capitalData }) {
     const amt = parseFloat(formAmount)
     if (isNaN(amt) || amt <= 0) return setFormError('Enter valid amount > 0')
     if (!formDate) return setFormError('Select a date')
+    const split = validateSplit(amt, formCapRet, formProfLo)
+    if (!split.ok) return setFormError(split.msg)
     setSubmitting(true)
     try {
       await createInternalTransfer({ transfer_date: formDate, from_account: formFrom,
-        to_account: formTo, amount: parseFloat(amt.toFixed(2)), notes: formNotes.trim() })
+        to_account: formTo, amount: parseFloat(amt.toFixed(2)), notes: formNotes.trim(),
+        capital_return_amount: split.cr, profit_loss_amount: split.pl })
       await queryClient.invalidateQueries({ queryKey: ['internal_transfers'] })
       setShowForm(false)
     } catch (err) { setFormError(err.message ?? 'Failed') }
@@ -644,10 +672,13 @@ function InternalTransfersTab({ queryClient, capitalData }) {
     const amt = parseFloat(editAmount)
     if (isNaN(amt) || amt <= 0) return setEditError('Enter valid amount > 0')
     if (!editDate) return setEditError('Select a date')
+    const split = validateSplit(amt, editCapRet, editProfLo)
+    if (!split.ok) return setEditError(split.msg)
     setEditSaving(true)
     try {
       await updateInternalTransfer(editRec.id, { transfer_date: editDate, from_account: editFrom,
-        to_account: editTo, amount: parseFloat(amt.toFixed(2)), notes: editNotes.trim() })
+        to_account: editTo, amount: parseFloat(amt.toFixed(2)), notes: editNotes.trim(),
+        capital_return_amount: split.cr, profit_loss_amount: split.pl })
       await queryClient.invalidateQueries({ queryKey: ['internal_transfers'] })
       setEditRec(null)
     } catch (err) { setEditError(err.message ?? 'Failed') }
@@ -668,6 +699,8 @@ function InternalTransfersTab({ queryClient, capitalData }) {
     const to      = isEdit ? editTo     : formTo
     const amount  = isEdit ? editAmount : formAmount
     const notes   = isEdit ? editNotes  : formNotes
+    const capRet  = isEdit ? editCapRet : formCapRet
+    const profLo  = isEdit ? editProfLo : formProfLo
     const error   = isEdit ? editError  : formError
     const saving  = isEdit ? editSaving : submitting
     const setDate = isEdit ? setEditDate   : setFormDate
@@ -675,8 +708,14 @@ function InternalTransfersTab({ queryClient, capitalData }) {
     const setTo   = isEdit ? setEditTo     : setFormTo
     const setAmt  = isEdit ? setEditAmount : setFormAmount
     const setNts  = isEdit ? setEditNotes  : setFormNotes
+    const setCapRet = isEdit ? setEditCapRet : setFormCapRet
+    const setProfLo = isEdit ? setEditProfLo : setFormProfLo
     const onSubmit = isEdit ? handleUpdate : handleAdd
     const onCancel = isEdit ? () => setEditRec(null) : () => setShowForm(false)
+    const classifiable = isClassifiableLeg(from, to)
+    const amtNum   = parseFloat(amount) || 0
+    const splitSum = (parseFloat(capRet) || 0) + (parseFloat(profLo) || 0)
+    const splitOk  = (!capRet.trim() && !profLo.trim()) || Math.round(splitSum * 100) === Math.round(amtNum * 100)
 
     return (
       <form ref={isEdit ? formScrollRef : null} onSubmit={onSubmit} style={{
@@ -715,6 +754,45 @@ function InternalTransfersTab({ queryClient, capitalData }) {
           <input type="text" value={notes} onChange={e => setNts(e.target.value)}
             placeholder="e.g. Initial deployment to Chase1" style={INPUT_STYLE} />
         </div>
+
+        {classifiable && (
+          <div style={{
+            background: 'rgba(52,211,153,0.05)', border: '1px solid rgba(52,211,153,0.18)',
+            borderRadius: 8, padding: '10px 12px', marginBottom: 12,
+          }}>
+            <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.6px',
+              color: '#34d399', display: 'block', marginBottom: 8 }}>
+              Withdrawal Classification — Capital Return vs Banked Profit/Loss
+            </span>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10 }}>
+              <div>
+                <label style={{ fontSize: 10, color: '#64748B', textTransform: 'uppercase',
+                  letterSpacing: '0.5px', display: 'block', marginBottom: 5 }}>Capital Return (£)</label>
+                <AmountInput value={capRet} onChange={setCapRet} style={INPUT_STYLE} />
+              </div>
+              <div>
+                <label style={{ fontSize: 10, color: '#64748B', textTransform: 'uppercase',
+                  letterSpacing: '0.5px', display: 'block', marginBottom: 5 }}>
+                  Profit / Loss (£, negative = loss)
+                </label>
+                <input type="text" inputMode="decimal" value={profLo} onChange={e => setProfLo(e.target.value)}
+                  placeholder="e.g. -23776.74" style={INPUT_STYLE} />
+              </div>
+              <div style={{ display: 'flex', alignItems: 'flex-end' }}>
+                <button type="button" onClick={() => setCapRet((amtNum - (parseFloat(profLo) || 0)).toFixed(2))}
+                  style={{ ...BTN_SM_STYLE, background: '#374151', fontSize: 10, padding: '6px 10px' }}>
+                  Fill Capital Return
+                </button>
+              </div>
+            </div>
+            <p style={{ fontSize: 10, color: splitOk ? '#64748B' : '#f87171', marginTop: 8 }}>
+              {splitOk
+                ? 'Leave both blank to record without classification (can be added later via Edit).'
+                : `Must sum to Amount — currently ${splitSum.toFixed(2)} vs ${amtNum.toFixed(2)}`}
+            </p>
+          </div>
+        )}
+
         {error && <p style={{ fontSize: 11, color: '#f87171', marginBottom: 10 }}>{error}</p>}
         <div style={{ display: 'flex', gap: 8 }}>
           <button type="submit" disabled={saving} style={{ ...BTN_SM_STYLE, background: '#0ea5e9', opacity: saving ? 0.65 : 1 }}>
@@ -786,22 +864,33 @@ function InternalTransfersTab({ queryClient, capitalData }) {
                   borderRadius: 10, padding: '9px 12px',
                 }}>
                   <EventRow onEdit={() => openEdit(t)} onDelete={() => setDeletingId(t.id)}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <div style={{ width: 24, height: 24, borderRadius: 6, background: 'rgba(14,165,233,0.2)',
-                        display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                        <ArrowLeftRight size={12} color="#38bdf8" />
+                    <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
+                      {/* Left: icon + from→to + tag, notes stacked below */}
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0, flex: 1 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                          <div style={{ width: 24, height: 24, borderRadius: 6, background: 'rgba(14,165,233,0.2)',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                            <ArrowLeftRight size={12} color="#38bdf8" />
+                          </div>
+                          <span style={{ fontSize: 12, fontWeight: 600, color: '#E2E8F0' }}>
+                            {t.from_account} → {t.to_account}
+                          </span>
+                          <ProfitLossTag capitalReturn={t.capital_return_amount} profitLoss={t.profit_loss_amount} />
+                        </div>
+                        {t.notes && (
+                          <div style={{ marginLeft: 32 }}>
+                            <span style={{ fontSize: 10, color: '#64748B' }}>{t.notes}</span>
+                          </div>
+                        )}
                       </div>
-                      <div>
-                        <span style={{ fontSize: 12, fontWeight: 600, color: '#E2E8F0' }}>
-                          {t.from_account} → {t.to_account}
-                        </span>
-                        {t.notes && <span style={{ fontSize: 10, color: '#475569', marginLeft: 6 }}>{t.notes}</span>}
+                      {/* Right: date (bold, top) / amount (below) */}
+                      <div style={{ flexShrink: 0, textAlign: 'right' }}>
+                        <div style={{ fontSize: 11, fontWeight: 700, color: '#CBD5E1' }}>{fmtDate(t.transfer_date)}</div>
+                        <div style={{ fontSize: 12, fontWeight: 700, fontVariantNumeric: 'tabular-nums',
+                          color: '#38bdf8', marginTop: 3 }}>
+                          {formatCurrencyAbs(t.amount)}
+                        </div>
                       </div>
-                      <span style={{ marginLeft: 'auto', fontSize: 11, color: '#475569' }}>{t.transfer_date}</span>
-                      <span style={{ fontSize: 12, fontWeight: 700, fontVariantNumeric: 'tabular-nums',
-                        color: '#38bdf8', minWidth: 70, textAlign: 'right' }}>
-                        {formatCurrencyAbs(t.amount)}
-                      </span>
                     </div>
                   </EventRow>
                 </div>
@@ -869,6 +958,29 @@ function EndpointBadge({ type, id, podsById, strategiesById }) {
   )
 }
 
+function ProfitLossTag({ capitalReturn, profitLoss }) {
+  if (profitLoss == null) return null
+  if (profitLoss === 0) {
+    return (
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '3px 9px',
+        borderRadius: 8, fontSize: 10, fontWeight: 700, color: '#94A3B8',
+        background: 'rgba(148,163,184,0.10)', border: '1px solid rgba(148,163,184,0.18)' }}>
+        Capital Return {formatCurrencyAbs(capitalReturn)}
+      </span>
+    )
+  }
+  const isProfit = profitLoss > 0
+  const color = isProfit ? '#34d399' : '#f87171'
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '3px 9px',
+      borderRadius: 8, fontSize: 10, fontWeight: 700, color,
+      background: `${color}18`, border: `1px solid ${color}40` }}>
+      {isProfit ? <TrendingUp size={10} /> : <TrendingDown size={10} />}
+      {isProfit ? 'Profit' : 'Loss'} {formatCurrencyAbs(Math.abs(profitLoss))}
+    </span>
+  )
+}
+
 function EndpointSelect({ value, onChange, pods, strategies }) {
   return (
     <select value={value} onChange={e => onChange(e.target.value)} style={INPUT_STYLE}>
@@ -908,6 +1020,8 @@ function CapitalTransfersTab({ queryClient }) {
   const [formAmount, setFormAmount] = useState('')
   const [formRef,    setFormRef]    = useState('')
   const [formNotes,  setFormNotes]  = useState('')
+  const [formCapRet, setFormCapRet] = useState('')
+  const [formProfLo, setFormProfLo] = useState('')
   const [formError,  setFormError]  = useState(null)
   const [submitting, setSubmitting] = useState(false)
 
@@ -918,6 +1032,8 @@ function CapitalTransfersTab({ queryClient }) {
   const [editAmount, setEditAmount] = useState('')
   const [editRef,    setEditRef]    = useState('')
   const [editNotes,  setEditNotes]  = useState('')
+  const [editCapRet, setEditCapRet] = useState('')
+  const [editProfLo, setEditProfLo] = useState('')
   const [editError,  setEditError]  = useState(null)
   const [editSaving, setEditSaving] = useState(false)
 
@@ -931,18 +1047,40 @@ function CapitalTransfersTab({ queryClient }) {
 
   function openAdd() {
     setEditRec(null); setFormDate(todayISO()); setFormFrom('wallet'); setFormTo('wallet')
-    setFormAmount(''); setFormRef(''); setFormNotes(''); setFormError(null); setShowForm(true)
+    setFormAmount(''); setFormRef(''); setFormNotes('')
+    setFormCapRet(''); setFormProfLo(''); setFormError(null); setShowForm(true)
   }
 
   function openEdit(r) {
     setShowForm(false); setEditRec(r); setEditDate(r.transfer_date)
     setEditFrom(encodeEndpoint(r.from_type, r.from_id)); setEditTo(encodeEndpoint(r.to_type, r.to_id))
-    setEditAmount(String(r.amount)); setEditRef(r.reference ?? ''); setEditNotes(r.notes ?? ''); setEditError(null)
+    setEditAmount(String(r.amount)); setEditRef(r.reference ?? ''); setEditNotes(r.notes ?? '')
+    setEditCapRet(r.capital_return_amount != null ? String(r.capital_return_amount) : '')
+    setEditProfLo(r.profit_loss_amount != null ? String(r.profit_loss_amount) : '')
+    setEditError(null)
   }
 
   function validateEndpoints(from, to) {
     if (from === to) return 'From and To cannot be the same'
     return null
+  }
+
+  // Outbound Strategy→Wallet leg is the only place profit/loss is classified —
+  // it's the leg that actually carries strategy identity for Banked Profit.
+  function isClassifiableLeg(from, to) {
+    return decodeEndpoint(from).type === 'strategy' && decodeEndpoint(to).type === 'wallet'
+  }
+
+  function validateSplit(amt, capRet, profLo) {
+    const crRaw = capRet.trim(), plRaw = profLo.trim()
+    if (!crRaw && !plRaw) return { ok: true, cr: null, pl: null }
+    if (!crRaw || !plRaw) return { ok: false, msg: 'Enter both Capital Return and Profit/Loss (or leave both blank)' }
+    const cr = parseFloat(crRaw), pl = parseFloat(plRaw)
+    if (isNaN(cr) || isNaN(pl)) return { ok: false, msg: 'Capital Return / Profit-Loss must be numbers' }
+    if (Math.round((cr + pl) * 100) !== Math.round(amt * 100)) {
+      return { ok: false, msg: `Capital Return + Profit/Loss (${(cr + pl).toFixed(2)}) must equal Amount (${amt.toFixed(2)})` }
+    }
+    return { ok: true, cr: parseFloat(cr.toFixed(2)), pl: parseFloat(pl.toFixed(2)) }
   }
 
   async function handleAdd(e) {
@@ -952,6 +1090,8 @@ function CapitalTransfersTab({ queryClient }) {
     if (!formDate) return setFormError('Select a date')
     const vErr = validateEndpoints(formFrom, formTo)
     if (vErr) return setFormError(vErr)
+    const split = validateSplit(amt, formCapRet, formProfLo)
+    if (!split.ok) return setFormError(split.msg)
     setSubmitting(true)
     try {
       const from = decodeEndpoint(formFrom), to = decodeEndpoint(formTo)
@@ -959,6 +1099,7 @@ function CapitalTransfersTab({ queryClient }) {
         transfer_date: formDate, from_type: from.type, from_id: from.id,
         to_type: to.type, to_id: to.id, amount: parseFloat(amt.toFixed(2)),
         reference: formRef.trim(), notes: formNotes.trim(),
+        capital_return_amount: split.cr, profit_loss_amount: split.pl,
       })
       await queryClient.invalidateQueries({ queryKey: ['capital_transfers'] })
       setShowForm(false)
@@ -973,6 +1114,8 @@ function CapitalTransfersTab({ queryClient }) {
     if (!editDate) return setEditError('Select a date')
     const vErr = validateEndpoints(editFrom, editTo)
     if (vErr) return setEditError(vErr)
+    const split = validateSplit(amt, editCapRet, editProfLo)
+    if (!split.ok) return setEditError(split.msg)
     setEditSaving(true)
     try {
       const from = decodeEndpoint(editFrom), to = decodeEndpoint(editTo)
@@ -980,6 +1123,7 @@ function CapitalTransfersTab({ queryClient }) {
         transfer_date: editDate, from_type: from.type, from_id: from.id,
         to_type: to.type, to_id: to.id, amount: parseFloat(amt.toFixed(2)),
         reference: editRef.trim(), notes: editNotes.trim(),
+        capital_return_amount: split.cr, profit_loss_amount: split.pl,
       })
       await queryClient.invalidateQueries({ queryKey: ['capital_transfers'] })
       setEditRec(null)
@@ -1002,6 +1146,8 @@ function CapitalTransfersTab({ queryClient }) {
     const amount  = isEdit ? editAmount : formAmount
     const ref     = isEdit ? editRef    : formRef
     const notes   = isEdit ? editNotes  : formNotes
+    const capRet  = isEdit ? editCapRet : formCapRet
+    const profLo  = isEdit ? editProfLo : formProfLo
     const error   = isEdit ? editError  : formError
     const saving  = isEdit ? editSaving : submitting
     const setDate = isEdit ? setEditDate   : setFormDate
@@ -1010,8 +1156,14 @@ function CapitalTransfersTab({ queryClient }) {
     const setAmt  = isEdit ? setEditAmount : setFormAmount
     const setRf   = isEdit ? setEditRef    : setFormRef
     const setNts  = isEdit ? setEditNotes  : setFormNotes
+    const setCapRet = isEdit ? setEditCapRet : setFormCapRet
+    const setProfLo = isEdit ? setEditProfLo : setFormProfLo
     const onSubmit = isEdit ? handleUpdate : handleAdd
     const onCancel = isEdit ? () => setEditRec(null) : () => setShowForm(false)
+    const classifiable = isClassifiableLeg(from, to)
+    const amtNum  = parseFloat(amount) || 0
+    const splitSum = (parseFloat(capRet) || 0) + (parseFloat(profLo) || 0)
+    const splitOk  = (!capRet.trim() && !profLo.trim()) || Math.round(splitSum * 100) === Math.round(amtNum * 100)
 
     return (
       <form ref={isEdit ? formScrollRef : null} onSubmit={onSubmit} style={{
@@ -1054,6 +1206,45 @@ function CapitalTransfersTab({ queryClient }) {
               placeholder="e.g. Initial funding tranche" style={INPUT_STYLE} />
           </div>
         </div>
+
+        {classifiable && (
+          <div style={{
+            background: 'rgba(52,211,153,0.05)', border: '1px solid rgba(52,211,153,0.18)',
+            borderRadius: 8, padding: '10px 12px', marginBottom: 12,
+          }}>
+            <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.6px',
+              color: '#34d399', display: 'block', marginBottom: 8 }}>
+              Withdrawal Classification — Capital Return vs Banked Profit/Loss
+            </span>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10 }}>
+              <div>
+                <label style={{ fontSize: 10, color: '#64748B', textTransform: 'uppercase',
+                  letterSpacing: '0.5px', display: 'block', marginBottom: 5 }}>Capital Return (£)</label>
+                <AmountInput value={capRet} onChange={setCapRet} style={INPUT_STYLE} />
+              </div>
+              <div>
+                <label style={{ fontSize: 10, color: '#64748B', textTransform: 'uppercase',
+                  letterSpacing: '0.5px', display: 'block', marginBottom: 5 }}>
+                  Profit / Loss (£, negative = loss)
+                </label>
+                <input type="text" inputMode="decimal" value={profLo} onChange={e => setProfLo(e.target.value)}
+                  placeholder="e.g. -23776.74" style={INPUT_STYLE} />
+              </div>
+              <div style={{ display: 'flex', alignItems: 'flex-end' }}>
+                <button type="button" onClick={() => setCapRet((amtNum - (parseFloat(profLo) || 0)).toFixed(2))}
+                  style={{ ...BTN_SM_STYLE, background: '#374151', fontSize: 10, padding: '6px 10px' }}>
+                  Fill Capital Return
+                </button>
+              </div>
+            </div>
+            <p style={{ fontSize: 10, color: splitOk ? '#64748B' : '#f87171', marginTop: 8 }}>
+              {splitOk
+                ? 'Leave both blank to record without classification (can be added later via Edit).'
+                : `Must sum to Amount — currently ${splitSum.toFixed(2)} vs ${amtNum.toFixed(2)}`}
+            </p>
+          </div>
+        )}
+
         {error && <p style={{ fontSize: 11, color: '#f87171', marginBottom: 10 }}>{error}</p>}
         <div style={{ display: 'flex', gap: 8 }}>
           <button type="submit" disabled={saving} style={{ ...BTN_SM_STYLE, background: '#a78bfa', opacity: saving ? 0.65 : 1 }}>
@@ -1138,17 +1329,30 @@ function CapitalTransfersTab({ queryClient }) {
                   borderRadius: 10, padding: '9px 12px',
                 }}>
                   <EventRow onEdit={() => openEdit(t)} onDelete={() => setDeletingId(t.id)}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                      <EndpointBadge type={t.from_type} id={t.from_id} podsById={podsById} strategiesById={strategiesById} />
-                      <ArrowLeftRight size={12} color="#475569" />
-                      <EndpointBadge type={t.to_type} id={t.to_id} podsById={podsById} strategiesById={strategiesById} />
-                      {t.reference && <span style={{ fontSize: 10, color: '#475569' }}>Ref: {t.reference}</span>}
-                      {t.notes && <span style={{ fontSize: 10, color: '#475569' }}>{t.notes}</span>}
-                      <span style={{ marginLeft: 'auto', fontSize: 11, color: '#475569' }}>{t.transfer_date}</span>
-                      <span style={{ fontSize: 12, fontWeight: 700, fontVariantNumeric: 'tabular-nums',
-                        color: '#a78bfa', minWidth: 70, textAlign: 'right' }}>
-                        {formatCurrencyAbs(t.amount)}
-                      </span>
+                    <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
+                      {/* Left: From → To + tag, reference/notes stacked below */}
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0, flex: 1 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                          <EndpointBadge type={t.from_type} id={t.from_id} podsById={podsById} strategiesById={strategiesById} />
+                          <ArrowLeftRight size={12} color="#475569" />
+                          <EndpointBadge type={t.to_type} id={t.to_id} podsById={podsById} strategiesById={strategiesById} />
+                          <ProfitLossTag capitalReturn={t.capital_return_amount} profitLoss={t.profit_loss_amount} />
+                        </div>
+                        {(t.reference || t.notes) && (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                            {t.reference && <span style={{ fontSize: 10, color: '#475569' }}>Ref: {t.reference}</span>}
+                            {t.notes && <span style={{ fontSize: 10, color: '#64748B' }}>{t.notes}</span>}
+                          </div>
+                        )}
+                      </div>
+                      {/* Right: date (bold, top) / amount (below) */}
+                      <div style={{ flexShrink: 0, textAlign: 'right' }}>
+                        <div style={{ fontSize: 11, fontWeight: 700, color: '#CBD5E1' }}>{fmtDate(t.transfer_date)}</div>
+                        <div style={{ fontSize: 12, fontWeight: 700, fontVariantNumeric: 'tabular-nums',
+                          color: '#a78bfa', marginTop: 3 }}>
+                          {formatCurrencyAbs(t.amount)}
+                        </div>
+                      </div>
                     </div>
                   </EventRow>
                 </div>
@@ -1373,23 +1577,33 @@ function MiscellaneousTab({ queryClient }) {
                     borderRadius: 10, padding: '9px 12px',
                   }}>
                     <EventRow onEdit={() => openEdit(m)} onDelete={() => setDeletingId(m.id)}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <div style={{ width: 24, height: 24, borderRadius: 6, flexShrink: 0, display: 'flex',
-                          alignItems: 'center', justifyContent: 'center',
-                          background: isCredit ? 'rgba(168,85,247,0.2)' : 'rgba(245,158,11,0.2)' }}>
-                          <span style={{ fontSize: 11, fontWeight: 800, color: isCredit ? '#c084fc' : '#fbbf24' }}>
-                            {isCredit ? '+' : '-'}
-                          </span>
+                      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
+                        {/* Left: icon + title + notes */}
+                        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, minWidth: 0, flex: 1 }}>
+                          <div style={{ width: 24, height: 24, borderRadius: 6, flexShrink: 0, display: 'flex',
+                            alignItems: 'center', justifyContent: 'center',
+                            background: isCredit ? 'rgba(168,85,247,0.2)' : 'rgba(245,158,11,0.2)' }}>
+                            <span style={{ fontSize: 11, fontWeight: 800, color: isCredit ? '#c084fc' : '#fbbf24' }}>
+                              {isCredit ? '+' : '-'}
+                            </span>
+                          </div>
+                          <div style={{ minWidth: 0 }}>
+                            <span style={{ fontSize: 12, fontWeight: 600, color: '#E2E8F0' }}>{m.event_type}</span>
+                            {m.notes && (
+                              <div style={{ marginTop: 3 }}>
+                                <span style={{ fontSize: 10, color: '#64748B' }}>{m.notes}</span>
+                              </div>
+                            )}
+                          </div>
                         </div>
-                        <div>
-                          <span style={{ fontSize: 12, fontWeight: 600, color: '#E2E8F0' }}>{m.event_type}</span>
-                          {m.notes && <span style={{ fontSize: 10, color: '#475569', marginLeft: 6 }}>{m.notes}</span>}
+                        {/* Right: date (bold, top) / amount (below) */}
+                        <div style={{ flexShrink: 0, textAlign: 'right' }}>
+                          <div style={{ fontSize: 11, fontWeight: 700, color: '#CBD5E1' }}>{fmtDate(m.event_date)}</div>
+                          <div style={{ fontSize: 12, fontWeight: 700, fontVariantNumeric: 'tabular-nums',
+                            color: isCredit ? '#c084fc' : '#fbbf24', marginTop: 3 }}>
+                            {isCredit ? '+' : '-'}{formatCurrencyAbs(m.amount)}
+                          </div>
                         </div>
-                        <span style={{ marginLeft: 'auto', fontSize: 11, color: '#475569' }}>{m.event_date}</span>
-                        <span style={{ fontSize: 12, fontWeight: 700, fontVariantNumeric: 'tabular-nums',
-                          color: isCredit ? '#c084fc' : '#fbbf24', minWidth: 70, textAlign: 'right' }}>
-                          {isCredit ? '+' : '-'}{formatCurrencyAbs(m.amount)}
-                        </span>
                       </div>
                     </EventRow>
                   </div>

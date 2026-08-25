@@ -35,7 +35,7 @@ export function fetchHierarchyTable(entityType) {
 }
 
 // ---------------------------------------------------------------------------
-// Trader context — 3-tab breakdown (Venues | Pods | Strategies)
+// Trader context — 2-tab breakdown (Pods | Strategies)
 // ---------------------------------------------------------------------------
 
 export function fetchTraderContext(entityId) {
@@ -276,4 +276,33 @@ export function deleteWage(id) {
 
 export function fetchAxiaClients() {
   return get('/api/axia/clients')
+}
+
+// ---------------------------------------------------------------------------
+// Fund Monthly Statements (12-FLAGS and other NAV-administrator-reported
+// funds with no daily broker feed) — linked directly to a strategy_id.
+// ---------------------------------------------------------------------------
+
+export function fetchFundStatements(strategyId, limit = 50, offset = 0) {
+  return get(`/api/fund-statements?strategy_id=${strategyId}&limit=${limit}&offset=${offset}`)
+}
+
+export function fetchFundStatementPrev(strategyId, beforeDate) {
+  return get(`/api/fund-statements/prev?strategy_id=${strategyId}&before_date=${beforeDate}`)
+}
+
+export function createFundStatement(body) {
+  return _post('/api/fund-statements', body)
+}
+
+export function updateFundStatement(id, body) {
+  return _patch(`/api/fund-statements/${id}`, body)
+}
+
+export function deleteFundStatement(id) {
+  return _delete(`/api/fund-statements/${id}`)
+}
+
+export function refetchFundStatementFx(id) {
+  return _post(`/api/fund-statements/${id}/refetch-fx`, {})
 }

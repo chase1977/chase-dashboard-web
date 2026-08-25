@@ -19,6 +19,7 @@ from src.routers import portfolio, reports, management
 from src.routers.statement    import router as statement_router
 from src.routers.axia_equity  import router as axia_router
 from src.routers.axia_analysis import router as analysis_router
+from src.routers.fund_statements import router as fund_statements_router
 
 # ---------------------------------------------------------------------------
 # Config
@@ -72,6 +73,7 @@ app.include_router(management.router)
 app.include_router(statement_router)
 app.include_router(axia_router)
 app.include_router(analysis_router)
+app.include_router(fund_statements_router)
 
 
 # ---------------------------------------------------------------------------
