@@ -54,6 +54,10 @@ class KpiData(BaseModel):
     # other strategy type.
     fund_usd_net_income: Optional[float] = None
     fund_usd_return_pct: Optional[float] = None
+    # Currency the above two figures are actually denominated in (e.g. "GBP"
+    # for ASLAN LABS, "USD" for 12-FLAGS) — the sub-line label was hardcoded
+    # "$" before this field existed, wrong for any non-USD fund statement.
+    fund_statement_currency: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------

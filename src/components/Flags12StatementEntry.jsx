@@ -1,25 +1,34 @@
 // src/components/Flags12StatementEntry.jsx
 /**
- * 12-FLAGS Monthly Statement Entry — NAV Fund Services Investor Statement
- * (12 Flags Cayman Feeder Fund Limited), reported monthly in USD.
+ * Fund Monthly Statement Entry — NAV-administrator-reported funds with no
+ * daily broker feed (12-FLAGS, ASLAN LABS, or any future one). Generic on
+ * `strategyCode`/`currency`/`label` props — Reports.jsx renders one instance
+ * per fund strategy; every prop defaults to the original 12-FLAGS behaviour
+ * so the existing <Flags12StatementEntry /> call site is untouched.
  *
- * Auto-resolves the linked strategy (strategy_code "12-FLAGS", pod "FUNDS
- * (External)") from Manage Pods & Strategies — no client picker needed,
- * unlike AXIA, since this is one statement stream per strategy.
+ * Auto-resolves the linked strategy (by strategy_code, e.g. "12-FLAGS" or
+ * "ASLAN") from Manage Pods & Strategies — no client picker needed, unlike
+ * AXIA, since this is one statement stream per strategy.
  *
- * You key in ONE number each month: Ending Balance (USD) from the
- * statement's "Ending Balance" row. Beginning Balance auto-carries from
- * last month's Ending Balance (fetched from the previous record); Net
- * Income and Rate of Return % are computed live as you type, matching the
- * statement's own MTD figures exactly:
+ * You key in ONE number each month: Ending Balance (in the statement's own
+ * currency) from the statement's "Ending Balance" row. Beginning Balance
+ * auto-carries from last month's Ending Balance (fetched from the previous
+ * record); Net Income and Rate of Return % are computed live as you type,
+ * matching the statement's own MTD figures exactly:
  *   Net Income     = Ending − Beginning − Additions + Redemptions
  *   Rate of Return = Net Income ÷ Beginning × 100
+ * These are the FUND's own gross figures — NOT watermark/profit-split
+ * adjusted. Chase's actual economic equity (after any watermark + profit
+ * share % set on the strategy) is computed separately and shown on the
+ * Portfolio page's strategy card — see README §14.
  *
- * GBP conversion happens server-side on save — OANDA GBP_USD monthly close
- * candle for the statement's period, GBP = USD ÷ rate. The latest record's
- * Ending Balance (GBP) feeds this strategy's Current Equity on the
- * Portfolio page (same mechanism as AXIA's daily equity, at pod/portfolio
- * level too) — automatically, no extra wiring needed once saved.
+ * GBP conversion happens server-side on save for a USD statement — OANDA
+ * GBP_USD monthly close candle for the statement's period, GBP = USD ÷ rate.
+ * A GBP statement needs no conversion (ending_balance_gbp = ending_balance
+ * directly). The latest record's Ending Balance (GBP) feeds this strategy's
+ * Current Equity on the Portfolio page (same mechanism as AXIA's daily
+ * equity, at pod/portfolio level too) — automatically, no extra wiring
+ * needed once saved.
  */
 
 import { useState, useEffect, useCallback } from 'react'
@@ -42,8 +51,8 @@ const C = {
   warnDim: 'rgba(245,158,11,0.10)', warnBorder: 'rgba(245,158,11,0.30)',
 }
 
-const STRATEGY_CODE = '12-FLAGS'
 const PAGE_SIZE = 50
+const SYM = { GBP: '£', USD: '$', EUR: '€' }
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -193,8 +202,9 @@ function FxBadge({ row, onRetry, retrying }) {
 // ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
-export default function Flags12StatementEntry() {
-  const [strategy,   setStrategy]   = useState(null)   // resolved 12-FLAGS strategy row
+export default function Flags12StatementEntry({ strategyCode = '12-FLAGS', currency = 'USD', label } = {}) {
+  const sym = SYM[currency] || '$'
+  const [strategy,   setStrategy]   = useState(null)   // resolved strategy row
   const [strategyErr,setStrategyErr]= useState(null)
   const [records,    setRecords]    = useState([])
   const [loading,    setLoading]    = useState(false)
@@ -231,17 +241,17 @@ export default function Flags12StatementEntry() {
         // Lenient match — ignores case, hyphens/spaces (so "12-FLAGS", "12 Flags",
         // "12FLAGS" all resolve) and checks both strategy_code and name.
         const norm  = s => (s || '').toUpperCase().replace(/[^A-Z0-9]/g, '')
-        const target = norm(STRATEGY_CODE)
+        const target = norm(strategyCode)
         const match = strategies.find(s => norm(s.strategy_code) === target || norm(s.name) === target)
         if (!match) {
           const available = strategies.map(s => `${s.name} (${s.strategy_code || 'no code'})`).join(', ') || 'none found'
-          setStrategyErr(`No strategy matching "${STRATEGY_CODE}" found. Existing strategies: ${available}. Check the strategy_code field in Manage Pods & Strategies, or tell me the exact name/code to match.`)
+          setStrategyErr(`No strategy matching "${strategyCode}" found. Existing strategies: ${available}. Check the strategy_code field in Manage Pods & Strategies, or tell me the exact name/code to match.`)
           return
         }
         setStrategy(match)
       } catch (e) { setStrategyErr(e.message) }
     })()
-  }, [])
+  }, [strategyCode])
 
   const loadRecords = useCallback(async (p = page) => {
     if (!strategy) return
@@ -292,13 +302,27 @@ export default function Flags12StatementEntry() {
         <>
           <strong style={{ color: C.accent }}>Confirm 12-FLAGS entry</strong><br /><br />
           <span style={{ color: C.textMid }}>Period Ended:</span> <strong>{fmtDate(date)}</strong><br />
-          <span style={{ color: C.textMid }}>Beginning Balance:</span> <strong>${fmtNum(beginning)}</strong><br />
-          <span style={{ color: C.textMid }}>Ending Balance:</span> <strong style={{ color: C.accent }}>${fmtNum(ending)}</strong><br />
-          <span style={{ color: C.textMid }}>Net Income:</span> <strong style={{ color: numColor(netIncome) }}>{netIncome >= 0 ? '+' : ''}${fmtNum(netIncome)}</strong><br />
+          <span style={{ color: C.textMid }}>Beginning Balance:</span> <strong>{sym}{fmtNum(beginning)}</strong><br />
+          <span style={{ color: C.textMid }}>Ending Balance:</span> <strong style={{ color: C.accent }}>{sym}{fmtNum(ending)}</strong><br />
+          <span style={{ color: C.textMid }}>Net Income:</span> <strong style={{ color: numColor(netIncome) }}>{netIncome >= 0 ? '+' : ''}{sym}{fmtNum(netIncome)}</strong><br />
           <span style={{ color: C.textMid }}>Rate of Return:</span> <strong style={{ color: numColor(rateOfReturn) }}>{rateOfReturn >= 0 ? '+' : ''}{fmtNum(rateOfReturn)}%</strong><br />
-          <div style={{ marginTop: 10, fontSize: 11, color: C.textSub }}>
-            GBP conversion (OANDA GBP/USD monthly close) is fetched automatically on save.
-          </div>
+          {currency === 'USD' && (
+            <div style={{ marginTop: 10, fontSize: 11, color: C.textSub }}>
+              GBP conversion (OANDA GBP/USD monthly close) is fetched automatically on save.
+            </div>
+          )}
+          {strategy?.watermark != null && ending != null && (
+            <div style={{ marginTop: 10, fontSize: 11, color: C.textSub }}>
+              Chase's equity after {strategy.profit_share_pct}% split above the £{fmtNum(strategy.watermark)} watermark:{' '}
+              <strong style={{ color: C.accent }}>
+                £{fmtNum(
+                  ending <= strategy.watermark
+                    ? ending
+                    : strategy.watermark + (ending - strategy.watermark) * (strategy.profit_share_pct / 100)
+                )}
+              </strong>
+            </div>
+          )}
         </>
       ),
       onConfirm: submitRecord,
@@ -312,14 +336,14 @@ export default function Flags12StatementEntry() {
       await createFundStatement({
         strategy_id:       strategy.id,
         period_end_date:   date,
-        currency:          'USD',
+        currency,
         beginning_balance: beginning,
         additions,
         redemptions,
         ending_balance:    ending,
         notes:             notes.trim() || null,
       })
-      setSuccess(`Saved — ${fmtDate(date)} $${fmtNum(ending)}`)
+      setSuccess(`Saved — ${fmtDate(date)} ${sym}${fmtNum(ending)}`)
       setEndingRaw(''); setAdditionsRaw(''); setRedemptionsRaw(''); setBeginOverride(''); setNotes('')
       setPage(0)
       await loadRecords(0)
@@ -340,7 +364,7 @@ export default function Flags12StatementEntry() {
     const newEnding = parseNum(editEnding)
     setConfirmPopup({
       variant: 'warn',
-      message: `Update ${fmtDate(editDate)} — Ending Balance to $${fmtNum(newEnding)}? Net Income and Rate of Return recompute automatically.`,
+      message: `Update ${fmtDate(editDate)} — Ending Balance to ${sym}${fmtNum(newEnding)}? Net Income and Rate of Return recompute automatically.`,
       onConfirm: async () => {
         setConfirmPopup(null)
         try {
@@ -400,7 +424,8 @@ export default function Flags12StatementEntry() {
         padding: '8px 14px', borderRadius: 6, fontSize: 11, fontWeight: 600,
         background: 'rgba(168,85,247,0.10)', border: '1px solid rgba(168,85,247,0.28)', color: '#c084fc',
       }}>
-        Linked to strategy: {strategy?.name ?? STRATEGY_CODE} ({STRATEGY_CODE}) — Pod: FUNDS (External)
+        Linked to strategy: {strategy?.name ?? strategyCode} ({strategyCode})
+        {strategy?.pods?.name ? ` — Pod: ${strategy.pods.name}` : ''}
       </div>
 
       {/* ── Entry form ── */}
@@ -418,7 +443,7 @@ export default function Flags12StatementEntry() {
           </Field>
 
           <Field style={{ flex: 1, minWidth: 200 }}>
-            <Label>Ending Balance (USD)</Label>
+            <Label>Ending Balance ({currency})</Label>
             <Input
               value={endingRaw}
               onChange={e => {
@@ -426,14 +451,14 @@ export default function Flags12StatementEntry() {
                 if (raw === '' || raw === '-') { setEndingRaw(raw); return }
                 if (!isNaN(parseFloat(raw))) setEndingRaw(formatInput(raw))
               }}
-              placeholder="633,211.98"
+              placeholder="118,000.00"
               style={{ fontFamily: 'monospace', fontSize: 14, letterSpacing: '0.3px' }}
             />
           </Field>
 
           <Field style={{ minWidth: 200 }}>
             <Label>
-              Beginning Balance (USD)
+              Beginning Balance ({currency})
               {prevLoading && <span style={{ color: C.textSub, fontWeight: 400 }}> fetching…</span>}
               {prevRecord && !prevLoading && (
                 <span style={{ color: C.textSub, fontWeight: 400 }}> (from {fmtDate(prevRecord.period_end_date)})</span>
@@ -445,11 +470,12 @@ export default function Flags12StatementEntry() {
             {prevRecord ? (
               <div style={{ padding: '8px 12px', borderRadius: 6, fontSize: 14, fontFamily: 'monospace',
                 fontWeight: 600, background: 'rgba(148,163,184,0.06)', border: `1px solid ${C.border}`, color: C.textMid }}>
-                ${fmtNum(prevRecord.ending_balance)}
+                {sym}{fmtNum(prevRecord.ending_balance)}
               </div>
             ) : (
               <Input value={beginOverride} onChange={e => setBeginOverride(formatInput(e.target.value.replace(/,/g, '')))}
-                placeholder="e.g. 650,000.00 (first record)" style={{ fontFamily: 'monospace' }} />
+                placeholder={`e.g. ${strategy?.initial_investment ? fmtNum(strategy.initial_investment) : '100,000.00'} (first record)`}
+                style={{ fontFamily: 'monospace' }} />
             )}
           </Field>
         </div>
@@ -465,12 +491,12 @@ export default function Flags12StatementEntry() {
           {showExtras && (
             <div style={{ display: 'flex', gap: 14, marginTop: 10, flexWrap: 'wrap' }}>
               <Field style={{ minWidth: 160 }}>
-                <Label>Additions (USD)</Label>
+                <Label>Additions ({currency})</Label>
                 <Input value={additionsRaw} onChange={e => setAdditionsRaw(formatInput(e.target.value.replace(/,/g, '')))}
                   placeholder="0.00" style={{ fontFamily: 'monospace' }} />
               </Field>
               <Field style={{ minWidth: 160 }}>
-                <Label>Redemptions (USD)</Label>
+                <Label>Redemptions ({currency})</Label>
                 <Input value={redemptionsRaw} onChange={e => setRedemptionsRaw(formatInput(e.target.value.replace(/,/g, '')))}
                   placeholder="0.00" style={{ fontFamily: 'monospace' }} />
               </Field>
@@ -491,7 +517,7 @@ export default function Flags12StatementEntry() {
               background: netIncome < 0 ? C.negDim : C.posDim, border: `1px solid ${netIncome < 0 ? C.negBorder : C.posBorder}` }}>
               <div style={{ fontSize: 9.5, color: C.textSub, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 4 }}>Net Income (auto)</div>
               <div style={{ fontSize: 15, fontWeight: 700, fontFamily: 'monospace', color: numColor(netIncome) }}>
-                {netIncome >= 0 ? '+' : ''}${fmtNum(netIncome)}
+                {netIncome >= 0 ? '+' : ''}{sym}{fmtNum(netIncome)}
               </div>
             </div>
             <div style={{ padding: '10px 14px', borderRadius: 6, minWidth: 160,
@@ -530,7 +556,7 @@ export default function Flags12StatementEntry() {
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between',
         flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
         <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.8px', textTransform: 'uppercase', color: C.textSub }}>
-          All Statements — {STRATEGY_CODE}
+          All Statements — {label ?? strategyCode}
         </div>
         {totalCount > 0 && (
           <div style={{ fontSize: 10.5, color: C.textSub }}>{totalCount} total record{totalCount === 1 ? '' : 's'}</div>
@@ -546,10 +572,10 @@ export default function Flags12StatementEntry() {
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
             <thead>
               <tr>
-                {['PERIOD END', 'BEGINNING ($)', 'ENDING ($)', 'NET INCOME ($)', 'RETURN %', 'YTD ($ / %)', 'FX / ENDING (£)', 'NOTES', ''].map(h => (
+                {['PERIOD END', `BEGINNING (${sym})`, `ENDING (${sym})`, `NET INCOME (${sym})`, 'RETURN %', `YTD (${sym} / %)`, currency === 'USD' ? 'FX / ENDING (£)' : 'ENDING (£)', 'NOTES', ''].map(h => (
                   <th key={h} style={{
                     background: C.bg, color: C.textSub, padding: '9px 12px',
-                    textAlign: ['BEGINNING ($)', 'ENDING ($)', 'NET INCOME ($)', 'RETURN %', 'YTD ($ / %)'].includes(h) ? 'right' : 'left',
+                    textAlign: [`BEGINNING (${sym})`, `ENDING (${sym})`, `NET INCOME (${sym})`, 'RETURN %', `YTD (${sym} / %)`].includes(h) ? 'right' : 'left',
                     fontWeight: 600, fontSize: 10, letterSpacing: '0.5px', whiteSpace: 'nowrap',
                     borderBottom: `1px solid ${C.border}`, borderRight: `1px solid ${C.colBorder}`,
                   }}>{h}</th>

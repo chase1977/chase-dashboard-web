@@ -157,10 +157,21 @@ export function BankedProfitModal({ onClose }) {
     .map(t => {
       const strat = strategiesById[t.from_id]
       const pod   = strat ? podsById[strat.pod_id] : null
+      // Closed/Inactive strategy with a watermark/split (e.g. NEWS-01): the
+      // ledger leg's profit_loss_amount is the RAW cash physically moved
+      // (bookkeeping necessity, mirrors §12.3), not Chase's split-adjusted
+      // economic pnl. Same treatment as Darwinex's isClosingReturn below —
+      // tag it neutrally and show the strategy's own realized total_pnl
+      // (already watermark-adjusted by the backend aggregator) instead of
+      // summing the raw leg into Total Profit/Total Loss.
+      const isClosingReturn = strat && (strat.status === 'Closed' || strat.status === 'Inactive')
       return {
         id: `cap-${t.id}`, date: t.transfer_date, notes: t.notes,
         sourceLabel: strat?.name ?? `Strategy ${t.from_id}`, sourceColor: pod?.color || '#6366f1',
         amount: t.amount, capitalReturn: t.capital_return_amount, profitLoss: t.profit_loss_amount,
+        isClosingReturn,
+        linkedStrategyId: strat?.id,
+        strategyPnl: strat ? strategyKpisById[strat.id]?.total_pnl : undefined,
       }
     })
 

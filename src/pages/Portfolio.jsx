@@ -324,20 +324,24 @@ function OverviewCard({ name, color, kpis, onClick, isMobile, status, watermark,
   }
   const { invested, banked, allocated, equity, pnl, roi } = computeCapitalMetrics(kpis)
 
-  // Fund-statement strategies (12-FLAGS): the fund's own USD net income /
-  // return % from its NAV administrator statement — undefined for every
-  // other strategy type, so this sub-line only ever appears there. Shown
-  // so a GBP FX-translation effect (baseline converted at deposit-date rate
-  // vs current equity at latest rate) never reads as a discrepancy against
-  // the fund's own quoted numbers.
+  // Fund-statement strategies (12-FLAGS, ASLAN LABS): the fund's own net
+  // income / return % from its NAV administrator statement, in the
+  // STATEMENT's own currency — undefined for every other strategy type, so
+  // this sub-line only ever appears there. Shown so an FX/watermark
+  // translation effect (baseline converted at deposit-date rate, or a
+  // profit-split reducing Chase's equity below the fund's raw balance)
+  // never reads as a discrepancy against the fund's own quoted numbers.
   const fundUsdNet = kpis?.fund_usd_net_income
   const fundUsdPct = kpis?.fund_usd_return_pct
+  const fundCcy    = kpis?.fund_statement_currency
+  const fundSym    = fundCcy === 'GBP' ? '£' : fundCcy === 'EUR' ? '€' : '$'
+  const fundLocale = fundCcy === 'GBP' ? 'en-GB' : fundCcy === 'EUR' ? 'de-DE' : 'en-US'
   const hasFundUsd = fundUsdNet != null && fundUsdPct != null
   const fundUsdPnlLine = hasFundUsd
-    ? `USD YTD: ${fundUsdNet >= 0 ? '+' : '-'}$${Math.abs(fundUsdNet).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    ? `Statement YTD: ${fundUsdNet >= 0 ? '+' : '-'}${fundSym}${Math.abs(fundUsdNet).toLocaleString(fundLocale, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
     : null
   const fundUsdRoiLine = hasFundUsd
-    ? `USD YTD: ${fundUsdPct >= 0 ? '+' : ''}${fundUsdPct.toFixed(2)}%`
+    ? `Statement YTD: ${fundUsdPct >= 0 ? '+' : ''}${fundUsdPct.toFixed(2)}%`
     : null
 
   return (

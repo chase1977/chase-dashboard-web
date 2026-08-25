@@ -727,6 +727,27 @@ export default function Reports() {
           <Flags12StatementEntry />
         </div>
       </div>
+
+      {/* ASLAN LABS Monthly Statement Entry */}
+      <div style={{ marginTop:36 }}>
+        <div style={{ marginBottom:14 }}>
+          <div style={{ fontSize:13, fontWeight:600, color:'#F1F5F9', marginBottom:3 }}>
+            ASLAN LABS Monthly Statement (GBP)
+          </div>
+          <div style={{ fontSize:11, color:'#475569' }}>
+            Record the monthly manager-reported Gross Balance for ASLAN LABS (Crypto Pod) —
+            Net Income and Rate of Return auto-computed. Chase's actual equity after the
+            watermark + profit-split set on the strategy is shown in the confirm step and
+            feeds the Portfolio page automatically.
+          </div>
+        </div>
+        <div style={{
+          background:'#111C2B', border:'1px solid #1E3A5F',
+          borderRadius:10, overflow:'hidden',
+        }}>
+          <Flags12StatementEntry strategyCode="ASLAN" currency="GBP" label="ASLAN LABS" />
+        </div>
+      </div>
     </div>
   )
 }
