@@ -279,6 +279,16 @@ export function fetchAxiaClients() {
 }
 
 // ---------------------------------------------------------------------------
+// IG Clients (Daily Equity — for Strategy linking)
+// Separate table/router from AXIA (see ig_equity.py) — same shape and
+// purpose as fetchAxiaClients, just IG's own client/account pairs.
+// ---------------------------------------------------------------------------
+
+export function fetchIgClients() {
+  return get('/api/ig/clients')
+}
+
+// ---------------------------------------------------------------------------
 // Fund Monthly Statements (12-FLAGS and other NAV-administrator-reported
 // funds with no daily broker feed) — linked directly to a strategy_id.
 // ---------------------------------------------------------------------------

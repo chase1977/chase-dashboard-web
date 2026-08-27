@@ -637,9 +637,9 @@ export default function Reports() {
   return (
     <div style={{ padding:'16px clamp(14px, 4vw, 24px) 48px', maxWidth:1400 }}>
       <div style={{ marginBottom:24 }}>
-        <h1 style={{ fontSize:22, fontWeight:600, color:'#F1F5F9', margin:0 }}>Reports</h1>
+        <h1 style={{ fontSize:22, fontWeight:600, color:'#F1F5F9', margin:0 }}>Data & Reports</h1>
         <div style={{ fontSize:11, color:'#475569', marginTop:3 }}>
-          Download institutional reports · Upload daily blotter data
+          Download institutional reports · Upload daily blotter data · Record broker/fund statements
         </div>
       </div>
       <div style={{ padding:'10px 14px', borderRadius:6, marginBottom:24,
@@ -704,7 +704,27 @@ export default function Reports() {
           background:'#111C2B', border:'1px solid #1E3A5F',
           borderRadius:10, overflow:'hidden',
         }}>
-          <AxiaEquityEntry />
+          <AxiaEquityEntry apiPrefix="/api/axia" label="AXIA" clientLinkField="axia_client_id" />
+        </div>
+      </div>
+
+      {/* IG Daily Equity Entry */}
+      <div style={{ marginTop:36 }}>
+        <div style={{ marginBottom:14 }}>
+          <div style={{ fontSize:13, fontWeight:600, color:'#F1F5F9', marginBottom:3 }}>
+            IG Daily Equity (NLV)
+          </div>
+          <div style={{ fontSize:11, color:'#475569' }}>
+            Record daily Net Liquid Value + CHG NLV for IG-linked strategies (e.g. IG-Junior).
+            Same mechanism as AXIA — CHG NLV auto-calculated from previous record where available.
+            Supports multiple IG client/accounts.
+          </div>
+        </div>
+        <div style={{
+          background:'#111C2B', border:'1px solid #1E3A5F',
+          borderRadius:10, overflow:'hidden',
+        }}>
+          <AxiaEquityEntry apiPrefix="/api/ig" label="IG" clientLinkField="ig_client_id" />
         </div>
       </div>
 

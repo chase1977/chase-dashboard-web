@@ -97,6 +97,7 @@ class StrategyIn(BaseModel):
     notes:              Optional[str]  = None
     brokerage_account:  Optional[str]  = None  # e.g. "Chase1", "Chase3xA", "XPF2026"
     axia_client_id:     Optional[str]  = None  # FK -> axia_clients.id
+    ig_client_id:       Optional[str]  = None  # FK -> ig_clients.id
     watermark:          Optional[float] = Field(None, ge=0, description="Equity level below which Chase retains 100%")
     profit_share_pct:   Optional[float] = Field(None, ge=0, le=100, description="% of equity above watermark Chase retains")
 
@@ -112,6 +113,7 @@ class StrategyPatch(BaseModel):
     account_id:         Optional[int]   = None
     brokerage_account:  Optional[str]   = None  # e.g. "Chase1", "Chase3xA", "XPF2026"
     axia_client_id:     Optional[str]   = None  # FK -> axia_clients.id
+    ig_client_id:       Optional[str]   = None  # FK -> ig_clients.id
     watermark:          Optional[float] = Field(None, ge=0)
     profit_share_pct:   Optional[float] = Field(None, ge=0, le=100)
 
@@ -435,6 +437,7 @@ def create_strategy(body: StrategyIn):
             notes              = body.notes or "",
             brokerage_account  = body.brokerage_account,
             axia_client_id     = body.axia_client_id,
+            ig_client_id       = body.ig_client_id,
             watermark          = body.watermark,
             profit_share_pct   = body.profit_share_pct,
         )

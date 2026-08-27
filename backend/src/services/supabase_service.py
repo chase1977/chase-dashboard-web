@@ -593,32 +593,39 @@ def get_equity_curve_data(days: Optional[int] = None) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# AXIA daily-equity aggregation — feeds pod/strategy breakdown alongside pfees
+# Broker daily-equity aggregation — feeds pod/strategy breakdown alongside pfees
 #
-# AXIA clients (axia_clients / axia_daily_equity) are manually-entered broker
-# NLV snapshots, GBP only — a separate data source from Darwinex pfees.
-# A strategy links to one AXIA client via strategies.axia_client_id.
+# AXIA (axia_clients / axia_daily_equity) and IG (ig_clients / ig_daily_equity)
+# are manually-entered broker NLV snapshots, GBP only — separate data sources
+# from Darwinex pfees, and kept in PHYSICALLY SEPARATE tables per platform
+# (confirmed with Nish 2026-08-27 — each platform exports as its own clean
+# spreadsheet, not a mixed one). A strategy links to one AXIA client via
+# strategies.axia_client_id, or one IG client via strategies.ig_client_id.
 # Baseline (start of PnL/return calc) = that client's FIRST equity entry —
 # NOT the manual "Initial Investment" field (confirmed with Nish 2026-08-18).
+#
+# _clients_by_id / _equity_series / _axia_strategy_agg below are parameterized
+# by table name so AXIA and IG share the exact same logic without duplicating
+# it — _ig_strategy_agg is a thin wrapper pointing at the IG tables/column.
 # ---------------------------------------------------------------------------
 
-def _axia_clients_by_id() -> dict[str, dict]:
-    """id -> {client, account, label} map, cached 60s."""
+def _axia_clients_by_id(table: str = "axia_clients") -> dict[str, dict]:
+    """id -> {client, account, label} map for the given clients table, cached 60s."""
     def _fetch():
-        rows = get_client().table("axia_clients").select("*").execute().data or []
+        rows = get_client().table(table).select("*").execute().data or []
         return {r["id"]: r for r in rows}
-    return _get_cached("axia_clients_by_id", _fetch)
+    return _get_cached(f"clients_by_id_{table}", _fetch)
 
 
-def _axia_equity_series(client: str, account: str) -> list[dict]:
+def _axia_equity_series(client: str, account: str, table: str = "axia_daily_equity") -> list[dict]:
     """
-    GBP-only axia_daily_equity rows for a client/account, sorted by date asc.
-    Cached 60s. Returns [{ "date": "YYYY-MM-DD", "equity": float }, ...]
+    GBP-only daily-equity rows for a client/account from the given table,
+    sorted by date asc. Cached 60s. Returns [{ "date": "YYYY-MM-DD", "equity": float }, ...]
     """
     def _fetch():
         rows = (
             get_client()
-            .table("axia_daily_equity")
+            .table(table)
             .select("trade_date,equity,currency")
             .eq("client", client)
             .eq("account", account)
@@ -628,7 +635,7 @@ def _axia_equity_series(client: str, account: str) -> list[dict]:
             .data or []
         )
         return [{"date": r["trade_date"], "equity": float(r["equity"])} for r in rows]
-    return _get_cached(f"axia_equity_{client}_{account}", _fetch)
+    return _get_cached(f"equity_{table}_{client}_{account}", _fetch)
 
 
 def _capital_transfers_by_strategy() -> dict[int, dict]:
@@ -785,7 +792,7 @@ def _strategy_capital_invested(s: dict, net_deployed: dict, axia_agg: dict,
     ct = ct_by_strategy.get(s["id"])
     if ct and ct["in"] > 0:
         return round(ct["in"], 2)
-    if s.get("axia_client_id") and s["id"] in axia_agg:
+    if (s.get("axia_client_id") or s.get("ig_client_id")) and s["id"] in axia_agg:
         return axia_agg[s["id"]]["baseline"]
     return float(s.get("initial_investment") or 0)
 
@@ -819,10 +826,15 @@ def _apply_watermark(strategy: dict, raw_equity: float, baseline: float):
     return chase_equity, round(chase_equity - baseline, 2)
 
 
-def _axia_strategy_agg(strategies: list[dict]) -> dict[int, dict]:
+def _axia_strategy_agg(
+    strategies: list[dict],
+    client_field:  str = "axia_client_id",
+    clients_table: str = "axia_clients",
+    equity_table:  str = "axia_daily_equity",
+) -> dict[int, dict]:
     """
     strategy_id -> { invested, pnl, baseline, series } for strategies with
-    axia_client_id set. invested = Chase's economic equity — the raw latest
+    `client_field` set. invested = Chase's economic equity — the raw latest
     GBP equity, adjusted for watermark/profit_share_pct if the strategy has
     them set (see _apply_watermark); pass-through (== raw latest) otherwise.
 
@@ -833,18 +845,23 @@ def _axia_strategy_agg(strategies: list[dict]) -> dict[int, dict]:
       - else fall back to first GBP equity entry (transitional, pre-backfill)
 
     pnl = chase_equity − baseline, so it stays correct under either source.
+
+    Parameterized by client_field/clients_table/equity_table so AXIA and IG
+    (physically separate tables — see the section docstring above) share
+    this exact logic with zero duplication. Default args = AXIA, unchanged
+    from before parameterization. See _ig_strategy_agg for the IG wrapper.
     """
-    clients_idx    = _axia_clients_by_id()
+    clients_idx    = _axia_clients_by_id(clients_table)
     ct_by_strategy = _capital_transfers_by_strategy()
     out: dict[int, dict] = {}
     for s in strategies:
-        cid = s.get("axia_client_id")
+        cid = s.get(client_field)
         if not cid:
             continue
         cl = clients_idx.get(cid)
         if not cl:
             continue
-        series = _axia_equity_series(cl["client"], cl["account"])
+        series = _axia_equity_series(cl["client"], cl["account"], equity_table)
         if not series:
             out[s["id"]] = {"invested": 0.0, "pnl": 0.0, "baseline": 0.0, "series": []}
             continue
@@ -862,6 +879,24 @@ def _axia_strategy_agg(strategies: list[dict]) -> dict[int, dict]:
             "series":   series,
         }
     return out
+
+
+def _ig_strategy_agg(strategies: list[dict]) -> dict[int, dict]:
+    """
+    IG counterpart of _axia_strategy_agg — same mechanism, sourced from the
+    separate ig_clients / ig_daily_equity tables and strategies.ig_client_id.
+    Merged into the same combined dict as AXIA's output at both call sites
+    (a strategy can only have one or the other set, so no key collision),
+    so every downstream consumer that keys off "is this strategy_id in
+    axia_agg" already handles IG for free — see _build_pod_pfees_map and the
+    hierarchy/breakdown row builder.
+    """
+    return _axia_strategy_agg(
+        strategies,
+        client_field="ig_client_id",
+        clients_table="ig_clients",
+        equity_table="ig_daily_equity",
+    )
 
 
 def _fund_statement_strategy_agg(strategies: list[dict]) -> dict[int, dict]:
@@ -1092,7 +1127,7 @@ def _closed_manual_strategy_agg(strategies: list[dict], banked_agg: dict) -> dic
         status = s.get("status") or "Active"
         if status not in ("Inactive", "Closed"):
             continue
-        if s.get("brokerage_account") or s.get("axia_client_id"):
+        if s.get("brokerage_account") or s.get("axia_client_id") or s.get("ig_client_id"):
             continue  # handled by their own bespoke aggregators already
         contrib = banked_agg.get(sid)
         if not contrib or contrib["total_withdrawn"] == 0:
@@ -1184,8 +1219,11 @@ def _build_pod_pfees_map() -> dict:
         if darwin:
             pod_agg[pod_id]["darwins"].append(darwin)
 
-    # ── AXIA-linked strategies — add their equity into pod_agg alongside pfees ──
-    axia_agg = _axia_strategy_agg(strategies)
+    # ── AXIA/IG-linked strategies — add their equity into pod_agg alongside
+    #    pfees. Merged into one dict (disjoint keys — a strategy has at most
+    #    one of axia_client_id/ig_client_id set) so every downstream consumer
+    #    below keeps working unchanged for both platforms. ──
+    axia_agg = {**_axia_strategy_agg(strategies), **_ig_strategy_agg(strategies)}
     for s in strategies:
         contrib = axia_agg.get(s["id"])
         if not contrib:
@@ -1317,12 +1355,12 @@ def get_pods_with_kpis() -> list[dict]:
     axia_agg     = data.get("_axia_agg") or {}
 
     def _strategy_initial(s: dict) -> float:
-        """Auto from transfers if brokerage_account set, AXIA baseline if AXIA-linked,
-        else manual initial_investment."""
+        """Auto from transfers if brokerage_account set, AXIA/IG baseline if
+        broker-linked, else manual initial_investment."""
         acct = s.get("brokerage_account")
         if acct:
             return net_deployed.get(acct, 0.0)
-        if s.get("axia_client_id") and s["id"] in axia_agg:
+        if (s.get("axia_client_id") or s.get("ig_client_id")) and s["id"] in axia_agg:
             return axia_agg[s["id"]]["baseline"]
         return float(s.get("initial_investment") or 0)
 
@@ -1542,7 +1580,7 @@ def get_hierarchy_rows(entity_type: str) -> list[dict]:
             acct_agg[acct]["invested"] = round(acct_agg[acct]["invested"] + invested, 2)
             acct_agg[acct]["pnl"]      = round(acct_agg[acct]["pnl"] + pnl, 2)
 
-        strat_axia_agg     = _axia_strategy_agg(strategies)
+        strat_axia_agg     = {**_axia_strategy_agg(strategies), **_ig_strategy_agg(strategies)}
         strat_fund_agg     = _fund_statement_strategy_agg(strategies)
         # Merged with closed manual/off-platform exits — see
         # _closed_manual_strategy_agg's docstring for why this merges here.
@@ -1584,13 +1622,13 @@ def get_hierarchy_rows(entity_type: str) -> list[dict]:
                 broker  = s.get("brokerage_account")
 
                 # Lookup priority:
-                # 1. axia_client_id — AXIA broker-statement equity (its own tier, not pfees)
+                # 1. axia_client_id/ig_client_id — AXIA/IG broker-statement equity (its own tier, not pfees)
                 # 2. fund_monthly_statements — NAV-administrator-reported funds (12-FLAGS)
                 # 3. closed Darwinex strategy — realized P&L from internal_transfers
                 # 4. account_id column directly (if set + matches pfees AccountId)
                 # 5. brokerage_account → AccountId via invest-vs-deploy matching
                 # 6. strategy_code → Darwin display name fallback
-                axia_contrib     = strat_axia_agg.get(s["id"]) if s.get("axia_client_id") else None
+                axia_contrib     = strat_axia_agg.get(s["id"]) if (s.get("axia_client_id") or s.get("ig_client_id")) else None
                 fund_contrib     = strat_fund_agg.get(s["id"])
                 darwinex_contrib = strat_darwinex_agg.get(s["id"])
                 if axia_contrib is not None:
@@ -2150,7 +2188,7 @@ def get_strategies_with_kpis_fast(pod_pfees_map: dict, balance_hist: list[dict])
         acct_id = s.get("account_id")
         broker  = s.get("brokerage_account")
 
-        axia_contrib     = axia_agg.get(s["id"]) if s.get("axia_client_id") else None
+        axia_contrib     = axia_agg.get(s["id"]) if (s.get("axia_client_id") or s.get("ig_client_id")) else None
         fund_contrib     = fund_agg.get(s["id"])
         darwinex_contrib = darwinex_agg.get(s["id"])
         if axia_contrib is not None:
@@ -2401,6 +2439,7 @@ def create_strategy(name: str, strategy_code: str, pod_id: Optional[int],
                     status: str = "Active", notes: str = "",
                     brokerage_account: Optional[str] = None,
                     axia_client_id: Optional[str] = None,
+                    ig_client_id: Optional[str] = None,
                     watermark: Optional[float] = None,
                     profit_share_pct: Optional[float] = None) -> dict:
     sb  = get_client()
@@ -2414,6 +2453,7 @@ def create_strategy(name: str, strategy_code: str, pod_id: Optional[int],
         "notes":              notes or None,
         "brokerage_account":  brokerage_account or None,
         "axia_client_id":     axia_client_id or None,
+        "ig_client_id":       ig_client_id or None,
         "watermark":          round(watermark, 2) if watermark is not None else None,
         "profit_share_pct":   round(profit_share_pct, 2) if profit_share_pct is not None else None,
     }).execute()

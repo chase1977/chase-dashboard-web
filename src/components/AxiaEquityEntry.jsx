@@ -1,7 +1,17 @@
 // src/components/AxiaEquityEntry.jsx
 /**
- * AXIA Daily Equity Entry — NLV + CHG NLV recording for AXIA strategy.
- * - Client/Account selector (dropdown if multiple, defaults to 4751R/47511)
+ * Broker Daily Equity Entry — NLV + CHG NLV recording for a broker-linked
+ * strategy. Originally AXIA-only; generalized via an `apiPrefix` prop
+ * ('/api/axia' default, or '/api/ig') so the exact same UI/logic serves
+ * any manually-entered broker feed backed by its own separate
+ * clients/daily-equity table pair and router (see ig_equity.py — a full
+ * mirror of axia_equity.py, physically separate tables per platform so
+ * each exports as its own clean spreadsheet — confirmed with Nish
+ * 2026-08-27). New platforms add a new
+ * <AxiaEquityEntry apiPrefix="/api/x" label="X" clientLinkField="x_client_id" />
+ * instance plus their own router/tables — no shared-table filtering needed,
+ * each instance only ever talks to its own endpoint.
+ * - Client/Account selector (dropdown if multiple)
  * - Date picker (default today, allows backdating)
  * - Currency selector (default GBP)
  * - Equity input (formatted 2dp + commas)
@@ -201,7 +211,11 @@ function ConfirmPopup({ message, onConfirm, onCancel, variant = 'confirm' }) {
 // ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
-export default function AxiaEquityEntry() {
+export default function AxiaEquityEntry({
+  apiPrefix       = '/api/axia',
+  label           = 'AXIA',
+  clientLinkField = 'axia_client_id',
+} = {}) {
   // ---- State ----
   const [clients,    setClients]    = useState([])
   const [strategies, setStrategies] = useState([])   // for linked-strategy badge only
@@ -259,7 +273,7 @@ export default function AxiaEquityEntry() {
 
   const loadClients = async () => {
     try {
-      const res  = await fetch(`${BASE}/api/axia/clients`)
+      const res  = await fetch(`${BASE}${apiPrefix}/clients`)
       const data = await res.json()
       setClients(data)
       // Default to first client
@@ -269,7 +283,8 @@ export default function AxiaEquityEntry() {
     } catch { /* silent */ }
   }
 
-  // Strategies with an axia_client_id — used only to show which strategy/pod
+  // Strategies with this instance's client-link field set — used only to
+  // show which strategy/pod
   // a client is linked to (linking itself happens in Manage Pods & Strategies).
   const loadStrategies = async () => {
     try {
@@ -280,7 +295,7 @@ export default function AxiaEquityEntry() {
   }
 
   const linkedStrategy = selClient
-    ? strategies.find(s => s.axia_client_id === selClient.id)
+    ? strategies.find(s => s[clientLinkField] === selClient.id)
     : null
 
   // ---- Load records when client changes — reset to page 1 ----
@@ -299,7 +314,7 @@ export default function AxiaEquityEntry() {
     setLoading(true)
     try {
       const res  = await fetch(
-        `${BASE}/api/axia/equity?client=${selClient.client}&account=${selClient.account}&limit=${PAGE_SIZE}&offset=${p * PAGE_SIZE}`
+        `${BASE}${apiPrefix}/equity?client=${selClient.client}&account=${selClient.account}&limit=${PAGE_SIZE}&offset=${p * PAGE_SIZE}`
       )
       const data = await res.json()
       setRecords(data.rows ?? [])
@@ -316,7 +331,7 @@ export default function AxiaEquityEntry() {
       setPrevLoading(true)
       try {
         const res  = await fetch(
-          `${BASE}/api/axia/equity/prev?client=${selClient.client}&account=${selClient.account}&date=${date}&currency=${currency}`
+          `${BASE}${apiPrefix}/equity/prev?client=${selClient.client}&account=${selClient.account}&date=${date}&currency=${currency}`
         )
         if (res.ok) {
           const data = await res.json()
@@ -384,7 +399,7 @@ export default function AxiaEquityEntry() {
     setConfirmPopup(null)
     setLoading(true); setError(null); setSuccess(null)
     try {
-      const res = await fetch(`${BASE}/api/axia/equity`, {
+      const res = await fetch(`${BASE}${apiPrefix}/equity`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -417,7 +432,7 @@ export default function AxiaEquityEntry() {
       message: `Delete record for ${fmtDate(tradeDate)}? This cannot be undone.`,
       onConfirm: async () => {
         setConfirmPopup(null)
-        await fetch(`${BASE}/api/axia/equity/${id}`, { method: 'DELETE' })
+        await fetch(`${BASE}${apiPrefix}/equity/${id}`, { method: 'DELETE' })
         await loadRecords()
       },
     })
@@ -444,7 +459,7 @@ export default function AxiaEquityEntry() {
       onConfirm: async () => {
         setConfirmPopup(null)
         try {
-          await fetch(`${BASE}/api/axia/equity/${row.id}`, {
+          await fetch(`${BASE}${apiPrefix}/equity/${row.id}`, {
             method:  'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -467,7 +482,7 @@ export default function AxiaEquityEntry() {
     if (!newClient || !newAccount) return
     setClientSaving(true)
     try {
-      const res = await fetch(`${BASE}/api/axia/clients`, {
+      const res = await fetch(`${BASE}${apiPrefix}/clients`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ client: newClient, account: newAccount, label: newLabel }),
@@ -494,7 +509,7 @@ export default function AxiaEquityEntry() {
     if (!selClient || !editClientText || !editAccountText) return
     setClientEditSaving(true); setClientEditError(null)
     try {
-      const res = await fetch(`${BASE}/api/axia/clients/${selClient.id}`, {
+      const res = await fetch(`${BASE}${apiPrefix}/clients/${selClient.id}`, {
         method:  'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

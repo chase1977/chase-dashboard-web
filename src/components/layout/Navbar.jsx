@@ -27,7 +27,7 @@ const NAV_LINKS = [
   { label: 'Pods',        path: '/pods'         },
   { label: 'Strategies',  path: '/strategies'   },
   { label: 'Traders',     path: '/traders'      },
-  { label: 'Reports',     path: '/reports'      },
+  { label: 'Data & Reports', path: '/reports'   },
   { label: 'Analysis',    path: '/analysis'     },
 ]
 

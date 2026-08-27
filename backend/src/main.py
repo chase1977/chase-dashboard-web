@@ -18,6 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.routers import portfolio, reports, management
 from src.routers.statement    import router as statement_router
 from src.routers.axia_equity  import router as axia_router
+from src.routers.ig_equity    import router as ig_router
 from src.routers.axia_analysis import router as analysis_router
 from src.routers.fund_statements import router as fund_statements_router
 
@@ -72,6 +73,7 @@ app.include_router(reports.router)
 app.include_router(management.router)
 app.include_router(statement_router)
 app.include_router(axia_router)
+app.include_router(ig_router)
 app.include_router(analysis_router)
 app.include_router(fund_statements_router)
 

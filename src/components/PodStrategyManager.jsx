@@ -21,7 +21,7 @@ import { X, Plus, Pencil, Trash2, Check, XCircle } from 'lucide-react'
 import {
   fetchPods, createPod, updatePod, deletePod,
   fetchStrategies, createStrategy, updateStrategy, deleteStrategy,
-  fetchAccountIds, fetchNetDeployed, fetchAxiaClients,
+  fetchAccountIds, fetchNetDeployed, fetchAxiaClients, fetchIgClients,
 } from '../services/api.js'
 import ConfirmModal from './ConfirmModal.jsx'
 
@@ -281,6 +281,7 @@ function StrategyForm({ initial, pods, onSave, onCancel, saving, error }) {
   )
   const [brokerageAccount, setBrokerageAccount] = useState(initial?.brokerage_account ?? '')
   const [axiaClientId,     setAxiaClientId]     = useState(initial?.axia_client_id ?? '')
+  const [igClientId,       setIgClientId]       = useState(initial?.ig_client_id ?? '')
   const [watermark,        setWatermark]        = useState(initial?.watermark != null ? String(initial.watermark) : '')
   const [profitSharePct,   setProfitSharePct]   = useState(initial?.profit_share_pct != null ? String(initial.profit_share_pct) : '')
 
@@ -298,6 +299,13 @@ function StrategyForm({ initial, pods, onSave, onCancel, saving, error }) {
     staleTime: 60_000,
   })
 
+  // ── IG clients — separate table/router from AXIA (see ig_equity.py) ──
+  const { data: igClients = [], isLoading: loadingIgClients } = useQuery({
+    queryKey:  ['ig_clients'],
+    queryFn:   fetchIgClients,
+    staleTime: 60_000,
+  })
+
   // ── Net deployed per brokerage account (from internal_transfers) ──
   const { data: netDeployed = {} } = useQuery({
     queryKey:  ['net_deployed'],
@@ -306,10 +314,10 @@ function StrategyForm({ initial, pods, onSave, onCancel, saving, error }) {
   })
 
   const computedInitial  = brokerageAccount ? (netDeployed[brokerageAccount] ?? null) : null
-  // Auto mode = brokerage account OR AXIA client selected → initial auto-computed
-  // (from transfers, or from that AXIA client's first equity entry) — manual
-  // Initial Investment only applies when neither is set.
-  const isAutoMode = !!brokerageAccount || !!axiaClientId
+  // Auto mode = brokerage account OR AXIA/IG client selected → initial
+  // auto-computed (from transfers, or from that client's first equity
+  // entry) — manual Initial Investment only applies when none is set.
+  const isAutoMode = !!brokerageAccount || !!axiaClientId || !!igClientId
 
   function handleSubmit(e) {
     e.preventDefault()
@@ -325,6 +333,7 @@ function StrategyForm({ initial, pods, onSave, onCancel, saving, error }) {
       notes,
       brokerage_account:  brokerageAccount || null,
       axia_client_id:     axiaClientId || null,
+      ig_client_id:       igClientId || null,
       watermark:          watermark.trim()      !== '' ? parseFloat(watermark)      : null,
       profit_share_pct:   profitSharePct.trim() !== '' ? parseFloat(profitSharePct) : null,
       ...(accountId !== '' ? { account_id: parseInt(accountId, 10) } : {}),
@@ -440,8 +449,36 @@ function StrategyForm({ initial, pods, onSave, onCancel, saving, error }) {
             {loadingAxiaClients
               ? 'Loading AXIA clients…'
               : axiaClients.length === 0
-                ? 'No AXIA clients yet — add one on the AXIA Daily Equity tab'
+                ? 'No AXIA clients yet — add one on the AXIA Daily Equity tab (Data & Reports)'
                 : 'Links this strategy to daily equity entered on the AXIA tab. AUM/PnL then computed from that equity, not manual Initial Investment.'}
+          </span>
+        </FormField>
+      </div>
+
+      {/* IG Client — separate table/router from AXIA (see ig_equity.py),
+          same daily-equity mechanism, kept physically apart so each
+          platform's history exports as its own clean spreadsheet. */}
+      <div style={{ marginTop: 10 }}>
+        <FormField label="IG Client / Account">
+          <select
+            style={INPUT}
+            value={igClientId}
+            onChange={e => setIgClientId(e.target.value)}
+            disabled={loadingIgClients}
+          >
+            <option value="">— None —</option>
+            {igClients.map(c => (
+              <option key={c.id} value={c.id}>
+                {c.client} / {c.account}{c.label ? ` — ${c.label}` : ''}
+              </option>
+            ))}
+          </select>
+          <span style={{ fontSize: 10, color: '#334155', marginTop: 3, display: 'block' }}>
+            {loadingIgClients
+              ? 'Loading IG clients…'
+              : igClients.length === 0
+                ? 'No IG clients yet — add one on the IG Daily Equity tab (Data & Reports)'
+                : 'Links this strategy to daily equity entered on the IG tab. AUM/PnL then computed from that equity, not manual Initial Investment.'}
           </span>
         </FormField>
       </div>
@@ -727,6 +764,12 @@ function StrategiesTab({ queryClient, onSaved }) {
     staleTime: 60_000,
   })
   const axiaClientMap = Object.fromEntries(axiaClients.map(c => [c.id, c]))
+  const { data: igClients = [] } = useQuery({
+    queryKey:  ['ig_clients'],
+    queryFn:   fetchIgClients,
+    staleTime: 60_000,
+  })
+  const igClientMap = Object.fromEntries(igClients.map(c => [c.id, c]))
 
   const [mode,     setMode]     = useState(null)
   const [saving,   setSaving]   = useState(false)
@@ -838,6 +881,7 @@ function StrategiesTab({ queryClient, onSaved }) {
             const acct        = strat.brokerage_account
             const netAmt      = acct ? (netDeployed[acct] ?? null) : null
             const axiaClient  = strat.axia_client_id ? axiaClientMap[strat.axia_client_id] : null
+            const igClient    = strat.ig_client_id   ? igClientMap[strat.ig_client_id]     : null
             return (
               <div
                 key={strat.id}
@@ -904,6 +948,18 @@ function StrategiesTab({ queryClient, onSaved }) {
                         letterSpacing: '0.3px',
                       }}>
                         AXIA · {axiaClient.client}/{axiaClient.account}
+                      </span>
+                      <div style={{ fontSize: 10, color: '#475569', marginTop: 1 }}>
+                        Daily equity feed
+                      </div>
+                    </>
+                  ) : igClient ? (
+                    <>
+                      <span style={{
+                        fontSize: 10, fontWeight: 600, color: '#fb923c',
+                        letterSpacing: '0.3px',
+                      }}>
+                        IG · {igClient.client}/{igClient.account}
                       </span>
                       <div style={{ fontSize: 10, color: '#475569', marginTop: 1 }}>
                         Daily equity feed
