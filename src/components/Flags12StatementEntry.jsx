@@ -35,6 +35,8 @@ import { useState, useEffect, useCallback } from 'react'
 import {
   fetchStrategies, fetchFundStatements, fetchFundStatementPrev,
   createFundStatement, updateFundStatement, deleteFundStatement, refetchFundStatementFx,
+  fetchDataFeedStatements, fetchDataFeedStatementPrev, createDataFeedStatement,
+  updateDataFeedStatement, deleteDataFeedStatement, refetchDataFeedStatementFx,
 } from '../services/api.js'
 
 // ---------------------------------------------------------------------------
@@ -202,8 +204,25 @@ function FxBadge({ row, onRetry, retrying }) {
 // ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
-export default function Flags12StatementEntry({ strategyCode = '12-FLAGS', currency = 'USD', label } = {}) {
+export default function Flags12StatementEntry({
+  strategyCode = '12-FLAGS', currency = 'USD', label,
+  feedSlug = null, dataFeedId = null,
+} = {}) {
   const sym = SYM[currency] || '$'
+
+  // Generic Data Feed instance (feedSlug set) talks to /api/data-feeds/{slug}/statements
+  // and matches its strategy by data_feed_id instead of strategy_code — legacy
+  // 12-FLAGS/ASLAN instances (feedSlug=null) are untouched, same as always.
+  const _fetchStatements = feedSlug
+    ? (id, l, o) => fetchDataFeedStatements(feedSlug, id, l, o)
+    : fetchFundStatements
+  const _fetchPrev = feedSlug
+    ? (id, d) => fetchDataFeedStatementPrev(feedSlug, id, d)
+    : fetchFundStatementPrev
+  const _create = feedSlug ? (b) => createDataFeedStatement(feedSlug, b) : createFundStatement
+  const _update = feedSlug ? (id, b) => updateDataFeedStatement(feedSlug, id, b) : updateFundStatement
+  const _remove = feedSlug ? (id) => deleteDataFeedStatement(feedSlug, id) : deleteFundStatement
+  const _refetchFx = feedSlug ? (id) => refetchDataFeedStatementFx(feedSlug, id) : refetchFundStatementFx
   const [strategy,   setStrategy]   = useState(null)   // resolved strategy row
   const [strategyErr,setStrategyErr]= useState(null)
   const [records,    setRecords]    = useState([])
@@ -238,6 +257,15 @@ export default function Flags12StatementEntry({ strategyCode = '12-FLAGS', curre
     (async () => {
       try {
         const strategies = await fetchStrategies()
+        if (dataFeedId) {
+          const match = strategies.find(s => s.data_feed_id === dataFeedId)
+          if (!match) {
+            setStrategyErr(`No strategy linked to this Data Feed yet. Link one via Manage Pods & Strategies.`)
+            return
+          }
+          setStrategy(match)
+          return
+        }
         // Lenient match — ignores case, hyphens/spaces (so "12-FLAGS", "12 Flags",
         // "12FLAGS" all resolve) and checks both strategy_code and name.
         const norm  = s => (s || '').toUpperCase().replace(/[^A-Z0-9]/g, '')
@@ -251,13 +279,13 @@ export default function Flags12StatementEntry({ strategyCode = '12-FLAGS', curre
         setStrategy(match)
       } catch (e) { setStrategyErr(e.message) }
     })()
-  }, [strategyCode])
+  }, [strategyCode, dataFeedId])
 
   const loadRecords = useCallback(async (p = page) => {
     if (!strategy) return
     setLoading(true)
     try {
-      const data = await fetchFundStatements(strategy.id, PAGE_SIZE, p * PAGE_SIZE)
+      const data = await _fetchStatements(strategy.id, PAGE_SIZE, p * PAGE_SIZE)
       setRecords(data.rows ?? [])
       setTotalCount(data.total ?? 0)
     } catch { /* silent */ }
@@ -275,7 +303,7 @@ export default function Flags12StatementEntry({ strategyCode = '12-FLAGS', curre
     ;(async () => {
       setPrevLoading(true)
       try {
-        const data = await fetchFundStatementPrev(strategy.id, date)
+        const data = await _fetchPrev(strategy.id, date)
         if (!cancelled) setPrevRecord(data)
       } catch { /* silent */ }
       finally { if (!cancelled) setPrevLoading(false) }
@@ -333,7 +361,7 @@ export default function Flags12StatementEntry({ strategyCode = '12-FLAGS', curre
     setConfirmPopup(null)
     setLoading(true); setError(null); setSuccess(null)
     try {
-      await createFundStatement({
+      await _create({
         strategy_id:       strategy.id,
         period_end_date:   date,
         currency,
@@ -368,7 +396,7 @@ export default function Flags12StatementEntry({ strategyCode = '12-FLAGS', curre
       onConfirm: async () => {
         setConfirmPopup(null)
         try {
-          await updateFundStatement(row.id, {
+          await _update(row.id, {
             period_end_date: editDate, ending_balance: newEnding, notes: editNotes || null,
           })
           setEditId(null)
@@ -386,7 +414,7 @@ export default function Flags12StatementEntry({ strategyCode = '12-FLAGS', curre
       onConfirm: async () => {
         setConfirmPopup(null)
         setDeletingId(id)
-        try { await deleteFundStatement(id); await loadRecords() }
+        try { await _remove(id); await loadRecords() }
         finally { setDeletingId(null) }
       },
     })
@@ -395,7 +423,7 @@ export default function Flags12StatementEntry({ strategyCode = '12-FLAGS', curre
   // ---- Retry FX ----
   const handleRetryFx = async (id) => {
     setRetryingId(id)
-    try { await refetchFundStatementFx(id); await loadRecords() }
+    try { await _refetchFx(id); await loadRecords() }
     finally { setRetryingId(null) }
   }
 
@@ -424,7 +452,8 @@ export default function Flags12StatementEntry({ strategyCode = '12-FLAGS', curre
         padding: '8px 14px', borderRadius: 6, fontSize: 11, fontWeight: 600,
         background: 'rgba(168,85,247,0.10)', border: '1px solid rgba(168,85,247,0.28)', color: '#c084fc',
       }}>
-        Linked to strategy: {strategy?.name ?? strategyCode} ({strategyCode})
+        Linked to strategy: {strategy?.name ?? (dataFeedId ? label : strategyCode)}
+        {!dataFeedId ? ` (${strategyCode})` : ''}
         {strategy?.pods?.name ? ` — Pod: ${strategy.pods.name}` : ''}
       </div>
 

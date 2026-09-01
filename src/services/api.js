@@ -316,3 +316,58 @@ export function deleteFundStatement(id) {
 export function refetchFundStatementFx(id) {
   return _post(`/api/fund-statements/${id}/refetch-fx`, {})
 }
+
+// ---------------------------------------------------------------------------
+// Data Feeds — self-service tab-builder registry (see data_feeds.py).
+// One row per user-created Data Feed tab. Daily-cadence feeds reuse
+// AxiaEquityEntry.jsx via apiPrefix=`/api/data-feeds/{slug}`; monthly-cadence
+// feeds use the generic statements CRUD below (mirrors fund-statements).
+// ---------------------------------------------------------------------------
+
+export function fetchDataFeeds() {
+  return get('/api/data-feeds')
+}
+
+export function previewDataFeedSql(body) {
+  return _post('/api/data-feeds/preview-sql', body)
+}
+
+export function createDataFeed(body) {
+  return _post('/api/data-feeds', body)
+}
+
+export function updateDataFeed(id, body) {
+  return _patch(`/api/data-feeds/${id}`, body)
+}
+
+export function deleteDataFeed(id) {
+  return _delete(`/api/data-feeds/${id}`)
+}
+
+export function fetchDataFeedClients(slug) {
+  return get(`/api/data-feeds/${slug}/clients`)
+}
+
+export function fetchDataFeedStatements(slug, strategyId, limit = 50, offset = 0) {
+  return get(`/api/data-feeds/${slug}/statements?strategy_id=${strategyId}&limit=${limit}&offset=${offset}`)
+}
+
+export function fetchDataFeedStatementPrev(slug, strategyId, beforeDate) {
+  return get(`/api/data-feeds/${slug}/statements/prev?strategy_id=${strategyId}&before_date=${beforeDate}`)
+}
+
+export function createDataFeedStatement(slug, body) {
+  return _post(`/api/data-feeds/${slug}/statements`, body)
+}
+
+export function updateDataFeedStatement(slug, id, body) {
+  return _patch(`/api/data-feeds/${slug}/statements/${id}`, body)
+}
+
+export function deleteDataFeedStatement(slug, id) {
+  return _delete(`/api/data-feeds/${slug}/statements/${id}`)
+}
+
+export function refetchDataFeedStatementFx(slug, id) {
+  return _post(`/api/data-feeds/${slug}/statements/${id}/refetch-fx`, {})
+}

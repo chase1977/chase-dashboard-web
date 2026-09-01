@@ -22,6 +22,7 @@ import {
   fetchPods, createPod, updatePod, deletePod,
   fetchStrategies, createStrategy, updateStrategy, deleteStrategy,
   fetchAccountIds, fetchNetDeployed, fetchAxiaClients, fetchIgClients,
+  fetchDataFeeds, fetchDataFeedClients,
 } from '../services/api.js'
 import ConfirmModal from './ConfirmModal.jsx'
 
@@ -282,6 +283,8 @@ function StrategyForm({ initial, pods, onSave, onCancel, saving, error }) {
   const [brokerageAccount, setBrokerageAccount] = useState(initial?.brokerage_account ?? '')
   const [axiaClientId,     setAxiaClientId]     = useState(initial?.axia_client_id ?? '')
   const [igClientId,       setIgClientId]       = useState(initial?.ig_client_id ?? '')
+  const [dataFeedId,       setDataFeedId]       = useState(initial?.data_feed_id ?? '')
+  const [dataFeedClientId, setDataFeedClientId] = useState(initial?.data_feed_client_id ?? '')
   const [watermark,        setWatermark]        = useState(initial?.watermark != null ? String(initial.watermark) : '')
   const [profitSharePct,   setProfitSharePct]   = useState(initial?.profit_share_pct != null ? String(initial.profit_share_pct) : '')
 
@@ -313,11 +316,28 @@ function StrategyForm({ initial, pods, onSave, onCancel, saving, error }) {
     staleTime: 60_000,
   })
 
+  // ── Data Feeds registry — self-service tab-builder (see data_feeds.py) ──
+  const { data: dataFeeds = [], isLoading: loadingDataFeeds } = useQuery({
+    queryKey:  ['data_feeds'],
+    queryFn:   fetchDataFeeds,
+    staleTime: 60_000,
+  })
+  const selectedFeed = dataFeeds.find(f => f.id === dataFeedId) ?? null
+
+  // ── Clients for the selected feed (daily cadence only) ──
+  const { data: feedClients = [], isLoading: loadingFeedClients } = useQuery({
+    queryKey:  ['data_feed_clients', selectedFeed?.slug],
+    queryFn:   () => fetchDataFeedClients(selectedFeed.slug),
+    enabled:   !!selectedFeed && selectedFeed.cadence === 'daily',
+    staleTime: 60_000,
+  })
+
   const computedInitial  = brokerageAccount ? (netDeployed[brokerageAccount] ?? null) : null
-  // Auto mode = brokerage account OR AXIA/IG client selected → initial
-  // auto-computed (from transfers, or from that client's first equity
-  // entry) — manual Initial Investment only applies when none is set.
-  const isAutoMode = !!brokerageAccount || !!axiaClientId || !!igClientId
+  // Auto mode = brokerage account OR AXIA/IG/Data-Feed client selected →
+  // initial auto-computed (from transfers, or from that client's first
+  // equity entry / statement) — manual Initial Investment only applies
+  // when none is set.
+  const isAutoMode = !!brokerageAccount || !!axiaClientId || !!igClientId || !!dataFeedId
 
   function handleSubmit(e) {
     e.preventDefault()
@@ -334,6 +354,8 @@ function StrategyForm({ initial, pods, onSave, onCancel, saving, error }) {
       brokerage_account:  brokerageAccount || null,
       axia_client_id:     axiaClientId || null,
       ig_client_id:       igClientId || null,
+      data_feed_id:            dataFeedId || null,
+      data_feed_client_id:     (selectedFeed?.cadence === 'daily' ? (dataFeedClientId || null) : null),
       watermark:          watermark.trim()      !== '' ? parseFloat(watermark)      : null,
       profit_share_pct:   profitSharePct.trim() !== '' ? parseFloat(profitSharePct) : null,
       ...(accountId !== '' ? { account_id: parseInt(accountId, 10) } : {}),
@@ -482,6 +504,61 @@ function StrategyForm({ initial, pods, onSave, onCancel, saving, error }) {
           </span>
         </FormField>
       </div>
+
+      {/* Data Feed — self-service tab-builder link (see data_feeds.py).
+          Additive alongside AXIA/IG above — pick any registered feed (new
+          or legacy-style) and, for daily-cadence feeds, the client/account
+          created on that feed's tab in Data & Reports. Monthly-cadence
+          feeds link directly by strategy — no client picker needed. */}
+      <div style={{ marginTop: 10 }}>
+        <FormField label="Data Feed">
+          <select
+            style={INPUT}
+            value={dataFeedId}
+            onChange={e => { setDataFeedId(e.target.value); setDataFeedClientId('') }}
+            disabled={loadingDataFeeds}
+          >
+            <option value="">— None —</option>
+            {dataFeeds.map(f => (
+              <option key={f.id} value={f.id}>{f.name} ({f.cadence})</option>
+            ))}
+          </select>
+          <span style={{ fontSize: 10, color: '#334155', marginTop: 3, display: 'block' }}>
+            {loadingDataFeeds
+              ? 'Loading Data Feeds…'
+              : dataFeeds.length === 0
+                ? 'No Data Feeds registered yet — create one via "Manage Data Feeds" on Data & Reports'
+                : 'Links this strategy to a self-service Data Feed tab.'}
+          </span>
+        </FormField>
+      </div>
+
+      {selectedFeed?.cadence === 'daily' && (
+        <div style={{ marginTop: 10 }}>
+          <FormField label={`${selectedFeed.name} Client / Account`}>
+            <select
+              style={INPUT}
+              value={dataFeedClientId}
+              onChange={e => setDataFeedClientId(e.target.value)}
+              disabled={loadingFeedClients}
+            >
+              <option value="">— None —</option>
+              {feedClients.map(c => (
+                <option key={c.id} value={c.id}>
+                  {c.client} / {c.account}{c.label ? ` — ${c.label}` : ''}
+                </option>
+              ))}
+            </select>
+            <span style={{ fontSize: 10, color: '#334155', marginTop: 3, display: 'block' }}>
+              {loadingFeedClients
+                ? 'Loading clients…'
+                : feedClients.length === 0
+                  ? `No clients yet — add one on the ${selectedFeed.name} tab (Data & Reports)`
+                  : 'AUM/PnL then computed from that equity, not manual Initial Investment.'}
+            </span>
+          </FormField>
+        </div>
+      )}
 
       {/* Watermark / Profit Share — general to any strategy type */}
       <div style={{
@@ -770,6 +847,12 @@ function StrategiesTab({ queryClient, onSaved }) {
     staleTime: 60_000,
   })
   const igClientMap = Object.fromEntries(igClients.map(c => [c.id, c]))
+  const { data: dataFeeds = [] } = useQuery({
+    queryKey:  ['data_feeds'],
+    queryFn:   fetchDataFeeds,
+    staleTime: 60_000,
+  })
+  const dataFeedMap = Object.fromEntries(dataFeeds.map(f => [f.id, f]))
 
   const [mode,     setMode]     = useState(null)
   const [saving,   setSaving]   = useState(false)
@@ -882,6 +965,7 @@ function StrategiesTab({ queryClient, onSaved }) {
             const netAmt      = acct ? (netDeployed[acct] ?? null) : null
             const axiaClient  = strat.axia_client_id ? axiaClientMap[strat.axia_client_id] : null
             const igClient    = strat.ig_client_id   ? igClientMap[strat.ig_client_id]     : null
+            const dataFeed    = strat.data_feed_id   ? dataFeedMap[strat.data_feed_id]     : null
             return (
               <div
                 key={strat.id}
@@ -963,6 +1047,18 @@ function StrategiesTab({ queryClient, onSaved }) {
                       </span>
                       <div style={{ fontSize: 10, color: '#475569', marginTop: 1 }}>
                         Daily equity feed
+                      </div>
+                    </>
+                  ) : dataFeed ? (
+                    <>
+                      <span style={{
+                        fontSize: 10, fontWeight: 600, color: dataFeed.color || '#38BDF8',
+                        letterSpacing: '0.3px',
+                      }}>
+                        {dataFeed.name}
+                      </span>
+                      <div style={{ fontSize: 10, color: '#475569', marginTop: 1 }}>
+                        {dataFeed.cadence === 'daily' ? 'Daily equity feed' : 'Monthly statement'}
                       </div>
                     </>
                   ) : (

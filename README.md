@@ -21,9 +21,10 @@ React (Vite) frontend, FastAPI backend, Supabase (Postgres) database.
 12. [Darwinex Closed-Strategy P&L Bridge](#12-darwinex-closed-strategy-pl-bridge)
 13. [Roadmap — Completed](#13-roadmap--completed)
 14. [Capital Pipeline: Strategy → Pod → Portfolio](#14-capital-pipeline-strategy--pod--portfolio)
-15. [Roadmap — Outstanding](#15-roadmap--outstanding)
-16. [Known Limitations](#16-known-limitations)
-17. [Dev Workflow](#17-dev-workflow)
+15. [Data Feeds — Self-Service Tab Builder](#15-data-feeds--self-service-tab-builder)
+16. [Roadmap — Outstanding](#16-roadmap--outstanding)
+17. [Known Limitations](#17-known-limitations)
+18. [Dev Workflow](#18-dev-workflow)
 
 ---
 
@@ -220,8 +221,8 @@ Implemented in `_apply_watermark(strategy, raw_equity, baseline)`,
 | Level | AXIA strategies | Non-AXIA (Darwinex/manual) strategies |
 |---|---|---|
 | Strategy | ✅ Applied | ✅ Applied |
-| Pod | ✅ Applied (additive from adjusted strategy figures) | ⚠️ Not applied — see [§16](#16-known-limitations) |
-| Portfolio | ✅ Applied | ⚠️ Not applied — see [§16](#16-known-limitations) |
+| Pod | ✅ Applied (additive from adjusted strategy figures) | ⚠️ Not applied — see [§17](#17-known-limitations) |
+| Portfolio | ✅ Applied | ⚠️ Not applied — see [§17](#17-known-limitations) |
 
 ---
 
@@ -1091,14 +1092,172 @@ strategy's actual final withdrawal is auto-computed.
 
 ---
 
-## 15. Roadmap — Outstanding
+## 15. Data Feeds — Self-Service Tab Builder
 
-- [ ] **Pod/portfolio-level watermark adjustment for non-AXIA strategies**
-  See [§15](#15-known-limitations) — documented gap, not yet requested.
+Self-service system (added 2026-09) for onboarding a new strategy's
+recurring performance data (daily broker/CFD NLV, or monthly NAV statement)
+**without a developer writing new backend code**. Lives alongside — does
+NOT replace — the legacy AXIA/IG (daily) and 12-FLAGS/ASLAN (monthly)
+systems, which stay hardcoded exactly as before.
+
+### 15.1 Architecture
+
+**`data_feeds` registry table** — one row per user-created tab:
+
+```
+id, slug (unique), name, color, cadence ('daily'|'monthly'), currency,
+clients_table, equity_table, statements_table, sort_order, created_at
+```
+
+**`strategies.data_feed_id`** (uuid, FK → `data_feeds.id`) — set when a
+strategy is linked to any feed, daily or monthly.
+**`strategies.data_feed_client_id`** (uuid) — daily cadence only, points to
+a row in that feed's `<slug>_clients` table. Monthly cadence needs no
+client — one statement stream per strategy, matched directly by
+`data_feed_id` (same convention as 12-FLAGS/ASLAN's `strategy_code`
+matching, just by id instead of code).
+
+**Two physical table shapes**, chosen by cadence, both exact mirrors of the
+existing AXIA/12-FLAGS shapes so nothing new had to be invented:
+- **Daily**: `<slug>_clients` + `<slug>_daily_equity` — identical columns to
+  `axia_clients`/`axia_daily_equity`.
+- **Monthly**: `<slug>_monthly_statements` — identical columns to
+  `fund_monthly_statements` (beginning/ending balance, additions,
+  redemptions, OANDA FX bridge for USD statements).
+
+### 15.2 Creation flow — never runs SQL itself
+
+1. Data & Reports → **⚙ Manage Data Feeds** → **+ New Data Feed** → fill
+   name / slug / cadence / currency / color → **Generate SQL** calls
+   `POST /api/data-feeds/preview-sql` (pure string templating, zero
+   execution) → exact `CREATE TABLE` text shown with a copy button.
+2. Run that SQL once in Supabase.
+3. Tick "I've run this SQL" → **Create Feed** fires `POST /api/data-feeds`,
+   which only inserts the registry row (assumes the table(s) already
+   exist — a "relation does not exist" error means step 2 was skipped).
+
+Once registered, the feed appears immediately as a new colored tab on
+Data & Reports (`Reports.jsx` reads `GET /api/data-feeds`, sorted by
+`sort_order`) and as a selectable **Data Feed** on the strategy form in
+Manage Pods & Strategies (`PodStrategyManager.jsx`).
+
+### 15.3 Backend — `backend/src/routers/data_feeds.py`
+
+Full endpoint set, all dynamic on `{slug}` resolved via the registry:
+`GET/POST/PATCH/DELETE /api/data-feeds[/{id}]`,
+`POST /api/data-feeds/preview-sql`,
+`GET/POST/PATCH/DELETE /api/data-feeds/{slug}/clients[/{id}]` (daily),
+`GET/POST/PATCH/DELETE /api/data-feeds/{slug}/equity[/{id}]` +
+`/equity/prev` (daily),
+`GET/POST/PATCH/DELETE /api/data-feeds/{slug}/statements[/{id}]` +
+`/statements/prev` + `/statements/{id}/refetch-fx` (monthly).
+
+Backed by the same parameterized service functions AXIA/IG/12-FLAGS
+already used — `_axia_strategy_agg(..., client_field, clients_table,
+equity_table)` and `_fund_statement_strategy_agg(..., table)` — plus
+`_data_feed_agg(strategies)` in `supabase_service.py`, which loops the
+registry, calls the right parameterized aggregator per feed by cadence,
+and merges every feed's contribution into one `{strategy_id: {...}}` dict.
+
+**Merge-into-combined-dict pattern** (established for
+AXIA/IG/12-FLAGS/ASLAN, now extended): both central computation sites use
+`{**_axia_strategy_agg(...), **_ig_strategy_agg(...), **_data_feed_agg(...)}`.
+Downstream KPI builders need zero further changes once a feed is merged in.
+
+**Gate-check pattern**: every place deciding "does this strategy have a
+bespoke performance source" checks all three link fields —
+`s.get("axia_client_id") or s.get("ig_client_id") or s.get("data_feed_id")`.
+Live call sites (all updated, `supabase_service.py`): `_strategy_capital_invested`
+(§14), `_closed_manual_strategy_agg`'s exclusion guard, and both hierarchy/
+strategy-KPI `axia_contrib` lines. **Note**: `get_pods_with_kpis()` (undecorated,
+no `_fast` suffix) also has a copy of this gate but is dead code — no router
+calls it, `get_pods_with_kpis_fast()` is what's live (`portfolio.py`). Left
+as-is rather than fixed, since touching unused code risked scope creep;
+harmless as long as nothing starts calling it again without the ct_by_strategy
+check too.
+
+### 15.4 Frontend
+
+- `DataFeedManager.jsx` — the create/edit/delete UI described in §15.2.
+- `Reports.jsx` — colored tab bar: **Reports** (downloads, blotter upload,
+  AXIA Statement Parser/Merge) → **AXIA** → **IG** → **12-FLAGS** →
+  **ASLAN LABS** → one tab per registered Data Feed, in `sort_order`.
+- `AxiaEquityEntry.jsx` — already generic (`apiPrefix`/`label`/
+  `clientLinkField` props, added for IG). A daily Data Feed tab reuses it
+  unchanged: `<AxiaEquityEntry apiPrefix="/api/data-feeds/{slug}" clientLinkField="data_feed_client_id" />`.
+- `Flags12StatementEntry.jsx` — generalized this window with `feedSlug`/
+  `dataFeedId` props (legacy `<Flags12StatementEntry />` and the ASLAN
+  instance are untouched, both default to `feedSlug=null` → old
+  `/api/fund-statements` behaviour). A monthly Data Feed tab passes
+  `feedSlug={feed.slug} dataFeedId={feed.id}` — strategy resolution then
+  matches by `data_feed_id` instead of `strategy_code`.
+- `PodStrategyManager.jsx` — **Data Feed** dropdown (any registered feed)
+  + a conditional **Client/Account** dropdown (daily cadence only, scoped
+  to that feed's clients table) — additive alongside the existing separate
+  AXIA/IG fields, which are untouched. The strategy list also shows a
+  colored Data Feed badge (feed name + cadence) when linked, same row
+  slot as the AXIA/IG client badges.
+
+### 15.5 ⚠ Linking pitfall — read before linking a strategy to a feed
+
+Setting **Data Feed** on a strategy switches it to **auto mode** — the
+manual **Initial Investment** field disappears from the form entirely, and
+the backend ignores whatever value is stored there, because it now expects
+Capital Invested/Current Equity to come from that feed's linked client's
+equity history (or the ledger, see §14's priority chain).
+
+**Only link a Data Feed if you are actually going to record data on that
+feed's tab.** A strategy funded once with a static, no-statement figure
+(no recurring updates expected — e.g. a private-company stake) should be
+left with **Data Feed = None** and its value entered directly in **Initial
+Investment**. Linking it to an empty feed with no client/statement yet
+makes Capital Invested show £0.00 everywhere — this happened once (OPTIOS,
+2026-09-01) and was fixed by clearing the Data Feed link and re-entering
+the manual figure. If a feed was created by mistake, delete it via
+Manage Data Feeds (blocked automatically if any strategy is still linked).
+
+### 15.6 Onboarding a new strategy — decision tree
+
+When a new strategy email/instruction comes in, pick ONE of these — don't
+mix:
+
+1. **Static / one-off figure, no recurring statement** (e.g. a private
+   investment held at cost until further notice). Manage Pods & Strategies
+   → create strategy → Data Feed = **None** → set **Initial Investment**
+   directly. Nothing else to build. *(Example: OPTIOS.)*
+
+2. **Daily broker/CFD equity, no live API access yet** (manager reports
+   end-of-day NLV manually, e.g. "will be a CFD broker account, updated
+   daily"). Data & Reports → ⚙ Manage Data Feeds → New Data Feed → cadence
+   **Daily** → run the generated SQL → create feed → new colored tab
+   appears → add the client/account on that tab → link the strategy to it
+   (Data Feed + Client/Account dropdowns). *(Example: INVESTGTX.)*
+
+3. **Monthly NAV/fund-administrator statement** (like 12-FLAGS/ASLAN, but
+   a new fund). Same as #2 but cadence **Monthly** — no client needed,
+   strategy links by Data Feed alone; record each month's Ending Balance
+   on that tab.
+
+4. **AXIA or IG sub-account** (already-integrated platforms, more accounts
+   under the same broker). No new feed needed — just add a new
+   client/account on the existing AXIA or IG tab and link it via the
+   existing AXIA/IG Client dropdown on the strategy form (§10, the
+   platform-parity pattern from the IG build).
+
+5. **Darwinex-mirrored strategy**. Set `brokerage_account` on the strategy
+   — fully automatic via `internal_transfers`/`pfees`, no manual recording
+   at all (§12).
 
 ---
 
-## 16. Known Limitations
+## 16. Roadmap — Outstanding
+
+- [ ] **Pod/portfolio-level watermark adjustment for non-AXIA strategies**
+  See [§17](#17-known-limitations) — documented gap, not yet requested.
+
+---
+
+## 17. Known Limitations
 
 **Watermark not applied at pod/portfolio level for non-AXIA strategies.**
 `get_pods_with_kpis_fast` / `get_portfolio_kpis_fast` aggregate Darwinex/
@@ -1120,7 +1279,7 @@ strategy.
 
 ---
 
-## 17. Dev Workflow
+## 18. Dev Workflow
 
 ```bash
 # Frontend

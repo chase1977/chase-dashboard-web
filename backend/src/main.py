@@ -21,6 +21,7 @@ from src.routers.axia_equity  import router as axia_router
 from src.routers.ig_equity    import router as ig_router
 from src.routers.axia_analysis import router as analysis_router
 from src.routers.fund_statements import router as fund_statements_router
+from src.routers.data_feeds import router as data_feeds_router
 
 # ---------------------------------------------------------------------------
 # Config
@@ -76,6 +77,7 @@ app.include_router(axia_router)
 app.include_router(ig_router)
 app.include_router(analysis_router)
 app.include_router(fund_statements_router)
+app.include_router(data_feeds_router)
 
 
 # ---------------------------------------------------------------------------

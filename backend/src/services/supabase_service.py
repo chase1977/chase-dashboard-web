@@ -792,7 +792,7 @@ def _strategy_capital_invested(s: dict, net_deployed: dict, axia_agg: dict,
     ct = ct_by_strategy.get(s["id"])
     if ct and ct["in"] > 0:
         return round(ct["in"], 2)
-    if (s.get("axia_client_id") or s.get("ig_client_id")) and s["id"] in axia_agg:
+    if (s.get("axia_client_id") or s.get("ig_client_id") or s.get("data_feed_id")) and s["id"] in axia_agg:
         return axia_agg[s["id"]]["baseline"]
     return float(s.get("initial_investment") or 0)
 
@@ -899,14 +899,19 @@ def _ig_strategy_agg(strategies: list[dict]) -> dict[int, dict]:
     )
 
 
-def _fund_statement_strategy_agg(strategies: list[dict]) -> dict[int, dict]:
+def _fund_statement_strategy_agg(strategies: list[dict], table: str = "fund_monthly_statements") -> dict[int, dict]:
     """
     strategy_id -> { invested, pnl, baseline, series, raw_invested, currency }
-    for strategies fed by fund_monthly_statements (e.g. 12-FLAGS, ASLAN LABS)
-    — NAV-administrator-reported funds with no daily broker feed, keyed
-    directly by strategy_id (one statement stream per strategy; no separate
-    "clients" table needed the way AXIA has, since there's no multi-account
-    concept here).
+    for strategies fed by `table` (default fund_monthly_statements — 12-FLAGS,
+    ASLAN LABS) — NAV-administrator-reported funds with no daily broker feed,
+    keyed directly by strategy_id (one statement stream per strategy; no
+    separate "clients" table needed the way AXIA has, since there's no
+    multi-account concept here).
+
+    Parameterized by `table` so any monthly-cadence Data Feed (see
+    data_feeds registry, _data_feed_agg) reuses this exact logic against
+    its own physically separate statements table — default unchanged, zero
+    behavior change for 12-FLAGS/ASLAN LABS.
 
     raw_invested = latest period's ending_balance_gbp (already FX-converted
     by OANDA at entry time, or the raw GBP figure if currency == "GBP"). A
@@ -927,7 +932,7 @@ def _fund_statement_strategy_agg(strategies: list[dict]) -> dict[int, dict]:
     initial_investment — so pnl stays sane before the funding transfer
     (Wallet -> Strategy) has been entered.
     """
-    rows = list_fund_statements()
+    rows = list_fund_statements(table=table)
     by_strategy: dict[int, list[dict]] = {}
     for r in rows:
         by_strategy.setdefault(r["strategy_id"], []).append(r)
@@ -955,6 +960,78 @@ def _fund_statement_strategy_agg(strategies: list[dict]) -> dict[int, dict]:
             "raw_invested": raw_invested,
             "currency":     latest.get("currency"),
         }
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Data Feeds registry — self-service tab-builder (confirmed with Nish
+# 2026-09-01). Each row in `data_feeds` describes one broker/statement
+# source Nish creates from the "Create Data Feed" UI in Data & Reports:
+# name, color, cadence ('daily' or 'monthly'), currency, and the physical
+# table name(s) backing it — a daily feed gets its own <slug>_clients +
+# <slug>_daily_equity pair (same shape as AXIA/IG), a monthly feed gets its
+# own <slug>_monthly_statements table (same shape as fund_monthly_statements,
+# 12-FLAGS/ASLAN LABS). Those physical tables are created by Nish running a
+# one-time SQL script Claude generates — never run by Claude directly (see
+# README standing rule) — the registry row is only added AFTER that SQL has
+# run, so _data_feed_agg never queries a table that doesn't exist yet.
+#
+# A strategy links to at most one feed via strategies.data_feed_id (always)
+# + strategies.data_feed_client_id (daily cadence only — which row in that
+# feed's clients table). This is entirely separate from the legacy
+# axia_client_id/ig_client_id columns, which stay untouched.
+# ---------------------------------------------------------------------------
+
+def _data_feeds_registry() -> list[dict]:
+    """All registered Data Feed configs, ordered by sort_order. Cached 60s."""
+    def _fetch():
+        rows = get_client().table("data_feeds").select("*").order("sort_order").execute().data or []
+        return rows
+    return _get_cached("data_feeds_registry", _fetch)
+
+
+def get_data_feed_by_slug(slug: str) -> Optional[dict]:
+    """Single registry row by slug, or None if no feed with that slug exists."""
+    for f in _data_feeds_registry():
+        if f["slug"] == slug:
+            return f
+    return None
+
+
+def _data_feed_agg(strategies: list[dict]) -> dict[int, dict]:
+    """
+    strategy_id -> { invested, pnl, baseline, series, ... } merged across
+    EVERY registered Data Feed. For each feed, filter strategies down to the
+    ones actually linked to THAT feed (data_feed_id match) before handing
+    them to the existing parameterized aggregator — daily cadence reuses
+    _axia_strategy_agg (same mechanism as AXIA/IG), monthly cadence reuses
+    _fund_statement_strategy_agg (same mechanism as 12-FLAGS/ASLAN LABS).
+    Zero duplicated math — both aggregators were already parameterized by
+    table name for exactly this purpose.
+
+    Merged into the same combined dict as AXIA/IG's output at both call
+    sites (disjoint keys — a strategy can only be linked to one source), so
+    every downstream consumer keeps working unchanged. See _ig_strategy_agg
+    for the precedent.
+    """
+    out: dict[int, dict] = {}
+    for feed in _data_feeds_registry():
+        linked = [s for s in strategies if s.get("data_feed_id") == feed["id"]]
+        if not linked:
+            continue
+        cadence = feed.get("cadence")
+        if cadence == "daily":
+            contrib = _axia_strategy_agg(
+                linked,
+                client_field="data_feed_client_id",
+                clients_table=feed["clients_table"],
+                equity_table=feed["equity_table"],
+            )
+        elif cadence == "monthly":
+            contrib = _fund_statement_strategy_agg(linked, table=feed["statements_table"])
+        else:
+            continue
+        out.update(contrib)
     return out
 
 
@@ -1127,7 +1204,7 @@ def _closed_manual_strategy_agg(strategies: list[dict], banked_agg: dict) -> dic
         status = s.get("status") or "Active"
         if status not in ("Inactive", "Closed"):
             continue
-        if s.get("brokerage_account") or s.get("axia_client_id") or s.get("ig_client_id"):
+        if s.get("brokerage_account") or s.get("axia_client_id") or s.get("ig_client_id") or s.get("data_feed_id"):
             continue  # handled by their own bespoke aggregators already
         contrib = banked_agg.get(sid)
         if not contrib or contrib["total_withdrawn"] == 0:
@@ -1223,7 +1300,7 @@ def _build_pod_pfees_map() -> dict:
     #    pfees. Merged into one dict (disjoint keys — a strategy has at most
     #    one of axia_client_id/ig_client_id set) so every downstream consumer
     #    below keeps working unchanged for both platforms. ──
-    axia_agg = {**_axia_strategy_agg(strategies), **_ig_strategy_agg(strategies)}
+    axia_agg = {**_axia_strategy_agg(strategies), **_ig_strategy_agg(strategies), **_data_feed_agg(strategies)}
     for s in strategies:
         contrib = axia_agg.get(s["id"])
         if not contrib:
@@ -1360,7 +1437,7 @@ def get_pods_with_kpis() -> list[dict]:
         acct = s.get("brokerage_account")
         if acct:
             return net_deployed.get(acct, 0.0)
-        if (s.get("axia_client_id") or s.get("ig_client_id")) and s["id"] in axia_agg:
+        if (s.get("axia_client_id") or s.get("ig_client_id") or s.get("data_feed_id")) and s["id"] in axia_agg:
             return axia_agg[s["id"]]["baseline"]
         return float(s.get("initial_investment") or 0)
 
@@ -1580,7 +1657,7 @@ def get_hierarchy_rows(entity_type: str) -> list[dict]:
             acct_agg[acct]["invested"] = round(acct_agg[acct]["invested"] + invested, 2)
             acct_agg[acct]["pnl"]      = round(acct_agg[acct]["pnl"] + pnl, 2)
 
-        strat_axia_agg     = {**_axia_strategy_agg(strategies), **_ig_strategy_agg(strategies)}
+        strat_axia_agg     = {**_axia_strategy_agg(strategies), **_ig_strategy_agg(strategies), **_data_feed_agg(strategies)}
         strat_fund_agg     = _fund_statement_strategy_agg(strategies)
         # Merged with closed manual/off-platform exits — see
         # _closed_manual_strategy_agg's docstring for why this merges here.
@@ -1628,7 +1705,7 @@ def get_hierarchy_rows(entity_type: str) -> list[dict]:
                 # 4. account_id column directly (if set + matches pfees AccountId)
                 # 5. brokerage_account → AccountId via invest-vs-deploy matching
                 # 6. strategy_code → Darwin display name fallback
-                axia_contrib     = strat_axia_agg.get(s["id"]) if (s.get("axia_client_id") or s.get("ig_client_id")) else None
+                axia_contrib     = strat_axia_agg.get(s["id"]) if (s.get("axia_client_id") or s.get("ig_client_id") or s.get("data_feed_id")) else None
                 fund_contrib     = strat_fund_agg.get(s["id"])
                 darwinex_contrib = strat_darwinex_agg.get(s["id"])
                 if axia_contrib is not None:
@@ -2188,7 +2265,7 @@ def get_strategies_with_kpis_fast(pod_pfees_map: dict, balance_hist: list[dict])
         acct_id = s.get("account_id")
         broker  = s.get("brokerage_account")
 
-        axia_contrib     = axia_agg.get(s["id"]) if (s.get("axia_client_id") or s.get("ig_client_id")) else None
+        axia_contrib     = axia_agg.get(s["id"]) if (s.get("axia_client_id") or s.get("ig_client_id") or s.get("data_feed_id")) else None
         fund_contrib     = fund_agg.get(s["id"])
         darwinex_contrib = darwinex_agg.get(s["id"])
         if axia_contrib is not None:
@@ -2440,22 +2517,26 @@ def create_strategy(name: str, strategy_code: str, pod_id: Optional[int],
                     brokerage_account: Optional[str] = None,
                     axia_client_id: Optional[str] = None,
                     ig_client_id: Optional[str] = None,
+                    data_feed_id: Optional[str] = None,
+                    data_feed_client_id: Optional[str] = None,
                     watermark: Optional[float] = None,
                     profit_share_pct: Optional[float] = None) -> dict:
     sb  = get_client()
     res = sb.table("strategies").insert({
-        "name":               name,
-        "strategy_code":      strategy_code.upper(),
-        "pod_id":             pod_id,
-        "initial_investment": round(initial_investment, 2),
-        "date_created":       date_created,
-        "status":             status,
-        "notes":              notes or None,
-        "brokerage_account":  brokerage_account or None,
-        "axia_client_id":     axia_client_id or None,
-        "ig_client_id":       ig_client_id or None,
-        "watermark":          round(watermark, 2) if watermark is not None else None,
-        "profit_share_pct":   round(profit_share_pct, 2) if profit_share_pct is not None else None,
+        "name":                 name,
+        "strategy_code":        strategy_code.upper(),
+        "pod_id":               pod_id,
+        "initial_investment":   round(initial_investment, 2),
+        "date_created":         date_created,
+        "status":               status,
+        "notes":                notes or None,
+        "brokerage_account":    brokerage_account or None,
+        "axia_client_id":       axia_client_id or None,
+        "ig_client_id":         ig_client_id or None,
+        "data_feed_id":         data_feed_id or None,
+        "data_feed_client_id":  data_feed_client_id or None,
+        "watermark":            round(watermark, 2) if watermark is not None else None,
+        "profit_share_pct":     round(profit_share_pct, 2) if profit_share_pct is not None else None,
     }).execute()
     _invalidate("strategies_all")
     return res.data[0] if res.data else {}
@@ -2886,27 +2967,34 @@ def delete_capital_transfer(transfer_id: int) -> bool:
 # that feed the strategy's Current Equity are always internally consistent.
 # ---------------------------------------------------------------------------
 
-def list_fund_statements(strategy_id: Optional[int] = None) -> list[dict]:
-    """All rows, optionally filtered to one strategy. Sorted period_end_date ASC."""
+def list_fund_statements(strategy_id: Optional[int] = None, table: str = "fund_monthly_statements") -> list[dict]:
+    """
+    All rows from `table`, optionally filtered to one strategy. Sorted
+    period_end_date ASC. `table` defaults to the original fund_monthly_statements
+    (12-FLAGS/ASLAN LABS) — parameterized so any monthly-cadence Data Feed
+    (see data_feeds registry) reuses this exact same logic against its own
+    physically separate statements table, zero behavior change for the
+    original callers.
+    """
     def _fetch():
         rows = (
             get_client()
-            .table("fund_monthly_statements")
+            .table(table)
             .select("*")
             .execute()
             .data or []
         )
         rows.sort(key=lambda r: (r["period_end_date"], r["id"]))
         return rows
-    rows = _get_cached("fund_monthly_statements", _fetch)
+    rows = _get_cached(f"fund_statements_{table}", _fetch)
     if strategy_id is not None:
         rows = [r for r in rows if r["strategy_id"] == strategy_id]
     return rows
 
 
-def get_fund_statement_prev(strategy_id: int, before_date: str) -> Optional[dict]:
+def get_fund_statement_prev(strategy_id: int, before_date: str, table: str = "fund_monthly_statements") -> Optional[dict]:
     """Most recent statement for this strategy strictly before `before_date`."""
-    rows = [r for r in list_fund_statements(strategy_id) if r["period_end_date"] < before_date]
+    rows = [r for r in list_fund_statements(strategy_id, table) if r["period_end_date"] < before_date]
     return rows[-1] if rows else None
 
 
@@ -2927,7 +3015,7 @@ def _compute_fund_statement_fields(beginning_balance: float, additions: float,
 def create_fund_statement(strategy_id: int, period_end_date: str, ending_balance: float,
                            beginning_balance: float, additions: float = 0.0,
                            redemptions: float = 0.0, currency: str = "USD",
-                           notes: str = "") -> dict:
+                           notes: str = "", table: str = "fund_monthly_statements") -> dict:
     from src.services.oanda_service import get_monthly_close
     from datetime import date as _date
 
@@ -2954,18 +3042,18 @@ def create_fund_statement(strategy_id: int, period_end_date: str, ending_balance
         ),
         "notes": notes or None,
     }
-    res = get_client().table("fund_monthly_statements").insert(payload).execute()
-    _invalidate("fund_monthly_statements")
+    res = get_client().table(table).insert(payload).execute()
+    _invalidate(f"fund_statements_{table}")
     return res.data[0] if res.data else {}
 
 
-def update_fund_statement(record_id: int, **fields) -> dict:
+def update_fund_statement(record_id: int, table: str = "fund_monthly_statements", **fields) -> dict:
     """
     Recomputes net_income/rate_of_return_pct whenever any of the four input
     numbers change, and re-fetches FX whenever period_end_date or currency
     changes — same server-side-source-of-truth approach as create.
     """
-    existing_rows = get_client().table("fund_monthly_statements").select("*").eq("id", record_id).execute().data
+    existing_rows = get_client().table(table).select("*").eq("id", record_id).execute().data
     if not existing_rows:
         return {}
     existing = existing_rows[0]
@@ -2993,14 +3081,14 @@ def update_fund_statement(record_id: int, **fields) -> dict:
         # Ending balance changed but FX didn't — reconvert with the existing rate
         fields["ending_balance_gbp"] = round(float(merged["ending_balance"]) / float(merged["fx_rate"]), 2)
 
-    res = get_client().table("fund_monthly_statements").update(fields).eq("id", record_id).execute()
-    _invalidate("fund_monthly_statements")
+    res = get_client().table(table).update(fields).eq("id", record_id).execute()
+    _invalidate(f"fund_statements_{table}")
     return res.data[0] if res.data else {}
 
 
-def refetch_fund_statement_fx(record_id: int) -> dict:
+def refetch_fund_statement_fx(record_id: int, table: str = "fund_monthly_statements") -> dict:
     """Manual retry — re-attempt the OANDA lookup for a row whose FX fetch failed."""
-    rows = get_client().table("fund_monthly_statements").select("*").eq("id", record_id).execute().data
+    rows = get_client().table(table).select("*").eq("id", record_id).execute().data
     if not rows:
         return {}
     row = rows[0]
@@ -3016,14 +3104,14 @@ def refetch_fund_statement_fx(record_id: int) -> dict:
         "fx_rate_date":       fx["candle_date"],
         "ending_balance_gbp": round(float(row["ending_balance"]) / fx["rate"], 2),
     }
-    res = get_client().table("fund_monthly_statements").update(fields).eq("id", record_id).execute()
-    _invalidate("fund_monthly_statements")
+    res = get_client().table(table).update(fields).eq("id", record_id).execute()
+    _invalidate(f"fund_statements_{table}")
     return res.data[0] if res.data else row
 
 
-def delete_fund_statement(record_id: int) -> bool:
-    get_client().table("fund_monthly_statements").delete().eq("id", record_id).execute()
-    _invalidate("fund_monthly_statements")
+def delete_fund_statement(record_id: int, table: str = "fund_monthly_statements") -> bool:
+    get_client().table(table).delete().eq("id", record_id).execute()
+    _invalidate(f"fund_statements_{table}")
     return True
 
 

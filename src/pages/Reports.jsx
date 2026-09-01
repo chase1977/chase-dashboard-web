@@ -17,7 +17,7 @@
  *   user_blotter_*           → SKIP (no table)
  */
 
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 import JSZip    from 'jszip'
 import Papa     from 'papaparse'
 import {
@@ -30,6 +30,8 @@ import StatementUpload                             from '../components/Statement
 import StatementMerge                             from '../components/StatementMerge.jsx'
 import AxiaEquityEntry                            from '../components/AxiaEquityEntry.jsx'
 import Flags12StatementEntry                       from '../components/Flags12StatementEntry.jsx'
+import DataFeedManager                             from '../components/DataFeedManager.jsx'
+import { fetchDataFeeds }                          from '../services/api.js'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Config
@@ -633,141 +635,172 @@ function UploadSection() {
 // Page
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Static tabs — always present, in this order. Dynamic Data Feed tabs
+// (from the `data_feeds` registry) are appended after these, sorted by
+// sort_order, and rendered as their own colored pills too.
+const STATIC_TABS = [
+  { id: 'reports', label: 'Reports',    color: '#38BDF8' },
+  { id: 'axia',    label: 'AXIA',       color: '#a78bfa' },
+  { id: 'ig',      label: 'IG',         color: '#fb923c' },
+  { id: 'flags12', label: '12-FLAGS',   color: '#34D399' },
+  { id: 'aslan',   label: 'ASLAN LABS', color: '#f472b6' },
+]
+
+function SectionCard({ title, desc, children }) {
+  return (
+    <div style={{ marginTop: 28 }}>
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ fontSize:13, fontWeight:600, color:'#F1F5F9', marginBottom:3 }}>{title}</div>
+        {desc && <div style={{ fontSize:11, color:'#475569' }}>{desc}</div>}
+      </div>
+      <div style={{ background:'#111C2B', border:'1px solid #1E3A5F', borderRadius:10, overflow:'hidden' }}>
+        {children}
+      </div>
+    </div>
+  )
+}
+
 export default function Reports() {
+  const [activeTab, setActiveTab] = useState('reports')
+  const [dataFeeds, setDataFeeds] = useState([])
+  const [showFeedAdmin, setShowFeedAdmin] = useState(false)
+
+  const loadFeeds = useCallback(async () => {
+    try { setDataFeeds(await fetchDataFeeds()) } catch { /* silent */ }
+  }, [])
+  useEffect(() => { loadFeeds() }, [loadFeeds])
+
+  const feedTabs = dataFeeds
+    .slice()
+    .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
+    .map(f => ({ id: `feed:${f.slug}`, label: f.name, color: f.color, feed: f }))
+
+  const allTabs = [...STATIC_TABS, ...feedTabs]
+  const active = allTabs.find(t => t.id === activeTab) ?? STATIC_TABS[0]
+
   return (
     <div style={{ padding:'16px clamp(14px, 4vw, 24px) 48px', maxWidth:1400 }}>
-      <div style={{ marginBottom:24 }}>
-        <h1 style={{ fontSize:22, fontWeight:600, color:'#F1F5F9', margin:0 }}>Data & Reports</h1>
-        <div style={{ fontSize:11, color:'#475569', marginTop:3 }}>
-          Download institutional reports · Upload daily blotter data · Record broker/fund statements
-        </div>
-      </div>
-      <div style={{ padding:'10px 14px', borderRadius:6, marginBottom:24,
-        background:'rgba(14,165,233,0.06)', border:'1px solid rgba(14,165,233,0.15)',
-        fontSize:11, color:'#475569', lineHeight:1.6 }}>
-        Reports reflect the latest available data snapshot.
-        Past performance is not indicative of future results. For authorised personnel only.
-      </div>
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(230px, 1fr))', gap:16 }}>
-        {REPORT_CARDS.map(c => <ReportCard key={c.id} card={c} />)}
-      </div>
-      <UploadSection />
-
-      {/* AXIA Statement Parser */}
-      <div style={{ marginTop:36 }}>
-        <div style={{ marginBottom:14 }}>
-          <div style={{ fontSize:13, fontWeight:600, color:'#F1F5F9', marginBottom:3 }}>
-            AXIA Statement Parser
-          </div>
-          <div style={{ fontSize:11, color:'#475569' }}>
-            Upload a daily detail PDF statement → parsed preview + formatted Excel workbook download.
+      <div style={{ marginBottom:20, display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:12 }}>
+        <div>
+          <h1 style={{ fontSize:22, fontWeight:600, color:'#F1F5F9', margin:0 }}>Data & Reports</h1>
+          <div style={{ fontSize:11, color:'#475569', marginTop:3 }}>
+            Download institutional reports · Upload daily blotter data · Record broker/fund statements
           </div>
         </div>
-        <div style={{
-          background:'#111C2B', border:'1px solid #1E3A5F',
-          borderRadius:10, overflow:'hidden',
+        <button onClick={() => setShowFeedAdmin(v => !v)} style={{
+          padding:'8px 16px', borderRadius:6, fontSize:11, fontWeight:600, cursor:'pointer',
+          background: showFeedAdmin ? 'rgba(56,189,248,0.14)' : 'rgba(255,255,255,0.03)',
+          border:'1px solid #1E3A5F', color:'#38BDF8',
         }}>
-          <StatementUpload />
-        </div>
+          {showFeedAdmin ? '✕ Close Data Feed Manager' : '⚙ Manage Data Feeds'}
+        </button>
       </div>
 
-      {/* AXIA Statement Merge */}
-      <div style={{ marginTop:36 }}>
-        <div style={{ marginBottom:14 }}>
-          <div style={{ fontSize:13, fontWeight:600, color:'#F1F5F9', marginBottom:3 }}>
-            AXIA Statement Merge
-          </div>
-          <div style={{ fontSize:11, color:'#475569' }}>
-            Drop multiple single-day Excel statements → merged chronological Excel ready for Analysis tab.
-          </div>
+      {showFeedAdmin && (
+        <div style={{ marginBottom:24 }}>
+          <DataFeedManager onChanged={loadFeeds} />
         </div>
-        <div style={{
-          background:'#111C2B', border:'1px solid #1E3A5F',
-          borderRadius:10, overflow:'hidden',
-        }}>
-          <StatementMerge />
-        </div>
+      )}
+
+      {/* ── Tab bar ── */}
+      <div style={{ display:'flex', gap:8, flexWrap:'wrap', marginBottom:24, borderBottom:'1px solid #1E3A5F', paddingBottom:14 }}>
+        {allTabs.map(t => {
+          const isActive = t.id === activeTab
+          return (
+            <button key={t.id} onClick={() => setActiveTab(t.id)} style={{
+              padding:'8px 16px', borderRadius:20, fontSize:12, fontWeight:600, cursor:'pointer',
+              border: `1px solid ${isActive ? t.color : '#1E3A5F'}`,
+              background: isActive ? `${t.color}22` : 'rgba(255,255,255,0.02)',
+              color: isActive ? t.color : '#94A3B8',
+              display:'flex', alignItems:'center', gap:7,
+            }}>
+              <span style={{ width:7, height:7, borderRadius:'50%', background:t.color }} />
+              {t.label}
+            </button>
+          )
+        })}
       </div>
 
-      {/* AXIA Daily Equity Entry */}
-      <div style={{ marginTop:36 }}>
-        <div style={{ marginBottom:14 }}>
-          <div style={{ fontSize:13, fontWeight:600, color:'#F1F5F9', marginBottom:3 }}>
-            AXIA Daily Equity (NLV)
+      {/* ── Reports tab ── */}
+      {active.id === 'reports' && (
+        <>
+          <div style={{ padding:'10px 14px', borderRadius:6, marginBottom:24,
+            background:'rgba(14,165,233,0.06)', border:'1px solid rgba(14,165,233,0.15)',
+            fontSize:11, color:'#475569', lineHeight:1.6 }}>
+            Reports reflect the latest available data snapshot.
+            Past performance is not indicative of future results. For authorised personnel only.
           </div>
-          <div style={{ fontSize:11, color:'#475569' }}>
-            Record daily Net Liquid Value + CHG NLV for AXIA strategy — Alpha Pod.
-            CHG NLV auto-calculated from previous record where available.
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(230px, 1fr))', gap:16 }}>
+            {REPORT_CARDS.map(c => <ReportCard key={c.id} card={c} />)}
           </div>
-        </div>
-        <div style={{
-          background:'#111C2B', border:'1px solid #1E3A5F',
-          borderRadius:10, overflow:'hidden',
-        }}>
+          <UploadSection />
+
+          <SectionCard title="AXIA Statement Parser"
+            desc="Upload a daily detail PDF statement → parsed preview + formatted Excel workbook download.">
+            <StatementUpload />
+          </SectionCard>
+
+          <SectionCard title="AXIA Statement Merge"
+            desc="Drop multiple single-day Excel statements → merged chronological Excel ready for Analysis tab.">
+            <StatementMerge />
+          </SectionCard>
+        </>
+      )}
+
+      {/* ── AXIA tab ── */}
+      {active.id === 'axia' && (
+        <SectionCard title="AXIA Daily Equity (NLV)"
+          desc="Record daily Net Liquid Value + CHG NLV for AXIA strategy — Alpha Pod. CHG NLV auto-calculated from previous record where available.">
           <AxiaEquityEntry apiPrefix="/api/axia" label="AXIA" clientLinkField="axia_client_id" />
-        </div>
-      </div>
+        </SectionCard>
+      )}
 
-      {/* IG Daily Equity Entry */}
-      <div style={{ marginTop:36 }}>
-        <div style={{ marginBottom:14 }}>
-          <div style={{ fontSize:13, fontWeight:600, color:'#F1F5F9', marginBottom:3 }}>
-            IG Daily Equity (NLV)
-          </div>
-          <div style={{ fontSize:11, color:'#475569' }}>
-            Record daily Net Liquid Value + CHG NLV for IG-linked strategies (e.g. IG-Junior).
-            Same mechanism as AXIA — CHG NLV auto-calculated from previous record where available.
-            Supports multiple IG client/accounts.
-          </div>
-        </div>
-        <div style={{
-          background:'#111C2B', border:'1px solid #1E3A5F',
-          borderRadius:10, overflow:'hidden',
-        }}>
+      {/* ── IG tab ── */}
+      {active.id === 'ig' && (
+        <SectionCard title="IG Daily Equity (NLV)"
+          desc="Record daily Net Liquid Value + CHG NLV for IG-linked strategies (e.g. IG-Junior). Same mechanism as AXIA — CHG NLV auto-calculated from previous record where available. Supports multiple IG client/accounts.">
           <AxiaEquityEntry apiPrefix="/api/ig" label="IG" clientLinkField="ig_client_id" />
-        </div>
-      </div>
+        </SectionCard>
+      )}
 
-      {/* 12-FLAGS Monthly Statement Entry */}
-      <div style={{ marginTop:36 }}>
-        <div style={{ marginBottom:14 }}>
-          <div style={{ fontSize:13, fontWeight:600, color:'#F1F5F9', marginBottom:3 }}>
-            12-FLAGS Monthly Statement (USD)
-          </div>
-          <div style={{ fontSize:11, color:'#475569' }}>
-            Record the monthly NAV Fund Services Investor Statement Ending Balance — Net Income and
-            Rate of Return auto-computed. GBP converted via OANDA GBP/USD monthly close, feeds the
-            12-FLAGS strategy's Current Equity automatically.
-          </div>
-        </div>
-        <div style={{
-          background:'#111C2B', border:'1px solid #1E3A5F',
-          borderRadius:10, overflow:'hidden',
-        }}>
+      {/* ── 12-FLAGS tab ── */}
+      {active.id === 'flags12' && (
+        <SectionCard title="12-FLAGS Monthly Statement (USD)"
+          desc="Record the monthly NAV Fund Services Investor Statement Ending Balance — Net Income and Rate of Return auto-computed. GBP converted via OANDA GBP/USD monthly close, feeds the 12-FLAGS strategy's Current Equity automatically.">
           <Flags12StatementEntry />
-        </div>
-      </div>
+        </SectionCard>
+      )}
 
-      {/* ASLAN LABS Monthly Statement Entry */}
-      <div style={{ marginTop:36 }}>
-        <div style={{ marginBottom:14 }}>
-          <div style={{ fontSize:13, fontWeight:600, color:'#F1F5F9', marginBottom:3 }}>
-            ASLAN LABS Monthly Statement (GBP)
-          </div>
-          <div style={{ fontSize:11, color:'#475569' }}>
-            Record the monthly manager-reported Gross Balance for ASLAN LABS (Crypto Pod) —
-            Net Income and Rate of Return auto-computed. Chase's actual equity after the
-            watermark + profit-split set on the strategy is shown in the confirm step and
-            feeds the Portfolio page automatically.
-          </div>
-        </div>
-        <div style={{
-          background:'#111C2B', border:'1px solid #1E3A5F',
-          borderRadius:10, overflow:'hidden',
-        }}>
+      {/* ── ASLAN LABS tab ── */}
+      {active.id === 'aslan' && (
+        <SectionCard title="ASLAN LABS Monthly Statement (GBP)"
+          desc="Record the monthly manager-reported Gross Balance for ASLAN LABS (Crypto Pod) — Net Income and Rate of Return auto-computed. Chase's actual equity after the watermark + profit-split set on the strategy is shown in the confirm step and feeds the Portfolio page automatically.">
           <Flags12StatementEntry strategyCode="ASLAN" currency="GBP" label="ASLAN LABS" />
-        </div>
-      </div>
+        </SectionCard>
+      )}
+
+      {/* ── Dynamic Data Feed tabs ── */}
+      {active.feed && active.feed.cadence === 'daily' && (
+        <SectionCard title={`${active.feed.name} Daily Equity (NLV)`}
+          desc={`Record daily Net Liquid Value + CHG NLV for ${active.feed.name}-linked strategies. Same mechanism as AXIA/IG.`}>
+          <AxiaEquityEntry
+            apiPrefix={`/api/data-feeds/${active.feed.slug}`}
+            label={active.feed.name}
+            clientLinkField="data_feed_client_id"
+          />
+        </SectionCard>
+      )}
+      {active.feed && active.feed.cadence === 'monthly' && (
+        <SectionCard title={`${active.feed.name} Monthly Statement (${active.feed.currency})`}
+          desc={`Record the monthly statement Ending Balance for ${active.feed.name} — Net Income and Rate of Return auto-computed.`}>
+          <Flags12StatementEntry
+            feedSlug={active.feed.slug}
+            dataFeedId={active.feed.id}
+            currency={active.feed.currency}
+            label={active.feed.name}
+          />
+        </SectionCard>
+      )}
     </div>
   )
 }
