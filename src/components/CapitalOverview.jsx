@@ -471,22 +471,27 @@ export function CapitalOverviewHero({ kpis, isMobile }) {
   const roiPos = roi >= 0
   const [showBankedModal, setShowBankedModal] = useState(false)
 
-  const cards = [
+  // HIDDEN 2026-09-02 (Nish request) — Total Capital Invested and Total ROI
+  // pulled from the visible hero strip for now, NOT deleted. Re-enable by
+  // moving these two objects back into `cards` below, and setting the grid
+  // back to repeat(6, ...) (mobile stays repeat(2, ...) either way).
+  // eslint-disable-next-line no-unused-vars
+  const HIDDEN_cards = [
     {
       icon: Wallet, color: '#38BDF8', label: 'Total Capital Invested',
       value: fmtGBP(invested),
       sub: 'Total capital historically invested across the portfolio.',
     },
     {
-      icon: banked >= 0 ? Landmark : TrendingDown, color: banked >= 0 ? '#34D399' : '#F87171', label: 'Banked Profit / Loss',
-      value: fmtGBP(banked),
-      sub: isMobile
-        ? 'Click for details →'
-        : (banked >= 0
-          ? 'Profit withdrawn and returned to Chase. Click for breakdown.'
-          : 'Net realized loss on withdrawals — a closing withdrawal returned less than remaining allocated capital. Click for breakdown.'),
-      onClick: () => setShowBankedModal(true),
+      icon: Percent, color: roiPos ? '#34D399' : '#F87171', label: 'Total ROI',
+      value: fmtPctSigned(roi),
+      sub: 'Total P&L as a percentage of total capital invested.',
     },
+  ]
+
+  // Visible order (Nish request 2026-09-02): Capital Allocated, Current
+  // Equity, Total P&L, Banked Profit/Loss.
+  const cards = [
     {
       icon: PieChart, color: '#F59E0B', label: 'Capital Allocated',
       value: fmtGBP(allocated),
@@ -503,16 +508,21 @@ export function CapitalOverviewHero({ kpis, isMobile }) {
       sub: 'Total profit or loss, including both banked and current performance.',
     },
     {
-      icon: Percent, color: roiPos ? '#34D399' : '#F87171', label: 'Total ROI',
-      value: fmtPctSigned(roi),
-      sub: 'Total P&L as a percentage of total capital invested.',
+      icon: banked >= 0 ? Landmark : TrendingDown, color: banked >= 0 ? '#34D399' : '#F87171', label: 'Banked Profit / Loss',
+      value: fmtGBP(banked),
+      sub: isMobile
+        ? 'Click for details →'
+        : (banked >= 0
+          ? 'Profit withdrawn and returned to Chase. Click for breakdown.'
+          : 'Net realized loss on withdrawals — a closing withdrawal returned less than remaining allocated capital. Click for breakdown.'),
+      onClick: () => setShowBankedModal(true),
     },
   ]
 
   return (
     <div style={{
       display: 'grid',
-      gridTemplateColumns: isMobile ? 'repeat(2, minmax(0,1fr))' : 'repeat(6, minmax(0,1fr))',
+      gridTemplateColumns: isMobile ? 'repeat(2, minmax(0,1fr))' : 'repeat(4, minmax(0,1fr))',
       gap: 12,
     }}>
       {cards.map(c => <HeroCard key={c.label} {...c} isMobile={isMobile} />)}
@@ -530,12 +540,20 @@ export function CapitalFlowTable({ kpis }) {
   const pct = v => invested !== 0 ? `${((v / invested) * 100).toFixed(2)}%` : '—'
   const [showBankedModal, setShowBankedModal] = useState(false)
 
+  // HIDDEN 2026-09-02 (Nish request) — "Total Capital Invested" row pulled
+  // from the visible table for now, NOT deleted. `invested` is still used
+  // below to compute each row's "% of Invested" column, just not shown as
+  // its own row. Re-enable by adding this row back into `rows`.
+  // eslint-disable-next-line no-unused-vars
+  const HIDDEN_invested_row = { dot: '#38BDF8', label: 'Total Capital Invested', amount: invested, pct: pct(invested) }
+
+  // Visible order (Nish request 2026-09-02): Capital Allocated, Current
+  // Equity, Total P&L, Banked Profit/Loss.
   const rows = [
-    { dot: '#38BDF8', label: 'Total Capital Invested',          amount: invested,  pct: pct(invested) },
-    { dot: banked >= 0 ? '#34D399' : '#F87171', label: 'Banked Profit / Loss (Withdrawn)', amount: banked, pct: pct(banked), signed: true, negativeAware: true, onClick: () => setShowBankedModal(true) },
     { dot: '#F59E0B', label: 'Capital Allocated (Still Out)',   amount: allocated, pct: pct(allocated) },
     { dot: '#A78BFA', label: 'Current Equity (Economic Interest)', amount: equity, pct: pct(equity) },
     { dot: pnl >= 0 ? '#34D399' : '#F87171', label: 'Total P&L', amount: pnl, pct: pct(pnl), bold: true, signed: true, negativeAware: true },
+    { dot: banked >= 0 ? '#34D399' : '#F87171', label: 'Banked Profit / Loss (Withdrawn)', amount: banked, pct: pct(banked), signed: true, negativeAware: true, onClick: () => setShowBankedModal(true) },
   ]
 
   return (
@@ -621,21 +639,24 @@ function WrappedAxisTick({ x, y, payload, fontSize = 9.5 }) {
 export function CapitalAtGlanceChart({ kpis, height = 300, isMobile = false }) {
   const { invested, banked, allocated, equity, pnl } = computeCapitalMetrics(kpis)
 
+  // HIDDEN 2026-09-02 (Nish request) — "Total Capital Invested" bar pulled
+  // from the visible chart for now, NOT deleted. Re-enable by adding an
+  // entry for it back into both arrays below (mobile + desktop).
+  //
   // Shorter category labels on mobile — full names stay on desktop.
+  // Visible order: Capital Allocated, Current Equity, Total P&L, Banked P/L.
   const data = isMobile
     ? [
-        { name: 'Capital\nInvested',   fullName: 'Total Capital Invested',           amount: invested,  color: '#38BDF8' },
-        { name: 'Banked\nP/L',         fullName: 'Banked Profit / Loss (Withdrawn)', amount: banked,    color: banked >= 0 ? '#34D399' : '#F87171' },
         { name: 'Capital\nAllocated',  fullName: 'Capital Allocated (Still Out)',    amount: allocated, color: '#F59E0B' },
         { name: 'Current\nEquity',     fullName: 'Current Equity (Economic Interest)', amount: equity,  color: '#A78BFA' },
         { name: 'Total\nP&L',          fullName: 'Total P&L',                        amount: pnl,       color: pnl >= 0 ? '#34D399' : '#F87171' },
+        { name: 'Banked\nP/L',         fullName: 'Banked Profit / Loss (Withdrawn)', amount: banked,    color: banked >= 0 ? '#34D399' : '#F87171' },
       ]
     : [
-        { name: 'Total Capital\nInvested',       fullName: 'Total Capital Invested',        amount: invested,  color: '#38BDF8' },
-        { name: 'Banked Profit/Loss\n(Withdrawn)', fullName: 'Banked Profit / Loss (Withdrawn)', amount: banked, color: banked >= 0 ? '#34D399' : '#F87171' },
         { name: 'Capital Allocated\n(Still Out)',fullName: 'Capital Allocated (Still Out)', amount: allocated, color: '#F59E0B' },
         { name: 'Current Equity\n(Economic Interest)', fullName: 'Current Equity (Economic Interest)', amount: equity, color: '#A78BFA' },
         { name: 'Total P&L',                     fullName: 'Total P&L',                     amount: pnl,       color: pnl >= 0 ? '#34D399' : '#F87171' },
+        { name: 'Banked Profit/Loss\n(Withdrawn)', fullName: 'Banked Profit / Loss (Withdrawn)', amount: banked, color: banked >= 0 ? '#34D399' : '#F87171' },
       ]
 
   return (
@@ -660,7 +681,7 @@ export function CapitalAtGlanceChart({ kpis, height = 300, isMobile = false }) {
         <BarChart
           data={data}
           margin={isMobile ? { top: 26, right: 4, left: 0, bottom: 10 } : { top: 20, right: 8, left: 0, bottom: 12 }}
-          barCategoryGap={isMobile ? '18%' : '28%'}
+          barCategoryGap={isMobile ? '12%' : '18%'}
         >
           <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="#1E3A5F" strokeOpacity={0.4} />
           <XAxis
@@ -674,7 +695,7 @@ export function CapitalAtGlanceChart({ kpis, height = 300, isMobile = false }) {
           />
           <ReferenceLine y={0} stroke="#1E3A5F" strokeWidth={1} />
           <Tooltip content={<GlanceTooltip />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
-          <Bar dataKey="amount" radius={[4, 4, 0, 0]} maxBarSize={isMobile ? 44 : 64}>
+          <Bar dataKey="amount" radius={[4, 4, 0, 0]} maxBarSize={isMobile ? 68 : 96}>
             {data.map((d, i) => <Cell key={i} fill={d.color} fillOpacity={0.88} />)}
             <LabelList
               dataKey="amount"

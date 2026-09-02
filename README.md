@@ -22,9 +22,10 @@ React (Vite) frontend, FastAPI backend, Supabase (Postgres) database.
 13. [Roadmap — Completed](#13-roadmap--completed)
 14. [Capital Pipeline: Strategy → Pod → Portfolio](#14-capital-pipeline-strategy--pod--portfolio)
 15. [Data Feeds — Self-Service Tab Builder](#15-data-feeds--self-service-tab-builder)
-16. [Roadmap — Outstanding](#16-roadmap--outstanding)
-17. [Known Limitations](#17-known-limitations)
-18. [Dev Workflow](#18-dev-workflow)
+16. [Temporarily Hidden / Paused Metrics — Review Before Re-Enabling](#16-temporarily-hidden--paused-metrics--review-before-re-enabling)
+17. [Roadmap — Outstanding](#17-roadmap--outstanding)
+18. [Known Limitations](#18-known-limitations)
+19. [Dev Workflow](#19-dev-workflow)
 
 ---
 
@@ -221,8 +222,8 @@ Implemented in `_apply_watermark(strategy, raw_equity, baseline)`,
 | Level | AXIA strategies | Non-AXIA (Darwinex/manual) strategies |
 |---|---|---|
 | Strategy | ✅ Applied | ✅ Applied |
-| Pod | ✅ Applied (additive from adjusted strategy figures) | ⚠️ Not applied — see [§17](#17-known-limitations) |
-| Portfolio | ✅ Applied | ⚠️ Not applied — see [§17](#17-known-limitations) |
+| Pod | ✅ Applied (additive from adjusted strategy figures) | ⚠️ Not applied — see [§18](#18-known-limitations) |
+| Portfolio | ✅ Applied | ⚠️ Not applied — see [§18](#18-known-limitations) |
 
 ---
 
@@ -1250,14 +1251,57 @@ mix:
 
 ---
 
-## 16. Roadmap — Outstanding
+## 16. Temporarily Hidden / Paused Metrics — Review Before Re-Enabling
 
-- [ ] **Pod/portfolio-level watermark adjustment for non-AXIA strategies**
-  See [§17](#17-known-limitations) — documented gap, not yet requested.
+Metrics below are deliberately hidden or paused in the UI as of 2026-09-02
+(Nish request) — not deleted, not broken. Flagged here so a future pass
+remembers to revisit them, and so nobody "fixes" a component that's working
+exactly as asked.
+
+**Portfolio page — hero strip, Capital Flow Summary table, Capital at a
+Glance chart** (`src/components/CapitalOverview.jsx`):
+- **Total Capital Invested** and **Total ROI** removed from the visible
+  hero strip (was 6 cards, now 4: Capital Allocated, Current Equity,
+  Total P&L, Banked Profit/Loss — new fixed order everywhere below too).
+  Code kept as `HIDDEN_cards` in `CapitalOverviewHero` — move the two
+  objects back into the live `cards` array to restore, and change the
+  desktop grid back from `repeat(4, ...)` to `repeat(6, ...)`.
+- **Total Capital Invested** row removed from the Capital Flow Summary
+  table (`CapitalFlowTable`) — kept as `HIDDEN_invested_row`. The
+  underlying `invested` value is still computed and still drives every
+  row's "% of Invested" column, just not shown as its own row.
+- **Total Capital Invested** bar removed from the Capital at a Glance
+  chart (`CapitalAtGlanceChart`) — both the mobile and desktop `data`
+  arrays. Bars were also thickened (`barCategoryGap` and `maxBarSize`
+  increased) to fill the space the 5th bar left behind.
+- All three components now show the same 4-metric order: **Capital
+  Allocated → Current Equity → Total P&L → Banked Profit/Loss.**
+
+**Pods Overview / Strategies Overview cards** (`src/pages/Portfolio.jsx`,
+`OverviewCard`'s **Total ROI** `StatBox`): box stays in its usual grid
+position, but shows a plain **"—"** instead of a computed value — the
+formula (`fmtPctSigned(roi)`, `tone={roi >= 0 ? 'pos' : 'neg'}`) is
+commented directly above the live JSX, not deleted. This ROI figure is
+still being finalized at the pod/strategy level (ties into the known
+pod/portfolio-level watermark gap below, §17) — reinstate once that's
+settled by uncommenting and swapping the `value`/`tone` props back.
+
+**Not touched**: the Portfolio-page `roi`/`invested` values themselves —
+`computeCapitalMetrics()` still computes them every render, every backend
+KPI field is untouched, and `Capital_Performance_Overview_Explained.md`
+(the manager-facing explainer) still documents the full 6-metric formula
+set. Only the display layer is paused.
 
 ---
 
-## 17. Known Limitations
+## 17. Roadmap — Outstanding
+
+- [ ] **Pod/portfolio-level watermark adjustment for non-AXIA strategies**
+  See [§18](#18-known-limitations) — documented gap, not yet requested.
+
+---
+
+## 18. Known Limitations
 
 **Watermark not applied at pod/portfolio level for non-AXIA strategies.**
 `get_pods_with_kpis_fast` / `get_portfolio_kpis_fast` aggregate Darwinex/
@@ -1279,7 +1323,7 @@ strategy.
 
 ---
 
-## 18. Dev Workflow
+## 19. Dev Workflow
 
 ```bash
 # Frontend

@@ -160,9 +160,6 @@ function GlassStyles() {
         display: flex; flex-direction: column;
         min-height: 172px;
       }
-      @media (max-width: 768px) {
-        .cap-hero-card { min-height: 120px; }
-      }
       .stat-box {
         position: relative;
         background: rgba(255,255,255,0.035);
@@ -228,17 +225,6 @@ function GlassStyles() {
       }
       .glass-table tbody tr:hover {
         background: rgba(56,189,248,0.07) !important;
-      }
-
-      /* ── Mobile: tighter type so cards/tables fit without overlap ── */
-      @media (max-width: 768px) {
-        .ov-card       { padding: 14px 14px; }
-        .ov-header     { margin-bottom: 10px; padding-bottom: 9px; gap: 7px; }
-        .ov-name       { font-size: 12px; }
-        .stat-grid     { gap: 6px; }
-        .stat-box      { padding: 7px 8px; }
-        .stat-label    { font-size: 7.8px; margin-bottom: 3px; }
-        .stat-value    { font-size: 11px; }
       }
     `}</style>
   )
@@ -314,9 +300,6 @@ function NoDataBadge() {
 }
 
 function OverviewCard({ name, color, kpis, onClick, isMobile, status, watermark, profitSharePct, hasData }) {
-  // Cards are non-interactive on mobile per current spec — desktop click-
-  // through to drill-down is untouched.
-  const clickHandler = isMobile ? undefined : onClick
   const vars = {
     '--accent':       color,
     '--accent-soft':  hexToRgba(color, 0.20),
@@ -324,28 +307,24 @@ function OverviewCard({ name, color, kpis, onClick, isMobile, status, watermark,
   }
   const { invested, banked, allocated, equity, pnl, roi } = computeCapitalMetrics(kpis)
 
-  // Fund-statement strategies (12-FLAGS, ASLAN LABS): the fund's own net
-  // income / return % from its NAV administrator statement, in the
-  // STATEMENT's own currency — undefined for every other strategy type, so
-  // this sub-line only ever appears there. Shown so an FX/watermark
-  // translation effect (baseline converted at deposit-date rate, or a
-  // profit-split reducing Chase's equity below the fund's raw balance)
-  // never reads as a discrepancy against the fund's own quoted numbers.
+  // Fund-statement strategies (12-FLAGS): the fund's own USD net income /
+  // return % from its NAV administrator statement — undefined for every
+  // other strategy type, so this sub-line only ever appears there. Shown
+  // so a GBP FX-translation effect (baseline converted at deposit-date rate
+  // vs current equity at latest rate) never reads as a discrepancy against
+  // the fund's own quoted numbers.
   const fundUsdNet = kpis?.fund_usd_net_income
   const fundUsdPct = kpis?.fund_usd_return_pct
-  const fundCcy    = kpis?.fund_statement_currency
-  const fundSym    = fundCcy === 'GBP' ? '£' : fundCcy === 'EUR' ? '€' : '$'
-  const fundLocale = fundCcy === 'GBP' ? 'en-GB' : fundCcy === 'EUR' ? 'de-DE' : 'en-US'
   const hasFundUsd = fundUsdNet != null && fundUsdPct != null
   const fundUsdPnlLine = hasFundUsd
-    ? `Statement YTD: ${fundUsdNet >= 0 ? '+' : '-'}${fundSym}${Math.abs(fundUsdNet).toLocaleString(fundLocale, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    ? `USD YTD: ${fundUsdNet >= 0 ? '+' : '-'}$${Math.abs(fundUsdNet).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
     : null
   const fundUsdRoiLine = hasFundUsd
-    ? `Statement YTD: ${fundUsdPct >= 0 ? '+' : ''}${fundUsdPct.toFixed(2)}%`
+    ? `USD YTD: ${fundUsdPct >= 0 ? '+' : ''}${fundUsdPct.toFixed(2)}%`
     : null
 
   return (
-    <div className="ov-card" onClick={clickHandler} style={{ ...vars, cursor: isMobile ? 'default' : 'pointer' }}>
+    <div className="ov-card" onClick={onClick} style={vars}>
       <div className="ov-header">
         <div className="ov-dot" />
         <div className="ov-name">{name}</div>
@@ -353,7 +332,7 @@ function OverviewCard({ name, color, kpis, onClick, isMobile, status, watermark,
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
           <StatusBadge status={status} />
           {hasData === false && <NoDataBadge />}
-          {!isMobile && <div className="ov-hint" style={{ marginLeft: 0 }}>Drill down →</div>}
+          <div className="ov-hint" style={{ marginLeft: 0 }}>Drill down →</div>
         </div>
       </div>
 
@@ -368,11 +347,14 @@ function OverviewCard({ name, color, kpis, onClick, isMobile, status, watermark,
           tone={pnl >= 0 ? 'pos' : 'neg'}
           subLine={fundUsdPnlLine}
         />
+        {/* PAUSED 2026-09-02 (Nish request) — Total ROI formula still being
+            finalized on Pods/Strategies cards. Box stays, value shows "—"
+            until reinstated. Original: value={fmtPctSigned(roi)}
+            tone={roi >= 0 ? 'pos' : 'neg'} subLine={fundUsdRoiLine} */}
         <StatBox
           label="Total ROI"
-          value={fmtPctSigned(roi)}
-          tone={roi >= 0 ? 'pos' : 'neg'}
-          subLine={fundUsdRoiLine}
+          value="—"
+          tone="default"
         />
       </div>
     </div>
@@ -406,11 +388,11 @@ function ErrorMsg({ message }) {
 // Hierarchy tab — lazy-loads its own data per tab selection
 // ---------------------------------------------------------------------------
 
-function HierarchyTab({ entityType, onRowClick, isMobile }) {
+function HierarchyTab({ entityType, onRowClick }) {
   const { data, isLoading, error } = useHierarchyTable(entityType)
   if (isLoading) return <Spinner />
   if (error)     return <ErrorMsg message={error.message} />
-  return <BreakdownTable rows={data?.rows ?? []} onRowClick={onRowClick} isMobile={isMobile} />
+  return <BreakdownTable rows={data?.rows ?? []} onRowClick={onRowClick} />
 }
 
 
@@ -511,7 +493,7 @@ export default function Portfolio({ timeRange, initialTab }) {
         gap: 12, marginBottom: 16,
       }}>
         <CapitalFlowTable kpis={kpis} />
-        <CapitalAtGlanceChart kpis={kpis} height={isMobile ? 260 : 300} isMobile={isMobile} />
+        <CapitalAtGlanceChart kpis={kpis} height={isMobile ? 260 : 300} />
       </div>
       <div style={{ marginBottom: 20 }}>
         <CapitalInfoBox kpis={kpis} />
@@ -579,26 +561,24 @@ export default function Portfolio({ timeRange, initialTab }) {
       </div>
 
       {/* ── Divider ── */}
-      <div style={{ height: 1, background: '#1E3A5F', margin: isMobile ? '0 0 16px' : '0 0 20px' }} />
+      <div style={{ height: 1, background: '#1E3A5F', margin: '0 0 20px' }} />
 
-      {/* ── Charts row — hidden on mobile for now, desktop unaffected ── */}
-      {!isMobile && (
-        <div style={{
-          display: 'grid',
-          gridTemplateColumns: '2fr 1fr 1fr',
-          gap: 12, marginBottom: 28,
-        }}>
-          <ChartCard title="Equity (with drawdown)">
-            <EquityChart data={equity_curve} height={300} />
-          </ChartCard>
-          <ChartCard title="Allocation by Pod">
-            <DonutChart data={allocation} height={260} />
-          </ChartCard>
-          <ChartCard title="PnL Contribution (Pod)">
-            <PnlBarChart data={pnl_contribution} height={260} />
-          </ChartCard>
-        </div>
-      )}
+      {/* ── Charts row ── */}
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: isMobile ? '1fr' : '2fr 1fr 1fr',
+        gap: 12, marginBottom: 28,
+      }}>
+        <ChartCard title="Equity (with drawdown)">
+          <EquityChart data={equity_curve} height={isMobile ? 240 : 300} />
+        </ChartCard>
+        <ChartCard title="Allocation by Pod">
+          <DonutChart data={allocation} height={isMobile ? 220 : 260} />
+        </ChartCard>
+        <ChartCard title="PnL Contribution (Pod)">
+          <PnlBarChart data={pnl_contribution} height={isMobile ? 220 : 260} />
+        </ChartCard>
+      </div>
 
       {/* ── Hierarchy tabs ── */}
       <div className="glass-table">
@@ -614,7 +594,6 @@ export default function Portfolio({ timeRange, initialTab }) {
         <HierarchyTab
           entityType={activeTab}
           onRowClick={id => navigate(`/drilldown/${id}`)}
-          isMobile={isMobile}
         />
       </div>
 
