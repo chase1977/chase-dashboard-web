@@ -27,6 +27,13 @@ class Entity(BaseModel):
 
 class KpiData(BaseModel):
     initial_investment: float
+    # active_capital_invested — DISPLAY-ONLY, added 2026-09 (Nish request):
+    # sum of initial_investment over strategies whose status is literally
+    # "Active" only (Inactive/Closed excluded). Portfolio-level only — the
+    # Portfolio hero strip's "Capital Invested" box. Optional/None on any
+    # response path that doesn't compute it (pods/strategies rows still use
+    # plain initial_investment). See supabase_service.get_portfolio_kpis_fast.
+    active_capital_invested: Optional[float] = None
     current_equity:     float
     performance:        float
     total_pnl:          float
