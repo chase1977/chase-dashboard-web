@@ -2096,6 +2096,24 @@ def get_portfolio_kpis_fast(pod_pfees_map: dict, balance_hist: list[dict],
     total_pnl = round(current_equity + banked - invested, 2)
     roi       = round(total_pnl / invested, 6) if invested else 0.0
 
+    # active_capital_invested — DISPLAY-ONLY metric added 2026-09 (Nish
+    # request), for the Portfolio hero strip's "Capital Invested" box.
+    # Strictly `initial_investment` summed over strategies whose status is
+    # literally "Active" only — Inactive AND Closed both excluded (unlike
+    # `invested` above, which already zeroes non-Darwinex Inactive/Closed
+    # strategies via _strategy_capital_invested, but still carries a frozen
+    # closed-Darwinex baseline forward for historical realized-P&L tracking,
+    # see §12). This ties out automatically as strategies are added,
+    # activated, or deactivated — no manual bookkeeping needed.
+    #
+    # NOT used anywhere else — Total P&L / Total ROI / Capital Allocated
+    # above still derive from `invested` (all-time), unchanged, to preserve
+    # the Portfolio = strict sum of Pods = strict sum of Strategies
+    # reconciliation invariant (README §14). This field is additive only.
+    active_capital_invested = round(sum(
+        r["kpis"]["initial_investment"] for r in strat_rows if r.get("status") == "Active"
+    ), 2)
+
     pct_1d  = _period_return_from_hist(balance_hist, 1)
     pct_7d  = _period_return_from_hist(balance_hist, 7)
     pct_30d = _period_return_from_hist(balance_hist, 30)
@@ -2105,16 +2123,17 @@ def get_portfolio_kpis_fast(pod_pfees_map: dict, balance_hist: list[dict],
         performance = 0.0
 
     return {
-        "initial_investment": invested,
-        "current_equity":     current_equity,
-        "performance":        performance,
-        "total_pnl":          total_pnl,
-        "banked_profit":      banked,
-        "banked_profit_true": banked_true,
-        "capital_allocated":  allocated,
-        "pct_1d":             pct_1d,
-        "pct_7d":             pct_7d,
-        "pct_30d":            pct_30d,
+        "initial_investment":      invested,
+        "active_capital_invested": active_capital_invested,
+        "current_equity":          current_equity,
+        "performance":             performance,
+        "total_pnl":               total_pnl,
+        "banked_profit":           banked,
+        "banked_profit_true":      banked_true,
+        "capital_allocated":       allocated,
+        "pct_1d":                  pct_1d,
+        "pct_7d":                  pct_7d,
+        "pct_30d":                 pct_30d,
     }
 
 

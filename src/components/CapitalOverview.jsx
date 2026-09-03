@@ -410,7 +410,17 @@ export function computeCapitalMetrics(kpis = {}) {
   // this equity+bankedGross-invested form is the correct one.
   const pnl       = equity + bankedGross - invested
   const roi       = invested !== 0 ? pnl / invested : 0
-  return { invested, banked, allocated, equity, pnl, roi }
+  // investedActive — DISPLAY-ONLY, added 2026-09 (Nish request) for the
+  // Portfolio hero strip's "Capital Invested" box: initial_investment
+  // summed over Active-status strategies ONLY (backend field
+  // active_capital_invested, see get_portfolio_kpis_fast). Ticks up/down
+  // automatically as strategies are added/activated/deactivated — no
+  // manual upkeep. NOT used in pnl/roi/allocated above — those still use
+  // the all-time `invested`, unchanged, so Total P&L/ROI/Capital Allocated
+  // and the Portfolio=ΣPods=ΣStrategies reconciliation (README §14) are
+  // untouched by this field.
+  const investedActive = kpis.active_capital_invested != null ? kpis.active_capital_invested : invested
+  return { invested, investedActive, banked, allocated, equity, pnl, roi }
 }
 
 // ---------------------------------------------------------------------------
@@ -466,32 +476,31 @@ function HeroCard({ icon: Icon, color, label, value, sub, onClick, isMobile }) {
 }
 
 export function CapitalOverviewHero({ kpis, isMobile }) {
-  const { invested, banked, allocated, equity, pnl, roi } = computeCapitalMetrics(kpis)
+  const { investedActive, banked, allocated, equity, pnl } = computeCapitalMetrics(kpis)
   const pnlPos = pnl >= 0
-  const roiPos = roi >= 0
   const [showBankedModal, setShowBankedModal] = useState(false)
 
-  // HIDDEN 2026-09-02 (Nish request) — Total Capital Invested and Total ROI
-  // pulled from the visible hero strip for now, NOT deleted. Re-enable by
-  // moving these two objects back into `cards` below, and setting the grid
-  // back to repeat(6, ...) (mobile stays repeat(2, ...) either way).
-  // eslint-disable-next-line no-unused-vars
-  const HIDDEN_cards = [
-    {
-      icon: Wallet, color: '#38BDF8', label: 'Total Capital Invested',
-      value: fmtGBP(invested),
-      sub: 'Total capital historically invested across the portfolio.',
-    },
-    {
-      icon: Percent, color: roiPos ? '#34D399' : '#F87171', label: 'Total ROI',
-      value: fmtPctSigned(roi),
-      sub: 'Total P&L as a percentage of total capital invested.',
-    },
-  ]
+  // RETIRED 2026-09-03 (Nish request) — the old all-time "Total Capital
+  // Invested" box (cumulative, never reduces) is replaced by the new
+  // "Capital Invested" box below (active-strategies-only, see
+  // computeCapitalMetrics' `investedActive`). Kept here for reference only
+  // if the all-time figure is ever needed again as its own box — the
+  // underlying `invested` value itself is still fully computed and used
+  // internally (Total P&L/ROI/Capital Allocated formulas), just not
+  // rendered as this old box any more.
+  //   { icon: Wallet, color: '#38BDF8', label: 'Total Capital Invested',
+  //     value: fmtGBP(invested), sub: 'Total capital historically invested across the portfolio.' }
 
-  // Visible order (Nish request 2026-09-02): Capital Allocated, Current
-  // Equity, Total P&L, Banked Profit/Loss.
+  // Visible order (Nish request 2026-09-03): Capital Invested (active-only,
+  // NEW) → Capital Allocated → Current Equity → Total P&L → Banked
+  // Profit/Loss → Total ROI (PAUSED — formula commented below, shows "—"
+  // until Nish finalizes it; see README §16).
   const cards = [
+    {
+      icon: Wallet, color: '#38BDF8', label: 'Capital Invested',
+      value: fmtGBP(investedActive),
+      sub: 'Live capital currently deployed — sum of Capital Invested across Active strategies only. Automatically excludes Inactive/Closed strategies.',
+    },
     {
       icon: PieChart, color: '#F59E0B', label: 'Capital Allocated',
       value: fmtGBP(allocated),
@@ -517,12 +526,21 @@ export function CapitalOverviewHero({ kpis, isMobile }) {
           : 'Net realized loss on withdrawals — a closing withdrawal returned less than remaining allocated capital. Click for breakdown.'),
       onClick: () => setShowBankedModal(true),
     },
+    // PAUSED 2026-09-03 (Nish request) — formula still being finalized.
+    // Original: icon: Percent, color: roiPos ? '#34D399' : '#F87171',
+    // value: fmtPctSigned(roi), sub: 'Total P&L as a percentage of total
+    // capital invested.' — swap back in once finalized (see README §16).
+    {
+      icon: Percent, color: '#94A3B8', label: 'Total ROI',
+      value: '—',
+      sub: 'Formula under review — coming back once finalized.',
+    },
   ]
 
   return (
     <div style={{
       display: 'grid',
-      gridTemplateColumns: isMobile ? 'repeat(2, minmax(0,1fr))' : 'repeat(4, minmax(0,1fr))',
+      gridTemplateColumns: isMobile ? 'repeat(2, minmax(0,1fr))' : 'repeat(6, minmax(0,1fr))',
       gap: 12,
     }}>
       {cards.map(c => <HeroCard key={c.label} {...c} isMobile={isMobile} />)}
@@ -536,20 +554,26 @@ export function CapitalOverviewHero({ kpis, isMobile }) {
 // ---------------------------------------------------------------------------
 
 export function CapitalFlowTable({ kpis }) {
-  const { invested, banked, allocated, equity, pnl } = computeCapitalMetrics(kpis)
+  const { invested, investedActive, banked, allocated, equity, pnl } = computeCapitalMetrics(kpis)
+  // % of Invested stays against the all-time `invested` figure throughout
+  // (unchanged) — including for the new Capital Invested row below, whose
+  // % therefore reads as "how much of all-time invested capital is
+  // currently active", a meaningful number in its own right. Every other
+  // row's % is untouched by the 2026-09-03 reorder.
   const pct = v => invested !== 0 ? `${((v / invested) * 100).toFixed(2)}%` : '—'
   const [showBankedModal, setShowBankedModal] = useState(false)
 
-  // HIDDEN 2026-09-02 (Nish request) — "Total Capital Invested" row pulled
-  // from the visible table for now, NOT deleted. `invested` is still used
-  // below to compute each row's "% of Invested" column, just not shown as
-  // its own row. Re-enable by adding this row back into `rows`.
-  // eslint-disable-next-line no-unused-vars
-  const HIDDEN_invested_row = { dot: '#38BDF8', label: 'Total Capital Invested', amount: invested, pct: pct(invested) }
+  // RETIRED 2026-09-03 (Nish request) — old all-time "Total Capital
+  // Invested" row replaced by the new active-only "Capital Invested" row
+  // below. `invested` itself is still fully computed and drives every
+  // row's % column above, just not shown as its own row any more.
+  //   { dot: '#38BDF8', label: 'Total Capital Invested', amount: invested, pct: pct(invested) }
 
-  // Visible order (Nish request 2026-09-02): Capital Allocated, Current
-  // Equity, Total P&L, Banked Profit/Loss.
+  // Visible order (Nish request 2026-09-03): Capital Invested (active-only,
+  // NEW) → Capital Allocated → Current Equity → Total P&L → Banked
+  // Profit/Loss.
   const rows = [
+    { dot: '#38BDF8', label: 'Capital Invested (Active Strategies)', amount: investedActive, pct: pct(investedActive) },
     { dot: '#F59E0B', label: 'Capital Allocated (Still Out)',   amount: allocated, pct: pct(allocated) },
     { dot: '#A78BFA', label: 'Current Equity (Economic Interest)', amount: equity, pct: pct(equity) },
     { dot: pnl >= 0 ? '#34D399' : '#F87171', label: 'Total P&L', amount: pnl, pct: pct(pnl), bold: true, signed: true, negativeAware: true },
@@ -637,22 +661,25 @@ function WrappedAxisTick({ x, y, payload, fontSize = 9.5 }) {
 }
 
 export function CapitalAtGlanceChart({ kpis, height = 300, isMobile = false }) {
-  const { invested, banked, allocated, equity, pnl } = computeCapitalMetrics(kpis)
+  const { investedActive, banked, allocated, equity, pnl } = computeCapitalMetrics(kpis)
 
-  // HIDDEN 2026-09-02 (Nish request) — "Total Capital Invested" bar pulled
-  // from the visible chart for now, NOT deleted. Re-enable by adding an
-  // entry for it back into both arrays below (mobile + desktop).
+  // RETIRED 2026-09-03 (Nish request) — old all-time "Total Capital
+  // Invested" bar replaced by the new active-only "Capital Invested" bar
+  // below (`investedActive`).
   //
   // Shorter category labels on mobile — full names stay on desktop.
-  // Visible order: Capital Allocated, Current Equity, Total P&L, Banked P/L.
+  // Visible order (2026-09-03): Capital Invested (active-only, NEW) →
+  // Capital Allocated → Current Equity → Total P&L → Banked P/L.
   const data = isMobile
     ? [
+        { name: 'Capital\nInvested',   fullName: 'Capital Invested (Active Strategies)', amount: investedActive, color: '#38BDF8' },
         { name: 'Capital\nAllocated',  fullName: 'Capital Allocated (Still Out)',    amount: allocated, color: '#F59E0B' },
         { name: 'Current\nEquity',     fullName: 'Current Equity (Economic Interest)', amount: equity,  color: '#A78BFA' },
         { name: 'Total\nP&L',          fullName: 'Total P&L',                        amount: pnl,       color: pnl >= 0 ? '#34D399' : '#F87171' },
         { name: 'Banked\nP/L',         fullName: 'Banked Profit / Loss (Withdrawn)', amount: banked,    color: banked >= 0 ? '#34D399' : '#F87171' },
       ]
     : [
+        { name: 'Capital Invested\n(Active Strategies)', fullName: 'Capital Invested (Active Strategies)', amount: investedActive, color: '#38BDF8' },
         { name: 'Capital Allocated\n(Still Out)',fullName: 'Capital Allocated (Still Out)', amount: allocated, color: '#F59E0B' },
         { name: 'Current Equity\n(Economic Interest)', fullName: 'Current Equity (Economic Interest)', amount: equity, color: '#A78BFA' },
         { name: 'Total P&L',                     fullName: 'Total P&L',                     amount: pnl,       color: pnl >= 0 ? '#34D399' : '#F87171' },
@@ -681,7 +708,7 @@ export function CapitalAtGlanceChart({ kpis, height = 300, isMobile = false }) {
         <BarChart
           data={data}
           margin={isMobile ? { top: 26, right: 4, left: 0, bottom: 10 } : { top: 20, right: 8, left: 0, bottom: 12 }}
-          barCategoryGap={isMobile ? '12%' : '18%'}
+          barCategoryGap={isMobile ? '14%' : '22%'}
         >
           <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="#1E3A5F" strokeOpacity={0.4} />
           <XAxis
@@ -695,7 +722,7 @@ export function CapitalAtGlanceChart({ kpis, height = 300, isMobile = false }) {
           />
           <ReferenceLine y={0} stroke="#1E3A5F" strokeWidth={1} />
           <Tooltip content={<GlanceTooltip />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
-          <Bar dataKey="amount" radius={[4, 4, 0, 0]} maxBarSize={isMobile ? 68 : 96}>
+          <Bar dataKey="amount" radius={[4, 4, 0, 0]} maxBarSize={isMobile ? 54 : 78}>
             {data.map((d, i) => <Cell key={i} fill={d.color} fillOpacity={0.88} />)}
             <LabelList
               dataKey="amount"

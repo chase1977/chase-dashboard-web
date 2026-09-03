@@ -1253,44 +1253,84 @@ mix:
 
 ## 16. Temporarily Hidden / Paused Metrics — Review Before Re-Enabling
 
-Metrics below are deliberately hidden or paused in the UI as of 2026-09-02
-(Nish request) — not deleted, not broken. Flagged here so a future pass
-remembers to revisit them, and so nobody "fixes" a component that's working
-exactly as asked.
+Metrics below are deliberately hidden, paused, or redefined in the UI —
+not deleted, not broken. Flagged here so a future pass remembers to
+revisit them, and so nobody "fixes" a component that's working exactly as
+asked. History kept in date order since this section gets revisited.
 
-**Portfolio page — hero strip, Capital Flow Summary table, Capital at a
-Glance chart** (`src/components/CapitalOverview.jsx`):
-- **Total Capital Invested** and **Total ROI** removed from the visible
-  hero strip (was 6 cards, now 4: Capital Allocated, Current Equity,
-  Total P&L, Banked Profit/Loss — new fixed order everywhere below too).
-  Code kept as `HIDDEN_cards` in `CapitalOverviewHero` — move the two
-  objects back into the live `cards` array to restore, and change the
-  desktop grid back from `repeat(4, ...)` to `repeat(6, ...)`.
-- **Total Capital Invested** row removed from the Capital Flow Summary
-  table (`CapitalFlowTable`) — kept as `HIDDEN_invested_row`. The
-  underlying `invested` value is still computed and still drives every
-  row's "% of Invested" column, just not shown as its own row.
-- **Total Capital Invested** bar removed from the Capital at a Glance
-  chart (`CapitalAtGlanceChart`) — both the mobile and desktop `data`
-  arrays. Bars were also thickened (`barCategoryGap` and `maxBarSize`
-  increased) to fill the space the 5th bar left behind.
-- All three components now show the same 4-metric order: **Capital
-  Allocated → Current Equity → Total P&L → Banked Profit/Loss.**
+### 2026-09-03 — Portfolio hero strip back to 6 boxes, new "Capital Invested" box
 
-**Pods Overview / Strategies Overview cards** (`src/pages/Portfolio.jsx`,
-`OverviewCard`'s **Total ROI** `StatBox`): box stays in its usual grid
-position, but shows a plain **"—"** instead of a computed value — the
-formula (`fmtPctSigned(roi)`, `tone={roi >= 0 ? 'pos' : 'neg'}`) is
-commented directly above the live JSX, not deleted. This ROI figure is
-still being finalized at the pod/strategy level (ties into the known
-pod/portfolio-level watermark gap below, §17) — reinstate once that's
-settled by uncommenting and swapping the `value`/`tone` props back.
+Supersedes the 2026-09-02 change below (that 4-box interim state no longer
+exists). Current state, in `src/components/CapitalOverview.jsx` +
+`src/pages/Portfolio.jsx`:
 
-**Not touched**: the Portfolio-page `roi`/`invested` values themselves —
-`computeCapitalMetrics()` still computes them every render, every backend
-KPI field is untouched, and `Capital_Performance_Overview_Explained.md`
-(the manager-facing explainer) still documents the full 6-metric formula
-set. Only the display layer is paused.
+**New first box — "Capital Invested" (Portfolio hero strip only).** NOT
+the same metric as the old "Total Capital Invested" box (see retirement
+note below) — this is a live, **Active-strategies-only** sum:
+
+```
+Capital Invested = Σ initial_investment, for every strategy where status == "Active"
+```
+
+Backend: `active_capital_invested`, computed in `get_portfolio_kpis_fast()`
+(`backend/src/services/supabase_service.py`) by filtering `strat_rows` on
+`status == "Active"` before summing `initial_investment` — Inactive AND
+Closed strategies are both excluded entirely (no exception for a frozen
+closed-Darwinex baseline, unlike the all-time `invested` figure — see
+below). Ticks up automatically the moment a new strategy is created
+Active, or an existing one is switched to Active; drops out the moment a
+strategy is marked Inactive or Closed. No manual bookkeeping, no SQL,
+nothing else to wire up.
+
+Frontend: `computeCapitalMetrics()` exposes it as `investedActive`,
+falling back to the all-time `invested` if an older cached API response
+doesn't have the new field yet (safe default, never crashes/zeroes).
+
+**Important — this is a display-only, additive field.** Total P&L, Total
+ROI, and Capital Allocated all still derive from the ORIGINAL all-time
+`invested`/`initial_investment` (unchanged) — that preserves the
+Portfolio = ΣPods = ΣStrategies reconciliation invariant (§14) exactly as
+before. `active_capital_invested` is never fed into any other formula.
+
+**Hero strip now shows all 6 boxes again**, in this order: **Capital
+Invested (NEW, active-only) → Capital Allocated → Current Equity → Total
+P&L → Banked Profit/Loss → Total ROI (still paused, shows "—").** Desktop
+grid back to `repeat(6, ...)`; mobile stays `repeat(2, ...)` (3 rows of 2).
+
+**Capital Flow Summary table and Capital at a Glance chart** also got the
+new "Capital Invested (Active Strategies)" row/bar added back, first
+position, same order as the hero strip (both components still stop at 5
+items — no Total ROI row/bar there, matching the pre-existing pattern).
+Chart bar thickness tuned back down slightly from the 2026-09-02 4-bar
+values now that there are 5 bars again.
+
+**Retired** (not the same as "hidden" — semantically superseded, kept
+purely as a commented reference in case the all-time figure is ever needed
+as its own box again): the old "Total Capital Invested" hero card / table
+row / chart bar — all-time, monotonic, every strategy regardless of
+status. Comments sit directly above each `cards`/`rows`/`data` array in
+`CapitalOverview.jsx` with the exact object to paste back if needed.
+
+**Total ROI remains paused** — see the entry below, unchanged. Still
+shows "—" everywhere (hero strip's last box, and Pods/Strategies cards).
+
+### 2026-09-02 — Total ROI paused on Pods Overview / Strategies Overview cards
+
+`src/pages/Portfolio.jsx`, `OverviewCard`'s **Total ROI** `StatBox`: box
+stays in its usual grid position, but shows a plain **"—"** instead of a
+computed value — the formula (`fmtPctSigned(roi)`,
+`tone={roi >= 0 ? 'pos' : 'neg'}`) is commented directly above the live
+JSX, not deleted. This ROI figure is still being finalized at the
+pod/strategy level (ties into the known pod/portfolio-level watermark gap,
+§18) — reinstate once that's settled by uncommenting and swapping the
+`value`/`tone` props back. The Portfolio hero strip's own Total ROI box
+(last position) is paused the same way, same reason.
+
+**Not touched, either date**: the underlying `roi`/`invested` values
+themselves — `computeCapitalMetrics()` still computes them every render,
+every backend KPI field is untouched, and
+`Capital_Performance_Overview_Explained.md` (the manager-facing explainer)
+still documents the full formula set. Only the display layer is paused.
 
 ---
 
