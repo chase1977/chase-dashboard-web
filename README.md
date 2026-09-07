@@ -1258,6 +1258,41 @@ not deleted, not broken. Flagged here so a future pass remembers to
 revisit them, and so nobody "fixes" a component that's working exactly as
 asked. History kept in date order since this section gets revisited.
 
+### 2026-09-07 — Portfolio KpiData schema bugfix; Capital Flow Summary/Chart paused; info box synced
+
+**Bugfix — `active_capital_invested` was silently dropped from every API
+response.** Root cause found and fixed today: `backend/src/models/schemas.py`
+`KpiData` (the Pydantic response model for `/api/portfolio/`) never declared
+`active_capital_invested`. FastAPI/Pydantic silently strips any dict key not
+present on the response model before serialising — so the backend logic
+(§ below, added 2026-09-03) was correct the whole time, but the field never
+reached the frontend. This was NOT a deploy/caching issue, despite looking
+exactly like one (same value shown before and after multiple Railway
+redeploys). Fixed by adding `active_capital_invested: Optional[float] = None`
+to `KpiData` in `schemas.py`. Any future Portfolio-level-only field added to
+`get_portfolio_kpis_fast()`'s return dict must also be added to `KpiData`,
+or it will be dropped the same way — check the schema first if a new
+computed field ever "doesn't show up" despite the backend logic looking
+right.
+
+**Capital Flow Summary table + Capital at a Glance chart — paused (not
+deleted).** `src/pages/Portfolio.jsx`: the grid rendering
+`<CapitalFlowTable>` + `<CapitalAtGlanceChart>` is now wrapped in a JSX
+comment, directly above `<CapitalInfoBox>` (kept, now the sole capital-flow
+summary on the page). Both components remain fully defined and imported in
+`CapitalOverview.jsx` — re-enabling is a single uncomment in `Portfolio.jsx`,
+no other change needed.
+
+**`CapitalInfoBox` — "We invested …" figure now matches the hero strip
+exactly.** `CapitalOverview.jsx`'s `CapitalInfoBox` previously read
+`invested` (all-time, e.g. £3,541,842.11) while the hero strip's "Capital
+Invested" box read `investedActive` (Active-strategies-only, e.g.
+£2,387,668.35) — two different numbers on the same page for what reads as
+the same claim. Fixed: `CapitalInfoBox` now destructures `investedActive`
+from `computeCapitalMetrics()` and uses it in the "We invested X" sentence.
+Every other figure in the box (banked, allocated, equity, pnl, roi) is
+unchanged — still all-time, per §14's reconciliation invariant.
+
 ### 2026-09-03 — Portfolio hero strip back to 6 boxes, new "Capital Invested" box
 
 Supersedes the 2026-09-02 change below (that 4-box interim state no longer

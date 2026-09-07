@@ -742,7 +742,7 @@ export function CapitalAtGlanceChart({ kpis, height = 300, isMobile = false }) {
 // ---------------------------------------------------------------------------
 
 export function CapitalInfoBox({ kpis }) {
-  const { invested, banked, allocated, equity, pnl, roi } = computeCapitalMetrics(kpis)
+  const { investedActive, banked, allocated, equity, pnl, roi } = computeCapitalMetrics(kpis)
   const pnlColor    = pnl >= 0 ? '#34D399' : '#F87171'
   const roiColor    = roi >= 0 ? '#34D399' : '#F87171'
   const bankedColor = banked >= 0 ? '#34D399' : '#F87171'
@@ -755,7 +755,12 @@ export function CapitalInfoBox({ kpis }) {
       <Info size={16} color="#38BDF8" style={{ flexShrink: 0, marginTop: 2 }} />
       <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', flex: 1 }}>
         <div style={{ fontSize: 12.5, color: TXT_SUB, lineHeight: 1.7, flex: '1 1 320px' }}>
-          We invested <b style={{ color: '#38BDF8' }}>{fmtGBP(invested)}</b>. We have{' '}
+          {/* investedActive (2026-09-07, Nish request) — matches the hero
+              strip's "Capital Invested" box exactly (active-strategies-only,
+              see computeCapitalMetrics). Was `invested` (all-time) before;
+              changing this keeps every visible "Capital Invested" figure on
+              the page in sync — no two boxes ever disagree. */}
+          We invested <b style={{ color: '#38BDF8' }}>{fmtGBP(investedActive)}</b>. We have{' '}
           {banked >= 0 ? 'banked' : 'realized a net loss of'}{' '}
           <b style={{ color: bankedColor }}>{fmtGBP(Math.abs(banked))}</b>
           {banked >= 0 ? ' of profit.' : ' on withdrawals.'}{' '}
