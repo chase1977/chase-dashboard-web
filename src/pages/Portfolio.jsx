@@ -445,12 +445,20 @@ export default function Portfolio({ timeRange, initialTab }) {
         cardsVisible={false}
       />
 
-      {/* ── Page header ── */}
+      {/* ── Page header ──
+          Mobile (2026-09-07, Nish request): Capital Ledger button now sits
+          top-right, in line with the "Chase Capital" title row, instead of
+          stacking full-width underneath it. Row layout on both breakpoints
+          now — only the button's own size/padding shrinks on mobile. Header
+          row shares the same horizontal padding as the hero card grid below
+          (both direct children of the page's outer container), so the
+          button's right edge and the title's left edge line up with the
+          card row automatically — no extra alignment needed. */}
       <div style={{
         display: 'flex', justifyContent: 'space-between',
         alignItems: isMobile ? 'flex-start' : 'flex-end',
-        flexDirection: isMobile ? 'column' : 'row',
-        gap: isMobile ? 10 : 0,
+        flexDirection: 'row',
+        gap: isMobile ? 8 : 0,
         marginBottom: 20,
       }}>
         <div>
@@ -466,13 +474,14 @@ export default function Portfolio({ timeRange, initialTab }) {
           className="ov-card"
           style={{
             '--accent': '#38BDF8',
-            display: 'flex', alignItems: 'center', gap: 9,
-            padding: '10px 16px', cursor: 'pointer',
-            fontSize: 12.5, fontWeight: 700, color: '#E2E8F0',
+            display: 'flex', alignItems: 'center', gap: isMobile ? 6 : 9,
+            padding: isMobile ? '7px 10px' : '10px 16px', cursor: 'pointer',
+            fontSize: isMobile ? 11.5 : 12.5, fontWeight: 700, color: '#E2E8F0',
             border: '1px solid rgba(56,189,248,0.25)',
+            flexShrink: 0, whiteSpace: 'nowrap',
           }}
         >
-          <BookOpen size={15} color="#38BDF8" />
+          <BookOpen size={isMobile ? 13 : 15} color="#38BDF8" />
           Capital Ledger
         </button>
       </div>
@@ -486,7 +495,13 @@ export default function Portfolio({ timeRange, initialTab }) {
       {/* ── Divider ── */}
       <div style={{ height: 1, background: '#1E3A5F', margin: '0 0 16px' }} />
 
-      {/* ── Capital Flow Summary + Capital at a Glance ── */}
+      {/* PAUSED 2026-09-07 (Nish request) — Capital Flow Summary table and
+          Capital at a Glance chart hidden from Portfolio. CapitalInfoBox
+          (the text summary strip) below is now the sole capital-flow
+          summary shown here. Components themselves (CapitalFlowTable,
+          CapitalAtGlanceChart) are untouched in CapitalOverview.jsx — still
+          fully wired, still imported above — so re-enabling is a single
+          uncomment, no rebuild needed. See README §16.
       <div style={{
         display: 'grid',
         gridTemplateColumns: isMobile ? '1fr' : '0.9fr 1.1fr',
@@ -495,6 +510,7 @@ export default function Portfolio({ timeRange, initialTab }) {
         <CapitalFlowTable kpis={kpis} />
         <CapitalAtGlanceChart kpis={kpis} height={isMobile ? 260 : 300} />
       </div>
+      */}
       <div style={{ marginBottom: 20 }}>
         <CapitalInfoBox kpis={kpis} />
       </div>
