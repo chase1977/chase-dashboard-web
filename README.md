@@ -23,9 +23,10 @@ React (Vite) frontend, FastAPI backend, Supabase (Postgres) database.
 14. [Capital Pipeline: Strategy → Pod → Portfolio](#14-capital-pipeline-strategy--pod--portfolio)
 15. [Data Feeds — Self-Service Tab Builder](#15-data-feeds--self-service-tab-builder)
 16. [Temporarily Hidden / Paused Metrics — Review Before Re-Enabling](#16-temporarily-hidden--paused-metrics--review-before-re-enabling)
-17. [Roadmap — Outstanding](#17-roadmap--outstanding)
-18. [Known Limitations](#18-known-limitations)
-19. [Dev Workflow](#19-dev-workflow)
+17. [AXIA Trade Analysis Tool — GBP FX Bridge](#17-axia-trade-analysis-tool--gbp-fx-bridge)
+18. [Roadmap — Outstanding](#18-roadmap--outstanding)
+19. [Known Limitations](#19-known-limitations)
+20. [Dev Workflow](#20-dev-workflow)
 
 ---
 
@@ -222,8 +223,8 @@ Implemented in `_apply_watermark(strategy, raw_equity, baseline)`,
 | Level | AXIA strategies | Non-AXIA (Darwinex/manual) strategies |
 |---|---|---|
 | Strategy | ✅ Applied | ✅ Applied |
-| Pod | ✅ Applied (additive from adjusted strategy figures) | ⚠️ Not applied — see [§18](#18-known-limitations) |
-| Portfolio | ✅ Applied | ⚠️ Not applied — see [§18](#18-known-limitations) |
+| Pod | ✅ Applied (additive from adjusted strategy figures) | ⚠️ Not applied — see [§19](#19-known-limitations) |
+| Portfolio | ✅ Applied | ⚠️ Not applied — see [§19](#19-known-limitations) |
 
 ---
 
@@ -1357,7 +1358,7 @@ computed value — the formula (`fmtPctSigned(roi)`,
 `tone={roi >= 0 ? 'pos' : 'neg'}`) is commented directly above the live
 JSX, not deleted. This ROI figure is still being finalized at the
 pod/strategy level (ties into the known pod/portfolio-level watermark gap,
-§18) — reinstate once that's settled by uncommenting and swapping the
+§19) — reinstate once that's settled by uncommenting and swapping the
 `value`/`tone` props back. The Portfolio hero strip's own Total ROI box
 (last position) is paused the same way, same reason.
 
@@ -1369,14 +1370,90 @@ still documents the full formula set. Only the display layer is paused.
 
 ---
 
-## 17. Roadmap — Outstanding
+## 17. AXIA Trade Analysis Tool — GBP FX Bridge
 
-- [ ] **Pod/portfolio-level watermark adjustment for non-AXIA strategies**
-  See [§18](#18-known-limitations) — documented gap, not yet requested.
+Separate feature from the Portfolio/Pods/Strategies dashboard — a standalone
+statement-analysis tool at the **Analysis** tab. Upload an AXIA trade
+statement (`.xlsx`) → get a full quant breakdown (net P&L by instrument,
+per-currency books, commission breakdown, top winners/losers) → optionally
+convert every currency to GBP and export a professional Excel report or save
+a shareable read-only link. Previously undocumented in this README — added
+2026-09-08 after debugging a GBP-conversion bug (below).
+
+**Files:**
+
+| Layer | File |
+|---|---|
+| Frontend page | `src/pages/Analysis.jsx` |
+| Frontend dashboard | `src/components/AxiaAnalysisDashboard.jsx` |
+| Backend router | `backend/src/routers/axia_analysis.py` (`/api/analysis/*`) |
+| Backend service | `backend/src/services/analysis_service.py` |
+
+**Flow:** upload → `parse_statement()` parses the Excel, aggregates by
+instrument/currency, computes GBP view inline if rates are available →
+cached server-side in-memory by `analysis_id` (UUID) → `/export` downloads
+an Excel report (native-currency or GBP, `?gbp=true`) → `/save` persists to
+Supabase for a shareable `/analysis/shared/{id}` read-only link (Save &
+Share button — **disabled until GBP rates are successfully fetched**, since
+the shared/boss view is GBP-only by design).
+
+**GBP conversion — separate OANDA integration from §11.** This tool has its
+own currency→GBP OANDA bridge (`_CCY_GBP_PAIR` map in `analysis_service.py`
+— USD, EUR, JPY, CAD, CHF, AUD, NZD, HKD, CNH, SGD, each mapped to an OANDA
+pair + invert flag), independent of the 12-FLAGS fund-statement OANDA bridge
+described in §11 (`oanda_service.py`). Same underlying OANDA practice API
+and token, two separate call sites — worth knowing if either one needs a
+token rotation, since both `.env` vars (`OANDA_TOKEN`, `OANDA_API_URL`) feed
+both.
+
+### Bugfix 2026-09-08 — "GBP rates unavailable" for every currency at once
+
+**Symptom:** Analysis page showed `GBP rates unavailable (CAD, CHF, CNH,
+EUR, HKD, JPY, USD)` — every currency failing simultaneously, Save & Share
+permanently disabled (`hasGbpData` gate never passes).
+
+**Root cause:** `_fetch_oanda_pair_series()` built its OANDA `to` date as
+`last_trade_date + 2 days` (a buffer, presumably meant to catch late
+weekend/holiday candles). For any statement whose last trading day falls
+within 2 days of "now", that pushes the `to` timestamp **into the future**
+relative to OANDA's own clock. OANDA rejects any future `to` with HTTP 400
+(`"Invalid value specified for 'to'. Time is in the future"`). Confirmed by
+reproducing the exact request directly against OANDA's API and getting that
+exact error back. The old code caught the non-200 response and returned
+`{}` — graceful degradation by design, but silent, so every currency (all
+sharing the same shared date range) failed the same way with no real error
+surfaced to the user.
+
+Notably, §11's OANDA bridge (12-FLAGS fund statements) already had its own
+future-date clamp for exactly this class of problem — this tool's separate,
+newer OANDA integration just hadn't been given the same safeguard.
+
+**Fix:** `_fetch_oanda_pair_series()` now clamps the computed `to` timestamp
+to `min(to_date + 2 days, datetime.utcnow())` — never sends OANDA a
+timestamp later than the current UTC time. Applies automatically to every
+future statement upload; no other code path affected (`_CCY_GBP_PAIR`,
+`_build_rate_lookup`, `_compute_gbp_view`, the `/refresh-gbp` endpoint's
+error handling — all unchanged).
+
+**Not fixed here** (future hardening, not requested yet): the silent
+`except Exception: return {}` / `if status_code != 200: return {}` pattern
+still swallows the *specific* OANDA error message before it reaches the
+frontend — the UI shows "unavailable" for any failure reason (bad token,
+network issue, rate-limited, unsupported pair, anything), not just the
+future-date case just fixed. If GBP rates ever fail again for a different
+reason, check Railway backend logs for the raw OANDA response, since the
+UI alone won't say why.
 
 ---
 
-## 18. Known Limitations
+## 18. Roadmap — Outstanding
+
+- [ ] **Pod/portfolio-level watermark adjustment for non-AXIA strategies**
+  See [§19](#19-known-limitations) — documented gap, not yet requested.
+
+---
+
+## 19. Known Limitations
 
 **Watermark not applied at pod/portfolio level for non-AXIA strategies.**
 `get_pods_with_kpis_fast` / `get_portfolio_kpis_fast` aggregate Darwinex/
@@ -1398,7 +1475,7 @@ strategy.
 
 ---
 
-## 19. Dev Workflow
+## 20. Dev Workflow
 
 ```bash
 # Frontend

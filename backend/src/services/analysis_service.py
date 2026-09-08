@@ -257,8 +257,27 @@ def _fetch_oanda_pair_series(pair: str, from_date: str, to_date: str) -> dict[st
     Returns {date_str: close_mid}. Returns {} on any error (graceful degradation).
     """
     try:
-        from_dt = (datetime.strptime(from_date, '%Y-%m-%d') - timedelta(days=4)).strftime('%Y-%m-%dT00:00:00Z')
-        to_dt   = (datetime.strptime(to_date,   '%Y-%m-%d') + timedelta(days=2)).strftime('%Y-%m-%dT23:59:59Z')
+        from_dt_obj = datetime.strptime(from_date, '%Y-%m-%d') - timedelta(days=4)
+        to_dt_obj   = datetime.strptime(to_date,   '%Y-%m-%d') + timedelta(days=2)
+
+        # Bugfix 2026-09-08 (Nish report): OANDA rejects any `to` timestamp
+        # that is in the future relative to its own clock (HTTP 400,
+        # "Invalid value specified for 'to'. Time is in the future") — and
+        # this was happening on EVERY currency at once, not just one pair,
+        # because every pair shares the same to_date computed above. Any
+        # statement whose last trading day is within 2 days of "now" (the
+        # +2-day buffer above) pushed `to` past OANDA's current time. The
+        # old code caught the resulting non-200 response and silently
+        # returned {} (see below) — which is why the UI just said "GBP
+        # rates unavailable" for every currency with no real explanation.
+        # Fix: never send a `to` timestamp later than the current UTC time.
+        now_utc = datetime.utcnow()
+        if to_dt_obj > now_utc:
+            to_dt_obj = now_utc
+
+        from_dt = from_dt_obj.strftime('%Y-%m-%dT00:00:00Z')
+        to_dt   = to_dt_obj.strftime('%Y-%m-%dT23:59:59Z') if to_dt_obj.date() < now_utc.date() \
+                  else to_dt_obj.strftime('%Y-%m-%dT%H:%M:%SZ')
         url = f"{_OANDA_URL}/instruments/{pair}/candles"
         r   = requests.get(
             url,
