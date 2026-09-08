@@ -113,28 +113,76 @@ function PnlTooltip({ active, payload, label }) {
 }
 
 // ─── P&L by Instrument ────────────────────────────────────────────────────────
-function AssetPnlChart({ assets, gbpMode }) {
-  const data = [...assets].sort((a,b) => a.net_pnl - b.net_pnl).map(a => ({
-    name: gbpMode
-      ? `${a.instrument} [${a.original_currency || a.currency}]`
-      : `${a.instrument} (${a.currency})`,
-    pnl: Math.round(a.net_pnl*100)/100,
-    ccy: gbpMode ? 'GBP' : a.currency,
+// Mobile (2026-09-08, Nish request — shared read-only link on phone): the
+// desktop label ("Instrument (CCY)") plus a 185-190px YAxis/margin doesn't
+// fit a phone viewport — labels got clipped ("NIKKEI 225-YE...") and the
+// whole card forced horizontal scroll on the page. On mobile the YAxis
+// label is the instrument name only (currency shown via the coloured bar +
+// the click readout below instead), width/margins shrink to fit, and
+// tapping/clicking a bar shows a persistent, unambiguous readout panel
+// (exact instrument + exact GBP or native-currency P&L) — more reliable on
+// touch than relying on the hover Tooltip, which doesn't reveal on tap in
+// every mobile browser. Desktop hover Tooltip (PnlTooltip) is unchanged and
+// still works alongside it.
+function AssetPnlChart({ assets, gbpMode, isMobile }) {
+  const [selected, setSelected] = useState(null)
+  const sorted = [...assets].sort((a,b) => a.net_pnl - b.net_pnl)
+  const data = sorted.map(a => ({
+    name: isMobile
+      ? a.instrument
+      : gbpMode
+        ? `${a.instrument} [${a.original_currency || a.currency}]`
+        : `${a.instrument} (${a.currency})`,
+    fullName:  a.instrument,
+    pnl:       Math.round(a.net_pnl*100)/100,
+    ccy:       gbpMode ? 'GBP' : a.currency,
+    origCcy:   a.original_currency || a.currency,
   }))
-  const h    = Math.max(320, assets.length * 38 + 60)
+  const h = Math.max(320, assets.length * (isMobile ? 30 : 38) + 60)
+  const yAxisWidth  = isMobile ? 96  : 185
+  const leftMargin  = isMobile ? 100 : 190
+  const rightMargin = isMobile ? 30  : 80
   return (
-    <ResponsiveContainer width="99%" height={h}>
-      <BarChart data={data} layout="vertical" margin={{ top:5, right:80, bottom:5, left:190 }}>
-        <CartesianGrid {...GRID} horizontal={false} />
-        <XAxis type="number" {...AXIS} tickFormatter={v => fmt(v,0)} />
-        <YAxis type="category" dataKey="name" width={185} tick={{ fill:'#F1F5F9', fontSize:11 }} axisLine={{ stroke:C.border }} tickLine={false} />
-        <Tooltip content={<PnlTooltip />} cursor={{ fill:'rgba(56,189,248,0.05)' }} />
-        <ReferenceLine x={0} stroke={C.border} strokeWidth={2} />
-        <Bar dataKey="pnl" name="Net P&L" radius={[0,4,4,0]} isAnimationActive={false}>
-          {data.map((e,i) => <Cell key={i} fill={e.pnl >= 0 ? C.pos : C.neg} />)}
-        </Bar>
-      </BarChart>
-    </ResponsiveContainer>
+    <div>
+      {/* Click/tap readout — always shows the exact value clearly, no overlap
+          with chart labels, works identically on touch and mouse. */}
+      <div style={{
+        marginBottom:10, padding:'10px 14px', borderRadius:8,
+        background:C.surface, border:`1px solid ${C.border}`,
+        fontSize:isMobile?12:13, minHeight:isMobile?38:40,
+        display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:6,
+      }}>
+        {selected ? (
+          <>
+            <span style={{ color:C.dim, fontWeight:600 }}>
+              {selected.fullName}
+              {!gbpMode && <span style={{ color:C.muted, fontWeight:400 }}> ({selected.origCcy})</span>}
+            </span>
+            <span style={{ fontWeight:700, color:pnlColor(selected.pnl) }}>
+              {fmt(selected.pnl)} {selected.ccy}
+            </span>
+          </>
+        ) : (
+          <span style={{ color:C.muted }}>Tap a bar to see its exact {gbpMode ? 'GBP' : ''} P&L</span>
+        )}
+      </div>
+      <ResponsiveContainer width="99%" height={h}>
+        <BarChart data={data} layout="vertical" margin={{ top:5, right:rightMargin, bottom:5, left:leftMargin }}>
+          <CartesianGrid {...GRID} horizontal={false} />
+          <XAxis type="number" {...AXIS} tick={{ fill:C.muted, fontSize:isMobile?9:11 }} tickFormatter={v => fmt(v,0)} />
+          <YAxis type="category" dataKey="name" width={yAxisWidth} tick={{ fill:'#F1F5F9', fontSize:isMobile?9.5:11 }} axisLine={{ stroke:C.border }} tickLine={false} />
+          <Tooltip content={<PnlTooltip />} cursor={{ fill:'rgba(56,189,248,0.05)' }} />
+          <ReferenceLine x={0} stroke={C.border} strokeWidth={2} />
+          <Bar
+            dataKey="pnl" name="Net P&L" radius={[0,4,4,0]} isAnimationActive={false}
+            onClick={(entry) => setSelected(entry)}
+            style={{ cursor:'pointer' }}
+          >
+            {data.map((e,i) => <Cell key={i} fill={e.pnl >= 0 ? C.pos : C.neg} />)}
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
   )
 }
 
@@ -211,14 +259,19 @@ function CommPie({ breakdown }) {
 }
 
 // ─── Volume chart ─────────────────────────────────────────────────────────────
-function VolumeChart({ assets }) {
+// Mobile margins (2026-09-08, Nish request) — same fix as AssetPnlChart:
+// narrower YAxis/margins so labels don't clip / force page-wide horizontal
+// scroll on a phone.
+function VolumeChart({ assets, isMobile }) {
   const data = [...assets].sort((a,b) => (b.long+b.short)-(a.long+a.short)).slice(0,15).map(a => ({ name:a.instrument, lots:a.long+a.short, currency:a.currency }))
+  const yAxisWidth = isMobile ? 92 : 160
+  const leftMargin = isMobile ? 96 : 165
   return (
     <ResponsiveContainer width="99%" height={260}>
-      <BarChart data={data} layout="vertical" margin={{ top:5, right:50, bottom:5, left:165 }}>
+      <BarChart data={data} layout="vertical" margin={{ top:5, right:isMobile?20:50, bottom:5, left:leftMargin }}>
         <CartesianGrid {...GRID} horizontal={false} />
-        <XAxis type="number" {...AXIS} tickFormatter={v => fmt(v,0)} />
-        <YAxis type="category" dataKey="name" width={160} tick={{ fill:'#F1F5F9', fontSize:11 }} axisLine={{ stroke:C.border }} tickLine={false} />
+        <XAxis type="number" {...AXIS} tick={{ fill:C.muted, fontSize:isMobile?9:11 }} tickFormatter={v => fmt(v,0)} />
+        <YAxis type="category" dataKey="name" width={yAxisWidth} tick={{ fill:'#F1F5F9', fontSize:isMobile?9.5:11 }} axisLine={{ stroke:C.border }} tickLine={false} />
         <Tooltip {...CHART_TIP} formatter={v => [fmt(v,0),'Total Lots']} />
         <Bar dataKey="lots" name="Lots" radius={[0,4,4,0]} isAnimationActive={false}>
           {data.map((e,i) => <Cell key={i} fill={ccyColor(e.currency)} />)}
@@ -229,18 +282,20 @@ function VolumeChart({ assets }) {
 }
 
 // ─── Commission drag chart ────────────────────────────────────────────────────
-function CommDragChart({ assets, gbpMode }) {
+function CommDragChart({ assets, gbpMode, isMobile }) {
   const data = [...assets].sort((a,b) => Math.abs(b.total_comms)-Math.abs(a.total_comms)).slice(0,12).map(a => ({ name:a.instrument, gross:Math.round(a.realized_pnl*100)/100, comms:Math.round(Math.abs(a.total_comms)*100)/100 }))
   const grossLabel = gbpMode ? 'Gross P&L (GBP)' : 'Gross P&L'
   const commsLabel = gbpMode ? 'Total Comms (GBP)' : 'Total Comms'
+  const yAxisWidth = isMobile ? 92 : 160
+  const leftMargin = isMobile ? 96 : 165
   return (
     <ResponsiveContainer width="99%" height={260}>
-      <BarChart data={data} layout="vertical" margin={{ top:5, right:60, bottom:5, left:165 }}>
+      <BarChart data={data} layout="vertical" margin={{ top:5, right:isMobile?20:60, bottom:5, left:leftMargin }}>
         <CartesianGrid {...GRID} horizontal={false} />
-        <XAxis type="number" {...AXIS} tickFormatter={v => fmt(v,0)} />
-        <YAxis type="category" dataKey="name" width={160} tick={{ fill:'#F1F5F9', fontSize:11 }} axisLine={{ stroke:C.border }} tickLine={false} />
+        <XAxis type="number" {...AXIS} tick={{ fill:C.muted, fontSize:isMobile?9:11 }} tickFormatter={v => fmt(v,0)} />
+        <YAxis type="category" dataKey="name" width={yAxisWidth} tick={{ fill:'#F1F5F9', fontSize:isMobile?9.5:11 }} axisLine={{ stroke:C.border }} tickLine={false} />
         <Tooltip {...CHART_TIP} formatter={(v,n) => [fmt(v),n]} />
-        <Legend wrapperStyle={{ color:C.text, fontSize:11 }} />
+        <Legend wrapperStyle={{ color:C.text, fontSize:isMobile?10:11 }} />
         <ReferenceLine x={0} stroke={C.border} strokeWidth={2} />
         <Bar dataKey="gross" name={grossLabel} fill={C.accent} radius={[0,4,4,0]} isAnimationActive={false} />
         <Bar dataKey="comms" name={commsLabel} fill={C.neg}    radius={[0,4,4,0]} isAnimationActive={false} />
@@ -310,7 +365,20 @@ function RankList({ items, variant='winner' }) {
 }
 
 // ─── Sortable Asset Table ─────────────────────────────────────────────────────
-function AssetTable({ assets }) {
+// Frozen header + frozen first column (2026-09-08, Nish request — shared
+// read-only link on phone): the table can be taller than the screen and
+// wider than the screen at the same time on mobile, so without freezing
+// both axes it's easy to scroll past the column headers (losing track of
+// which number is which) or scroll right past the Instrument name (losing
+// track of which row is which). Fix: wrap the table in its own bounded,
+// scrollable box (own scrollbar, not the whole page) so `position: sticky`
+// has a real scroll container to stick within on both axes — `top:0` keeps
+// the header row pinned on vertical scroll, `left:0` on the first column's
+// cells keeps it pinned on horizontal scroll. The header's own first cell
+// needs a higher z-index than the rest of the header row and the rest of
+// the first column, since it's sticky on BOTH axes at once (the top-left
+// corner where both frozen regions overlap).
+function AssetTable({ assets, isMobile }) {
   const [sortKey, setSortKey] = useState('net_pnl')
   const [sortDir, setSortDir] = useState('asc')
   const sorted = useMemo(() => {
@@ -323,17 +391,29 @@ function AssetTable({ assets }) {
   }, [assets, sortKey, sortDir])
   const handleSort = key => { if (sortKey===key) setSortDir(d => d==='asc'?'desc':'asc'); else { setSortKey(key); setSortDir('asc') } }
   const ind = key => sortKey===key ? (sortDir==='asc'?' ↑':' ↓') : ''
-  const TH = ({ k, children, align='right' }) => (
-    <th onClick={() => handleSort(k)} style={{ padding:'10px 12px', background:C.navy, color:'#CBD5E1', fontSize:10, fontWeight:700, textTransform:'uppercase', letterSpacing:'0.6px', textAlign:align, cursor:'pointer', userSelect:'none', whiteSpace:'nowrap', borderBottom:`2px solid ${C.border}`, position:'sticky', top:0, zIndex:10 }}>
+  const pad = isMobile ? '8px 9px' : '10px 12px'
+  const fz  = isMobile ? 11 : 12
+  const TH = ({ k, children, align='right', frozen=false }) => (
+    <th onClick={() => handleSort(k)} style={{
+      padding:pad, background:C.navy, color:'#CBD5E1', fontSize:isMobile?9:10, fontWeight:700,
+      textTransform:'uppercase', letterSpacing:'0.6px', textAlign:align, cursor:'pointer',
+      userSelect:'none', whiteSpace:'nowrap', borderBottom:`2px solid ${C.border}`,
+      position:'sticky', top:0, zIndex: frozen ? 12 : 10,
+      ...(frozen ? { left:0, borderRight:`2px solid ${C.border}` } : {}),
+    }}>
       {children}{ind(k)}
     </th>
   )
   return (
-    <div style={{ overflowX:'auto' }}>
-      <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
-        <thead style={{ position:'sticky', top:0, zIndex:10 }}>
+    // Bounded scroll box (own scrollbars on both axes) — required for
+    // sticky header/column to have something real to stick within.
+    // maxHeight caps vertical scroll to a manageable panel on any screen
+    // size instead of the header scrolling away with the whole page.
+    <div style={{ overflow:'auto', maxHeight: isMobile ? 480 : 640, border:`1px solid ${C.border}`, borderRadius:8 }}>
+      <table style={{ width:'100%', borderCollapse:'separate', borderSpacing:0, fontSize:fz }}>
+        <thead>
           <tr>
-            <TH k="instrument" align="left">Instrument</TH>
+            <TH k="instrument" align="left" frozen>Instrument</TH>
             <TH k="currency" align="center">CCY</TH>
             <TH k="long">Long Lots</TH><TH k="short">Short Lots</TH>
             <TH k="trade_days">Days</TH><TH k="realized_pnl">Realized P&L</TH>
@@ -347,13 +427,16 @@ function AssetTable({ assets }) {
             const bg = i%2===0 ? C.surface : C.card
             return (
               <tr key={`${a.instrument}-${a.currency}`}>
-                <td style={{ padding:'9px 12px', borderBottom:`1px solid ${C.border}`, background:bg, color:C.text, fontWeight:600 }}>{a.instrument}</td>
-                <td style={{ padding:'9px 12px', borderBottom:`1px solid ${C.border}`, background:bg, color:ccyColor(a.currency), fontWeight:700, textAlign:'center' }}>{a.currency}</td>
+                <td style={{
+                  padding:pad, borderBottom:`1px solid ${C.border}`, background:bg, color:C.text, fontWeight:600,
+                  position:'sticky', left:0, zIndex:5, borderRight:`2px solid ${C.border}`, whiteSpace:'nowrap',
+                }}>{a.instrument}</td>
+                <td style={{ padding:pad, borderBottom:`1px solid ${C.border}`, background:bg, color:ccyColor(a.currency), fontWeight:700, textAlign:'center' }}>{a.currency}</td>
                 {[fmt(a.long,0),fmt(a.short,0),a.trade_days,fmt(a.realized_pnl),fmt(a.commission_fees),fmt(a.market_fees),fmt(a.nfa_fees),fmt(a.total_comms)].map((v,ci) => (
-                  <td key={ci} style={{ padding:'9px 12px', borderBottom:`1px solid ${C.border}`, background:bg, color:C.dim, textAlign:'right' }}>{v}</td>
+                  <td key={ci} style={{ padding:pad, borderBottom:`1px solid ${C.border}`, background:bg, color:C.dim, textAlign:'right', whiteSpace:'nowrap' }}>{v}</td>
                 ))}
-                <td style={{ padding:'9px 12px', borderBottom:`1px solid ${C.border}`, color:pnlColor(a.net_pnl), fontWeight:700, textAlign:'right', background:a.net_pnl >= 0 ? 'rgba(34,197,94,0.08)' : 'rgba(239,68,68,0.08)' }}>{fmt(a.net_pnl)}</td>
-                <td style={{ padding:'9px 12px', borderBottom:`1px solid ${C.border}`, background:bg, color:C.muted, textAlign:'right' }}>{a.comm_drag_pct}%</td>
+                <td style={{ padding:pad, borderBottom:`1px solid ${C.border}`, color:pnlColor(a.net_pnl), fontWeight:700, textAlign:'right', whiteSpace:'nowrap', background:a.net_pnl >= 0 ? 'rgba(34,197,94,0.08)' : 'rgba(239,68,68,0.08)' }}>{fmt(a.net_pnl)}</td>
+                <td style={{ padding:pad, borderBottom:`1px solid ${C.border}`, background:bg, color:C.muted, textAlign:'right', whiteSpace:'nowrap' }}>{a.comm_drag_pct}%</td>
               </tr>
             )
           })}
@@ -790,7 +873,7 @@ export default function AxiaAnalysisDashboard({
       <div style={{ display:'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 320px', gap:16, marginBottom:20 }}>
         <Card id="chart-asset-pnl">
           <SectionLabel>Net P&L by Instrument{gbpMode ? ' — converted to GBP' : ' — sorted worst → best'}</SectionLabel>
-          <AssetPnlChart assets={activeData.by_asset} gbpMode={gbpMode} />
+          <AssetPnlChart assets={activeData.by_asset} gbpMode={gbpMode} isMobile={isMobile} />
         </Card>
         <div style={{ display:'flex', flexDirection:'column', gap:16 }}>
           <Card id="chart-comm-pie">
@@ -836,11 +919,11 @@ export default function AxiaAnalysisDashboard({
       <div style={{ display:'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap:16, marginBottom:20 }}>
         <Card id="chart-volume">
           <SectionLabel>Trade Volume by Instrument (Total Lots)</SectionLabel>
-          <VolumeChart assets={activeData.by_asset} />
+          <VolumeChart assets={activeData.by_asset} isMobile={isMobile} />
         </Card>
         <Card id="chart-comm-drag">
           <SectionLabel>Gross P&L vs Commission Drag{gbpMode ? ' (GBP)' : ' — Top Commission Payers'}</SectionLabel>
-          <CommDragChart assets={activeData.by_asset} gbpMode={gbpMode} />
+          <CommDragChart assets={activeData.by_asset} gbpMode={gbpMode} isMobile={isMobile} />
         </Card>
       </div>
 
@@ -863,7 +946,7 @@ export default function AxiaAnalysisDashboard({
       {/* ── Full Asset Table ───────────────────────────────────────────────── */}
       <Card>
         <SectionLabel>Full Instrument Breakdown{gbpMode ? ' — All values in GBP' : ' — click headers to sort'}</SectionLabel>
-        <AssetTable assets={activeData.by_asset} />
+        <AssetTable assets={activeData.by_asset} isMobile={isMobile} />
       </Card>
 
     </div>
