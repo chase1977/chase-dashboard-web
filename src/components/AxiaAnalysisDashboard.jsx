@@ -10,7 +10,7 @@ import useIsMobile from '../hooks/useIsMobile.js'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   LineChart, Line, PieChart, Pie, Cell, ResponsiveContainer,
-  ReferenceLine, LabelList,
+  ReferenceLine,
 } from 'recharts'
 import JSZip from 'jszip'
 import html2canvas from 'html2canvas'
@@ -55,31 +55,6 @@ const CHART_TIP = {
 
 const AXIS = { tick:{ fill:C.muted, fontSize:11 }, axisLine:{ stroke:C.border }, tickLine:false }
 const GRID = { stroke:'#1E3A5F', strokeDasharray:'3 3' }
-
-// ─── Bar value labels ───────────────────────────────────────────────────────
-// 2026-09-08 (Nish request): horizontal bar charts with one dominant outlier
-// (e.g. one huge winner among many small losers) leave most of the chart's
-// width visually empty — small bars barely register against the full axis
-// range. Rather than fight the scale, put the actual number on every bar so
-// that "empty" space carries real information instead of being wasted.
-// Sign-aware: label sits at the bar's outer tip (away from the zero line),
-// not a fixed side — for a negative bar that's its LEFT edge, for a
-// positive bar its RIGHT edge, so the label always reads at the true data
-// point and never sits stacked on top of the zero reference line.
-function SignAwareBarLabel({ x, y, width, height, value, formatter, isMobile, posColor=C.pos, negColor=C.neg }) {
-  if (value == null) return null
-  const isNeg  = value < 0
-  const tipX   = isNeg ? x : x + width
-  const tx     = isNeg ? tipX - 5 : tipX + 5
-  const anchor = isNeg ? 'end' : 'start'
-  return (
-    <text x={tx} y={y + height/2} dy={3.5} textAnchor={anchor}
-      fontSize={isMobile ? 9.5 : 10.5} fontWeight={700}
-      fill={isNeg ? negColor : posColor}>
-      {formatter(value)}
-    </text>
-  )
-}
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 const fmt = (n, dp=2) =>
@@ -166,9 +141,7 @@ function AssetPnlChart({ assets, gbpMode, isMobile }) {
   const h = Math.max(320, assets.length * (isMobile ? 30 : 38) + 60)
   const yAxisWidth  = isMobile ? 96  : 185
   const leftMargin  = isMobile ? 100 : 190
-  // Extra room vs. before (was 30/80) so the value label at the end of the
-  // longest (outlier) bar never gets clipped by the chart edge.
-  const rightMargin = isMobile ? 60  : 110
+  const rightMargin = isMobile ? 30  : 80
   return (
     <div>
       {/* Click/tap readout — always shows the exact value clearly, no overlap
@@ -207,9 +180,6 @@ function AssetPnlChart({ assets, gbpMode, isMobile }) {
             barSize={isMobile ? 16 : 20}
           >
             {data.map((e,i) => <Cell key={i} fill={e.pnl >= 0 ? C.pos : C.neg} />)}
-            <LabelList dataKey="pnl" content={(props) => (
-              <SignAwareBarLabel {...props} formatter={v => fmt(v,0)} isMobile={isMobile} />
-            )} />
           </Bar>
         </BarChart>
       </ResponsiveContainer>
@@ -311,8 +281,7 @@ function VolumeChart({ assets, isMobile }) {
   const data = [...assets].sort((a,b) => (b.long+b.short)-(a.long+a.short)).slice(0,15).map(a => ({ name:a.instrument, lots:a.long+a.short, currency:a.currency }))
   const yAxisWidth = isMobile ? 92 : 160
   const leftMargin = isMobile ? 96 : 165
-  // Extra right room for the value label on the longest bar (was 20/50).
-  const rightMargin = isMobile ? 44 : 76
+  const rightMargin = isMobile ? 20 : 50
   return (
     <ResponsiveContainer width="99%" height={260}>
       <BarChart data={data} layout="vertical" margin={{ top:5, right:rightMargin, bottom:5, left:leftMargin }}>
@@ -322,8 +291,6 @@ function VolumeChart({ assets, isMobile }) {
         <Tooltip {...CHART_TIP} formatter={v => [fmt(v,0),'Total Lots']} />
         <Bar dataKey="lots" name="Lots" radius={[0,4,4,0]} isAnimationActive={false} barSize={isMobile ? 14 : 18}>
           {data.map((e,i) => <Cell key={i} fill={ccyColor(e.currency)} />)}
-          <LabelList dataKey="lots" position="right" formatter={v => fmt(v,0)}
-            style={{ fill:C.text, fontSize:isMobile?9.5:10.5, fontWeight:700 }} />
         </Bar>
       </BarChart>
     </ResponsiveContainer>
@@ -337,8 +304,7 @@ function CommDragChart({ assets, gbpMode, isMobile }) {
   const commsLabel = gbpMode ? 'Total Comms (GBP)' : 'Total Comms'
   const yAxisWidth = isMobile ? 92 : 160
   const leftMargin = isMobile ? 96 : 165
-  // Extra right room for value labels on both series (was 20/60).
-  const rightMargin = isMobile ? 52 : 90
+  const rightMargin = isMobile ? 20 : 60
   return (
     <ResponsiveContainer width="99%" height={260}>
       <BarChart data={data} layout="vertical" margin={{ top:5, right:rightMargin, bottom:5, left:leftMargin }} barSize={isMobile ? 9 : 12}>
@@ -348,15 +314,8 @@ function CommDragChart({ assets, gbpMode, isMobile }) {
         <Tooltip {...CHART_TIP} formatter={(v,n) => [fmt(v),n]} />
         <Legend wrapperStyle={{ color:C.text, fontSize:isMobile?10:11 }} />
         <ReferenceLine x={0} stroke={C.border} strokeWidth={2} />
-        <Bar dataKey="gross" name={grossLabel} fill={C.accent} radius={[0,4,4,0]} isAnimationActive={false}>
-          <LabelList dataKey="gross" content={(props) => (
-            <SignAwareBarLabel {...props} formatter={v => fmt(v,0)} isMobile={isMobile} posColor={C.accent} negColor={C.neg} />
-          )} />
-        </Bar>
-        <Bar dataKey="comms" name={commsLabel} fill={C.neg} radius={[0,4,4,0]} isAnimationActive={false}>
-          <LabelList dataKey="comms" position="right" formatter={v => fmt(v,0)}
-            style={{ fill:C.neg, fontSize:isMobile?9.5:10.5, fontWeight:700 }} />
-        </Bar>
+        <Bar dataKey="gross" name={grossLabel} fill={C.accent} radius={[0,4,4,0]} isAnimationActive={false} />
+        <Bar dataKey="comms" name={commsLabel} fill={C.neg} radius={[0,4,4,0]} isAnimationActive={false} />
       </BarChart>
     </ResponsiveContainer>
   )
