@@ -386,6 +386,30 @@ indicator. Applies uniformly to every AXIA client, not just one.
 > proactively to `PATCH /api/fund-statements/{id}` (§11) from the start, to
 > avoid the same class of bug there.
 
+### 10.1 Bidirectional Equity / CHG NLV Entry (2026-09-09)
+
+`AxiaEquityEntry.jsx` is the one shared "New Entry" form behind AXIA, IG,
+and every daily-cadence Data Feed created via `DataFeedManager.jsx`
+(instantiated per feed with a different `apiPrefix` — see §16.x below and
+the component's own header comment). One fix here applies to all of them.
+
+Previously only Equity (NLV) could be typed, auto-computing CHG NLV as
+`equity − previous day's equity` (via `GET {apiPrefix}/equity/prev`); CHG
+NLV was a free-text override box with no link back to Equity.
+
+Now both fields are live and bidirectional against the same previous-day
+anchor:
+- Type **Equity (NLV)** → CHG NLV auto-fills as `equity − prevEquity`
+  (unchanged behaviour).
+- Type **CHG NLV** → Equity (NLV) auto-fills as `prevEquity + chgNlv` (new).
+
+Whichever field the user edits last is not clobbered by the other — each
+`onChange` only pushes a value into the *other* field, not its own. If no
+previous record exists for that client/account/date/currency (first entry),
+neither field can auto-derive and both must be entered manually, same as
+before. Submit still only requires Equity (NLV) to be present — it's
+populated either by direct entry or by the CHG NLV auto-fill.
+
 ---
 
 ## 11. Fund Monthly Statements & OANDA FX Bridge (12-FLAGS)

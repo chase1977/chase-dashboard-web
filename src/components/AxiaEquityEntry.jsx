@@ -15,7 +15,8 @@
  * - Date picker (default today, allows backdating)
  * - Currency selector (default GBP)
  * - Equity input (formatted 2dp + commas)
- * - CHG NLV: auto-fetched from prev record, manual override if not found
+ * - Equity (NLV) and CHG NLV are bidirectionally linked off the previous
+ *   day's equity: type either one, the other auto-fills (2026-09-09)
  * - Confirm / Discard with popup
  * - Records table with inline edit + delete
  */
@@ -233,9 +234,13 @@ export default function AxiaEquityEntry({
   const [selClient,  setSelClient]  = useState(null)   // { id, client, account, label }
   const [date,       setDate]       = useState(todayISO())
   const [currency,   setCurrency]   = useState('GBP')
+  // Equity (NLV) and CHG NLV are now bidirectionally linked off the previous
+  // day's equity (prevRecord.equity, 2026-09-09 Nish request): type either
+  // one and the other auto-fills — Equity + prevEquity -> CHG NLV (as
+  // before), or CHG NLV + prevEquity -> Equity (new). Both stay plain
+  // editable text fields; deriveFrom{Equity,Chg} below do the two-way math.
   const [equityRaw,  setEquityRaw]  = useState('')      // formatted string
-  const [chgNlv,     setChgNlv]     = useState(null)    // number or null
-  const [chgOverride,setChgOverride]= useState('')      // manual override raw
+  const [chgRaw,     setChgRaw]     = useState('')      // formatted string
   const [prevRecord, setPrevRecord] = useState(null)    // { trade_date, equity }
   const [prevLoading,setPrevLoading]= useState(false)
 
@@ -344,24 +349,44 @@ export default function AxiaEquityEntry({
     return () => { cancelled = true }
   }, [selClient, date, currency])
 
-  // ---- Auto-calculate CHG NLV as equity is typed ----
+  // ---- Re-derive the dependent field when the previous-day anchor changes
+  // (client / date / currency switch re-fetches prevRecord). Equity wins if
+  // both happen to already hold a value — matches the original equity-first
+  // default behaviour.
   useEffect(() => {
-    const eq = parseNum(equityRaw)
-    if (eq != null && prevRecord?.equity != null) {
-      setChgNlv(+(eq - prevRecord.equity).toFixed(2))
-      setChgOverride('')
-    } else {
-      setChgNlv(null)
+    if (prevRecord?.equity == null) return
+    const eq  = parseNum(equityRaw)
+    const chg = parseNum(chgRaw)
+    if (eq != null) {
+      setChgRaw(formatInput(String(+(eq - prevRecord.equity).toFixed(2))))
+    } else if (chg != null) {
+      setEquityRaw(formatInput(String(+(prevRecord.equity + chg).toFixed(2))))
     }
-  }, [equityRaw, prevRecord])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prevRecord])
 
-  // ---- Equity input: format with commas ----
+  // ---- Equity input: format with commas, auto-fill CHG NLV from prev day ----
   const onEquityChange = (e) => {
     const raw = e.target.value.replace(/,/g, '')
     if (raw === '' || raw === '-') { setEquityRaw(raw); return }
     const n = parseFloat(raw)
-    if (!isNaN(n)) {
-      setEquityRaw(formatInput(raw))
+    if (isNaN(n)) return
+    setEquityRaw(formatInput(raw))
+    if (prevRecord?.equity != null) {
+      setChgRaw(formatInput(String(+(n - prevRecord.equity).toFixed(2))))
+    }
+  }
+
+  // ---- CHG NLV input: format with commas (sign allowed), auto-fill Equity
+  // from prev day + this change ----
+  const onChgChange = (e) => {
+    const raw = e.target.value.replace(/,/g, '')
+    if (raw === '' || raw === '-') { setChgRaw(raw); return }
+    const n = parseFloat(raw)
+    if (isNaN(n)) return
+    setChgRaw(formatInput(raw))
+    if (prevRecord?.equity != null) {
+      setEquityRaw(formatInput(String(+(prevRecord.equity + n).toFixed(2))))
     }
   }
 
@@ -371,7 +396,7 @@ export default function AxiaEquityEntry({
     if (!eq && eq !== 0) { setError('Enter a valid equity value.'); return }
     if (!selClient)       { setError('Select a client/account.'); return }
 
-    const finalChg = chgNlv ?? parseNum(chgOverride) ?? null
+    const finalChg = parseNum(chgRaw)
 
     setConfirmPopup({
       variant: 'confirm',
@@ -417,8 +442,7 @@ export default function AxiaEquityEntry({
       }
       setSuccess(`Saved — ${fmtDate(date)} ${currency} ${fmtNum(eq)}`)
       setEquityRaw('')
-      setChgNlv(null)
-      setChgOverride('')
+      setChgRaw('')
       setPage(0)
       await loadRecords(0)
     } catch (e) { setError(e.message) }
@@ -527,8 +551,7 @@ export default function AxiaEquityEntry({
     finally { setClientEditSaving(false) }
   }
 
-  // ---- Computed chg display ----
-  const displayChg = chgNlv ?? parseNum(chgOverride) ?? null
+  const chgSign = (() => { const n = parseNum(chgRaw); return n == null ? 0 : n })()
 
   // ---------------------------------------------------------------------------
   // Render
@@ -710,7 +733,9 @@ export default function AxiaEquityEntry({
             />
           </Field>
 
-          {/* CHG NLV */}
+          {/* CHG NLV — editable both ways: type here and Equity (NLV)
+              auto-fills from prevRecord.equity + this value, same as typing
+              Equity auto-fills this from prevRecord.equity. */}
           <Field style={{ minWidth: 160 }}>
             <Label>
               CHG NLV
@@ -720,34 +745,31 @@ export default function AxiaEquityEntry({
                   {' '}(vs {fmtDate(prevRecord.trade_date)})
                 </span>
               )}
-              {!prevRecord && !prevLoading && equityRaw && (
-                <span style={{ color: C.warn, fontWeight: 400 }}> no prev — enter manually</span>
+              {!prevRecord && !prevLoading && (equityRaw || chgRaw) && (
+                <span style={{ color: C.warn, fontWeight: 400 }}> no prev — enter both manually</span>
               )}
             </Label>
-            {chgNlv != null ? (
-              <div style={{
-                padding: '8px 12px', borderRadius: 6, fontSize: 14, fontFamily: 'monospace',
-                fontWeight: 600, letterSpacing: '0.3px',
-                background: chgNlv < 0 ? C.negDim : C.posDim,
-                border: `1px solid ${chgNlv < 0 ? C.negBorder : C.posBorder}`,
-                color: chgNlv < 0 ? C.neg : C.pos,
-              }}>
-                {chgNlv >= 0 ? '+' : ''}{fmtNum(chgNlv)}
-              </div>
-            ) : (
-              <Input
-                value={chgOverride}
-                onChange={e => setChgOverride(e.target.value)}
-                placeholder="Override (optional)"
-                style={{ fontFamily: 'monospace' }}
-              />
-            )}
+            <Input
+              value={chgRaw}
+              onChange={onChgChange}
+              placeholder="+18,412.30"
+              style={{
+                fontFamily: 'monospace', fontSize: 14, letterSpacing: '0.3px', fontWeight: 600,
+                color: chgSign < 0 ? C.neg : chgSign > 0 ? C.pos : C.text,
+                borderColor: chgSign < 0 ? C.negBorder : chgSign > 0 ? C.posBorder : C.border,
+              }}
+            />
           </Field>
+        </div>
+
+        {/* Either-field hint */}
+        <div style={{ marginTop: 10, fontSize: 11, color: C.textSub }}>
+          Enter either Equity (NLV) or CHG NLV — the other fills in automatically from the previous day.
         </div>
 
         {/* Prev record hint */}
         {prevRecord && (
-          <div style={{ marginTop: 12, fontSize: 11, color: C.textSub }}>
+          <div style={{ marginTop: 6, fontSize: 11, color: C.textSub }}>
             Previous record: {fmtDate(prevRecord.trade_date)} —
             {' '}<span style={{ color: C.textMid, fontFamily: 'monospace' }}>{fmtNum(prevRecord.equity)}</span>
             {' '}{currency}
@@ -780,13 +802,13 @@ export default function AxiaEquityEntry({
               variant: 'danger',
               message: 'Discard this entry? All unsaved values will be cleared.',
               onConfirm: () => {
-                setEquityRaw(''); setChgNlv(null); setChgOverride('')
+                setEquityRaw(''); setChgRaw('')
                 setDate(todayISO()); setCurrency('GBP')
                 setError(null); setSuccess(null)
                 setConfirmPopup(null)
               },
             })
-          }} disabled={!equityRaw}>
+          }} disabled={!equityRaw && !chgRaw}>
             Discard
           </Btn>
         </div>
