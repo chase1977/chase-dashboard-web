@@ -474,6 +474,72 @@ The Data Feed "Generate SQL" template (`data_feeds.py`) now includes both
 columns by default, so any feed created from now on needs no extra
 migration.
 
+### 10.3 Bugfix — write-order caused an orphan ledger row to double-count (2026-09-21)
+
+**Bug.** OPTIOS showed Capital Invested exactly DOUBLE its one visible
+equity row, Total P&L wrongly negative, despite only one equity record
+existing. Root cause: `create_equity`/`update_equity` (in `axia_equity.py`,
+`ig_equity.py`, `data_feeds.py` — all three routers, identical pattern)
+called `sync_capital_flow_transfer` (which commits a `capital_transfers`
+row as its last statement) **before** the equity-table insert/update. If
+that later write then failed — e.g. a duplicate/retried submit hitting the
+`(client,account,trade_date,currency)` unique constraint — the ledger row
+it had already committed had nothing to roll it back, permanently baking
+an extra contribution into the strategy's baseline with no equity row to
+show for it.
+
+**Fix.** All three routers now write the equity row FIRST (its own
+duplicate-catch, zero side effects on failure), and only sync the ledger
+once that succeeds — with compensating rollback (delete the just-inserted
+row on create-failure; revert to the pre-update values on update-failure)
+if the ledger step itself then fails. A genuine duplicate submit now 409s
+cleanly with no orphan row possible, in any of AXIA, IG, or any Data Feed.
+
+### 10.4 Capital Invested computed directly from flagged equity rows, ledger is audit-trail only (2026-09-21)
+
+**Problem.** §10.2's fix worked by keeping `capital_transfers` populated
+from the equity-entry screen and letting the KPI math read that ledger sum
+(unchanged since before the feature existed). But that meant Capital
+Invested depended on there being exactly one ledger row per flagged equity
+entry — any bug, retry, or manual edit of the ledger could silently throw
+the number off with no direct way to audit it back to source, and it
+mixed one audit trail (manual Wallet/Pod/Strategy funding) with another
+(auto-logged equity flags) in the same sum.
+
+**Fix.** `capital_transfers` rows created by `sync_capital_flow_transfer`
+(from an equity-screen Initial Investment / Add-On flag) are now
+**reference/audit-trail only** — they still get created and updated
+exactly as before (visible in the Capital Ledger, still show "AXIA
+Initial Investment" etc.), but are no longer summed into any KPI:
+
+- `_axia_flagged_equity_total(client, account, table)` (new,
+  `supabase_service.py`) sums the client's GBP equity rows directly where
+  `capital_flow_type` is set — contribution = CHG NLV if set, else Equity
+  — the single source of truth for that client's baseline now.
+- `_axia_strategy_agg`'s baseline (used by AXIA/IG and every daily-cadence
+  Data Feed alike) checks this flagged-equity total FIRST, ahead of the
+  `capital_transfers` ledger sum. The ledger sum is now only a fallback for
+  strategies funded through the ledger before this feature existed and
+  never flagged since.
+- `_equity_linked_capital_transfer_ids()` (new) finds every
+  `capital_transfer_id` referenced from `axia_daily_equity`,
+  `ig_daily_equity`, or any daily-cadence Data Feed's equity table, and
+  `_capital_transfers_by_strategy()` now excludes those ids from its sum —
+  so manual Wallet/Pod/Strategy transfers (made directly in Manage Pods &
+  Strategies, unaffected, still sum exactly as before) never get double
+  -read alongside the flagged-equity total.
+- `_strategy_capital_invested` now checks the AXIA/IG/Data-Feed aggregator
+  (which already prioritises flagged-equity) BEFORE the raw ledger sum, for
+  any strategy linked to a client.
+
+Banked Profit / Capital Allocated / Total P&L are untouched by this
+change — they were already sourced from the OUTBOUND leg of
+`capital_transfers` (`capital_return_amount`/`profit_loss_amount`, see
+§9), which the equity-flag feature never writes to (its rows are always
+inbound "new money", both fields null) — so those numbers already only
+ever moved on a genuine capital return / banked profit-loss event, exactly
+as intended. This change only closes the gap on the *invested* side.
+
 ---
 
 ## 11. Fund Monthly Statements & OANDA FX Bridge (12-FLAGS)

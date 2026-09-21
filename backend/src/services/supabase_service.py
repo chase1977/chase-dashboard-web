@@ -638,10 +638,84 @@ def _axia_equity_series(client: str, account: str, table: str = "axia_daily_equi
     return _get_cached(f"equity_{table}_{client}_{account}", _fetch)
 
 
+def _daily_equity_tables() -> list[str]:
+    """axia_daily_equity + ig_daily_equity + every registered daily-cadence
+    Data Feed's equity table — every physical table capital_flow_type /
+    capital_transfer_id can live on. Used to find equity-flow-linked ledger
+    rows regardless of which feed created them, current or future."""
+    tables = ["axia_daily_equity", "ig_daily_equity"]
+    for feed in _data_feeds_registry():
+        if feed.get("cadence") == "daily" and feed.get("equity_table"):
+            tables.append(feed["equity_table"])
+    return tables
+
+
+def _equity_linked_capital_transfer_ids() -> set:
+    """
+    IDs of capital_transfers rows auto-created from an Initial Investment /
+    Add-On flag on a daily-equity entry (AXIA, IG, or any registered
+    daily-cadence Data Feed) — see sync_capital_flow_transfer.
+
+    These rows stay in capital_transfers forever as an audit trail (who
+    flagged what, when — matches the records-table TYPE badge), but must
+    NOT be summed into Capital Invested / Capital Allocated anywhere:
+    that figure is computed directly from the flagged equity rows
+    themselves (see _axia_flagged_equity_total), so also summing their
+    ledger mirror would double-count it — exactly the OPTIOS bug (2026-09-21).
+    Manual Wallet<->Pod<->Strategy transfers created directly in Manage
+    Pods & Strategies are NOT in this set and keep summing exactly as
+    before. See README §10.3.
+    """
+    def _fetch():
+        ids = set()
+        for table in _daily_equity_tables():
+            rows = (
+                get_client().table(table).select("capital_transfer_id")
+                .execute().data or []
+            )
+            ids.update(int(r["capital_transfer_id"]) for r in rows if r.get("capital_transfer_id") is not None)
+        return ids
+    return _get_cached("equity_linked_capital_transfer_ids", _fetch)
+
+
+def _axia_flagged_equity_total(client: str, account: str, table: str = "axia_daily_equity") -> float:
+    """
+    Sum of a client/account's GBP daily-equity rows flagged Initial
+    Investment / Add-On (capital_flow_type in CAPITAL_FLOW_TYPES) — the
+    contribution of each is CHG NLV if set, else Equity (matches
+    sync_capital_flow_transfer's own contribution rule). This is the direct,
+    single source of truth for that client's Capital Invested baseline —
+    computed straight from the equity rows themselves, never from the
+    capital_transfers ledger mirror those flags also create (audit trail
+    only, see _equity_linked_capital_transfer_ids). 0.0 if nothing is
+    flagged yet (transitional strategies pre-dating this feature).
+    """
+    def _fetch():
+        rows = (
+            get_client().table(table)
+            .select("equity,chg_nlv,capital_flow_type,currency")
+            .eq("client", client).eq("account", account).eq("currency", "GBP")
+            .execute().data or []
+        )
+        total = 0.0
+        for r in rows:
+            if r.get("capital_flow_type") not in CAPITAL_FLOW_TYPES:
+                continue
+            contrib = r.get("chg_nlv") if r.get("chg_nlv") is not None else r.get("equity")
+            total += float(contrib or 0)
+        return round(total, 2)
+    return _get_cached(f"flagged_equity_total_{table}_{client}_{account}", _fetch)
+
+
 def _capital_transfers_by_strategy() -> dict[int, dict]:
     """
     strategy_id -> { "in": float, "out": float } aggregated from the
-    capital_transfers ledger (Wallet/Pod/Strategy typed transfers).
+    capital_transfers ledger (Wallet/Pod/Strategy typed transfers) —
+    EXCLUDING rows linked from an equity-screen Initial Investment / Add-On
+    flag (see _equity_linked_capital_transfer_ids). Those stay in the ledger
+    as an audit trail but are counted towards Capital Invested via the
+    flagged equity rows directly instead (_axia_flagged_equity_total), never
+    from here too — summing both would double it.
 
     Separate from Darwinex's internal_transfers table — this ledger covers
     AXIA and manual/other strategies only, per the Wallet↔Pod↔Strategy
@@ -650,9 +724,12 @@ def _capital_transfers_by_strategy() -> dict[int, dict]:
     monotonic). "out" = cumulative capital moved back OUT to a pod/wallet.
     """
     def _fetch():
+        excluded = _equity_linked_capital_transfer_ids()
         rows = get_client().table("capital_transfers").select("*").execute().data or []
         agg: dict[int, dict] = {}
         for r in rows:
+            if r.get("id") in excluded:
+                continue
             amt = float(r.get("amount") or 0)
             if r.get("to_type") == "strategy" and r.get("to_id") is not None:
                 sid = int(r["to_id"])
@@ -768,11 +845,15 @@ def _strategy_capital_invested(s: dict, net_deployed: dict, axia_agg: dict,
       1. brokerage_account set (Darwinex, still active/open) →
          net_deployed_per_account (unchanged — correct while a position is
          still open, since net_deployed represents what's still committed).
-      2. capital_transfers ledger has inbound entries → sum of those
-         (new source of truth, once a strategy has been funded through
-         the Wallet/Pod/Strategy picker).
-      3. AXIA-linked, no transfers logged yet → first daily-equity baseline
-         (transitional fallback until backfilled).
+      2. AXIA/IG/Data-Feed-linked → axia_agg's own baseline (2026-09-21:
+         checked BEFORE the raw ledger sum below — axia_agg's baseline
+         already prioritises flagged equity rows directly over the ledger,
+         see _axia_strategy_agg / _axia_flagged_equity_total. Equity-linked
+         ledger rows are audit-trail only now, see
+         _equity_linked_capital_transfer_ids — reading them here too would
+         double what axia_agg already counted, the OPTIOS bug).
+      3. capital_transfers ledger has inbound entries (manual Wallet/Pod
+         /Strategy funding, no equity link at all) → sum of those.
       4. else → manual initial_investment field on the strategy row
          (transitional fallback).
     """
@@ -789,11 +870,11 @@ def _strategy_capital_invested(s: dict, net_deployed: dict, axia_agg: dict,
     acct = s.get("brokerage_account")
     if acct:
         return net_deployed.get(acct, 0.0)
+    if (s.get("axia_client_id") or s.get("ig_client_id") or s.get("data_feed_id")) and s["id"] in axia_agg:
+        return axia_agg[s["id"]]["baseline"]
     ct = ct_by_strategy.get(s["id"])
     if ct and ct["in"] > 0:
         return round(ct["in"], 2)
-    if (s.get("axia_client_id") or s.get("ig_client_id") or s.get("data_feed_id")) and s["id"] in axia_agg:
-        return axia_agg[s["id"]]["baseline"]
     return float(s.get("initial_investment") or 0)
 
 
@@ -840,8 +921,15 @@ def _axia_strategy_agg(
 
     baseline (cost basis / "Total Capital Invested") — NOT watermark-adjusted,
     it's the cost basis, not the current value:
-      - if the strategy has inbound capital_transfers logged, use that sum
-        (accounts for multi-tranche funding, e.g. £100k then +£150k later)
+      - if the client has GBP equity rows flagged Initial Investment/Add-On,
+        sum those directly (2026-09-21 — the source of truth now; accounts
+        for multi-tranche funding, e.g. £100k then +£150k later, without
+        relying on the capital_transfers ledger mirror those flags also
+        create — that mirror is audit-trail only, see
+        _equity_linked_capital_transfer_ids)
+      - else if the strategy has inbound MANUAL capital_transfers logged
+        (funded via Manage Pods & Strategies, no equity flag involved),
+        use that sum (legacy path, pre-dating the flag feature)
       - else fall back to first GBP equity entry (transitional, pre-backfill)
 
     pnl = chase_equity − baseline, so it stays correct under either source.
@@ -865,12 +953,16 @@ def _axia_strategy_agg(
         if not series:
             out[s["id"]] = {"invested": 0.0, "pnl": 0.0, "baseline": 0.0, "series": []}
             continue
-        latest = series[-1]["equity"]
-        ct     = ct_by_strategy.get(s["id"])
-        if ct and ct["in"] > 0:
-            baseline = round(ct["in"], 2)
+        latest       = series[-1]["equity"]
+        flagged_total = _axia_flagged_equity_total(cl["client"], cl["account"], equity_table)
+        if flagged_total > 0:
+            baseline = flagged_total
         else:
-            baseline = series[0]["equity"]
+            ct = ct_by_strategy.get(s["id"])
+            if ct and ct["in"] > 0:
+                baseline = round(ct["in"], 2)
+            else:
+                baseline = series[0]["equity"]
         chase_equity, chase_pnl = _apply_watermark(s, latest, baseline)
         out[s["id"]] = {
             "invested": chase_equity,
