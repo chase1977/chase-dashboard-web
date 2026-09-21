@@ -400,6 +400,27 @@ export default function AxiaEquityEntry({
     }
   }
 
+  // ---- Capital Flow toggle ----
+  // Bugfix 2026-09-21 (Nish report — INVESTGTX showed -£500,100 P&L after
+  // 3 flagged funding entries): typing the raw deposit amount straight into
+  // Equity (NLV) instead of CHG NLV skips the prevEquity+chg cumulative
+  // math — Equity ends up as just that day's deposit, not the account's
+  // running balance, so Current Equity undercounts and P&L goes deeply
+  // negative even though Capital Invested (summed from the capital_transfers
+  // ledger) is correct. Once a prevRecord exists, a flagged entry must be
+  // driven through CHG NLV (the amount actually being added) with Equity
+  // locked to the auto-computed prevEquity+chg figure — never typed
+  // directly — so this mistake can't happen again. Clearing any stray
+  // direct Equity value on flag-select forces re-entry through CHG NLV.
+  const selectFlowType = (v) => {
+    setCapitalFlowType(v)
+    if (v && prevRecord?.equity != null) {
+      setEquityRaw('')
+    }
+  }
+
+  const lockEquity = Boolean(capitalFlowType) && prevRecord?.equity != null
+
   // ---- Submit ----
   const handleSubmit = () => {
     const eq = parseNum(equityRaw)
@@ -763,23 +784,32 @@ export default function AxiaEquityEntry({
             </Select>
           </Field>
 
-          {/* Equity NLV */}
+          {/* Equity NLV — locked when a Capital Flow flag is set and a prev
+              record exists: must be driven from CHG NLV (see selectFlowType
+              bugfix comment above), never typed directly, so a deposit
+              amount can't get mistaken for the account's running balance. */}
           <Field style={{ flex: 1, minWidth: 180 }}>
-            <Label>Equity (NLV)</Label>
+            <Label>Equity (NLV){lockEquity && <span style={{ color: C.pos, fontWeight: 400 }}> — auto (from CHG NLV)</span>}</Label>
             <Input
               value={equityRaw}
               onChange={onEquityChange}
-              placeholder="525,141.53"
-              style={{ fontFamily: 'monospace', fontSize: 14, letterSpacing: '0.3px' }}
+              disabled={lockEquity}
+              placeholder={lockEquity ? 'Enter CHG NLV instead →' : '525,141.53'}
+              style={{
+                fontFamily: 'monospace', fontSize: 14, letterSpacing: '0.3px',
+                opacity: lockEquity ? 0.6 : 1, cursor: lockEquity ? 'not-allowed' : 'text',
+              }}
             />
           </Field>
 
           {/* CHG NLV — editable both ways: type here and Equity (NLV)
               auto-fills from prevRecord.equity + this value, same as typing
-              Equity auto-fills this from prevRecord.equity. */}
+              Equity auto-fills this from prevRecord.equity. When flagged as
+              Initial Investment / Add-On, this IS the field to type the
+              capital amount into — Equity locks and auto-derives from it. */}
           <Field style={{ minWidth: 160 }}>
             <Label>
-              CHG NLV
+              {lockEquity ? 'CHG NLV — Capital Amount' : 'CHG NLV'}
               {prevLoading && <span style={{ color: C.textSub, fontWeight: 400 }}> fetching…</span>}
               {prevRecord && !prevLoading && (
                 <span style={{ color: C.textSub, fontWeight: 400 }}>
@@ -793,11 +823,11 @@ export default function AxiaEquityEntry({
             <Input
               value={chgRaw}
               onChange={onChgChange}
-              placeholder="+18,412.30"
+              placeholder={lockEquity ? '500,000.00' : '+18,412.30'}
               style={{
                 fontFamily: 'monospace', fontSize: 14, letterSpacing: '0.3px', fontWeight: 600,
                 color: chgSign < 0 ? C.neg : chgSign > 0 ? C.pos : C.text,
-                borderColor: chgSign < 0 ? C.negBorder : chgSign > 0 ? C.posBorder : C.border,
+                borderColor: chgSign < 0 ? C.negBorder : chgSign > 0 ? C.posBorder : (lockEquity ? C.posBorder : C.border),
               }}
             />
           </Field>
@@ -805,7 +835,9 @@ export default function AxiaEquityEntry({
 
         {/* Either-field hint */}
         <div style={{ marginTop: 10, fontSize: 11, color: C.textSub }}>
-          Enter either Equity (NLV) or CHG NLV — the other fills in automatically from the previous day.
+          {lockEquity
+            ? 'Capital Flow flagged — enter the amount added in CHG NLV; Equity (NLV) is computed automatically from the previous record.'
+            : 'Enter either Equity (NLV) or CHG NLV — the other fills in automatically from the previous day.'}
         </div>
 
         {/* Capital flow flag — marks this CHG NLV as new client money in
@@ -821,7 +853,7 @@ export default function AxiaEquityEntry({
             ].map(opt => (
               <button
                 key={opt.v || 'trading'}
-                onClick={() => setCapitalFlowType(opt.v)}
+                onClick={() => selectFlowType(opt.v)}
                 style={{
                   padding: '8px 14px', border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 600,
                   whiteSpace: 'nowrap', transition: 'all 0.15s',
