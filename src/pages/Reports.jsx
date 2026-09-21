@@ -780,10 +780,24 @@ export default function Reports() {
       )}
 
       {/* ── Dynamic Data Feed tabs ── */}
+      {/* key={active.feed.slug} (2026-09-21 Nish report — switching between
+          Data Feeds got "stuck", needed a reload) — every registered daily
+          feed renders through this SAME conditional block/position, unlike
+          AXIA/IG/12-FLAGS/ASLAN LABS which each have their own separate
+          block above and so naturally unmount/remount on tab switch. React
+          only updates props (apiPrefix/label) on an already-mounted
+          component at the same tree position — AxiaEquityEntry's internal
+          state (selClient, records, clients, prevRecord, ...) doesn't reset
+          on its own when apiPrefix changes, so switching feeds showed the
+          previous feed's stale client list/records until a full reload
+          forced a fresh mount. Keying by slug forces React to unmount the
+          old instance and mount a new one on every feed switch, same as the
+          static tabs already do implicitly. */}
       {active.feed && active.feed.cadence === 'daily' && (
         <SectionCard title={`${active.feed.name} Daily Equity (NLV)`}
           desc={`Record daily Net Liquid Value + CHG NLV for ${active.feed.name}-linked strategies. Same mechanism as AXIA/IG.`}>
           <AxiaEquityEntry
+            key={active.feed.slug}
             apiPrefix={`/api/data-feeds/${active.feed.slug}`}
             label={active.feed.name}
             clientLinkField="data_feed_client_id"
@@ -794,6 +808,7 @@ export default function Reports() {
         <SectionCard title={`${active.feed.name} Monthly Statement (${active.feed.currency})`}
           desc={`Record the monthly statement Ending Balance for ${active.feed.name} — Net Income and Rate of Return auto-computed.`}>
           <Flags12StatementEntry
+            key={active.feed.slug}
             feedSlug={active.feed.slug}
             dataFeedId={active.feed.id}
             currency={active.feed.currency}
