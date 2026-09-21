@@ -2978,6 +2978,121 @@ def delete_capital_transfer(transfer_id: int) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Capital-flow-flagged daily equity entries (2026-09-21, Nish request)
+#
+# Problem: AXIA/IG/generic daily-cadence equity rows (axia_daily_equity /
+# ig_daily_equity / <slug>_daily_equity) record raw NLV snapshots only. A
+# fresh capital injection recorded as a normal row (e.g. equity jumps
+# 100 -> 500,100 because £500,000 of new client money was wired in, not
+# because of trading) was previously indistinguishable from £500,000 of
+# genuine trading profit — CHG NLV on that day got counted as P&L by
+# _axia_strategy_agg's `pnl = latest_equity - baseline` formula, and
+# "Total Capital Invested" stayed frozen at the very first entry only
+# (see that function's docstring — baseline was, until now, either the
+# capital_transfers ledger sum if populated, or else the first-ever
+# equity entry, full stop).
+#
+# Fix: when a daily-equity row is flagged `capital_flow_type` ('initial' or
+# 'addon'), auto-create/sync a matching `capital_transfers` ledger row
+# (from_type='wallet', from_id=None — "new money in", same shape as a
+# manual Wallet->Strategy funding transfer) for that day's CHG NLV amount.
+# `_strategy_capital_invested` / `_axia_strategy_agg` ALREADY prioritise the
+# capital_transfers ledger sum over the first-equity-entry fallback (this
+# was true before today) — so simply keeping that ledger populated makes
+# baseline == cumulative flagged contributions automatically, everywhere
+# that reads it (Portfolio hero, Capital Flow Summary, Capital at a Glance,
+# pod/strategy breakdowns) — zero changes needed to the KPI math itself.
+# 'initial' vs 'addon' are functionally identical here (both are inbound
+# capital, both count toward Capital Invested/Allocated) — the two labels
+# exist only so the equity records table can show which rows were capital
+# events vs genuine trading days; see AxiaEquityEntry.jsx.
+#
+# Shared by axia_equity.py, ig_equity.py and data_feeds.py (daily cadence)
+# so all three stay in lockstep — one implementation, not three.
+# ---------------------------------------------------------------------------
+
+CAPITAL_FLOW_TYPES = ("initial", "addon")
+
+
+def _find_linked_strategy_id(client_row_id, client_field: str, feed_id=None) -> Optional[int]:
+    """
+    id of the strategy linked to this specific client row (or None).
+    client_field is 'axia_client_id' / 'ig_client_id' / 'data_feed_client_id'.
+    For data_feed_client_id, also requires strategies.data_feed_id == feed_id
+    — client-row ids are only unique within their own feed's clients table,
+    not globally, so the feed must be checked too.
+    """
+    rows = (
+        get_client().table("strategies")
+        .select("id,data_feed_id")
+        .eq(client_field, client_row_id)
+        .execute()
+        .data or []
+    )
+    for r in rows:
+        if feed_id is None or r.get("data_feed_id") == feed_id:
+            return r["id"]
+    return None
+
+
+def sync_capital_flow_transfer(
+    *, client_table: str, client: str, account: str, client_field: str,
+    feed_id, trade_date: str, contribution: float, capital_flow_type: str, label: str,
+) -> int:
+    """
+    Create the capital_transfers ledger row backing a newly-flagged
+    (Initial Investment / Add-On) daily-equity entry. Returns the new
+    ledger row's id (to store back on the equity row as capital_transfer_id).
+    Raises ValueError (caller should turn this into a 400) if the amount
+    isn't a positive inflow, or the client isn't linked to any strategy yet.
+    """
+    if capital_flow_type not in CAPITAL_FLOW_TYPES:
+        raise ValueError(f"capital_flow_type must be one of {CAPITAL_FLOW_TYPES}.")
+    if contribution is None or contribution <= 0:
+        raise ValueError(
+            "Initial Investment / Add-On must be a positive capital inflow "
+            "(CHG NLV, or Equity if there's no previous record yet)."
+        )
+    client_row = (
+        get_client().table(client_table).select("id")
+        .eq("client", client).eq("account", account).limit(1).execute().data
+    )
+    if not client_row:
+        raise ValueError("Client/account not found.")
+    sid = _find_linked_strategy_id(client_row[0]["id"], client_field, feed_id)
+    if sid is None:
+        raise ValueError(
+            "This client/account isn't linked to a strategy yet — link it in "
+            "Manage Pods & Strategies first, then flag Initial Investment / Add-On."
+        )
+    tag = "Initial Investment" if capital_flow_type == "initial" else "Add-On"
+    row = create_capital_transfer(
+        transfer_date=trade_date, from_type="wallet", from_id=None,
+        to_type="strategy", to_id=sid, amount=contribution,
+        reference=f"{label} {tag}",
+        notes=f"Auto-logged from {label} daily equity entry ({client}/{account}, {trade_date}).",
+    )
+    return row["id"]
+
+
+def resync_capital_flow_transfer(transfer_id: int, trade_date: str, contribution: float, capital_flow_type: str, label: str) -> None:
+    """Update an existing linked ledger row in place (edit of a flagged equity row)."""
+    if contribution is None or contribution <= 0:
+        raise ValueError(
+            "Initial Investment / Add-On must be a positive capital inflow "
+            "(CHG NLV, or Equity if there's no previous record yet)."
+        )
+    tag = "Initial Investment" if capital_flow_type == "initial" else "Add-On"
+    update_capital_transfer(transfer_id, transfer_date=trade_date, amount=contribution, reference=f"{label} {tag}")
+
+
+def delete_capital_flow_transfer(transfer_id) -> None:
+    """Remove the linked ledger row (equity row deleted, or un-flagged back to a normal trading day)."""
+    if transfer_id:
+        delete_capital_transfer(transfer_id)
+
+
+# ---------------------------------------------------------------------------
 # Fund Monthly Statements — NAV-administrator-reported funds (e.g. 12-FLAGS)
 # One row per strategy per period_end_date. Keyed directly by strategy_id —
 # no separate "clients" table, unlike AXIA (no multi-account concept here).

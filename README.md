@@ -410,6 +410,70 @@ neither field can auto-derive and both must be entered manually, same as
 before. Submit still only requires Equity (NLV) to be present — it's
 populated either by direct entry or by the CHG NLV auto-fill.
 
+### 10.2 Capital Flow Flag — Initial Investment / Add-On (2026-09-21)
+
+**Problem.** A daily-equity row only ever recorded a raw NLV snapshot. If a
+CHG NLV jump was new client money in (a funding wire), not trading, there
+was no way to say so — it silently got counted as trading P&L, and
+"Total Capital Invested" for that strategy stayed frozen at whatever the
+very first-ever equity entry happened to be (see `_axia_strategy_agg`'s
+docstring in `supabase_service.py` — baseline was, until now, either the
+`capital_transfers` ledger sum if one had been logged manually elsewhere,
+or else the first equity entry, full stop). Real example that surfaced
+this: an AXIA account funded in three tranches — a £100 test, then £500,000,
+then another £500,000 — with no trading in between. The dashboard showed
+Capital Invested as £100 and the £1,000,000 of deposits as pure P&L.
+
+**Fix.** The New Entry form in `AxiaEquityEntry.jsx` (shared by AXIA, IG,
+and every daily-cadence Data Feed — one component, `apiPrefix`-parameterized)
+now has a Capital Flow toggle: **Trading Day** (default), **Initial
+Investment**, or **Add-On**. Flagging a row auto-creates a matching
+`capital_transfers` ledger row (`from_type='wallet'`, `from_id=null` — "new
+money in", same shape as a manual Wallet→Strategy funding transfer) for
+that day's CHG NLV amount, linked to whichever strategy this client/account
+is linked to.
+
+No changes were needed to the KPI math itself —
+`_strategy_capital_invested` / `_axia_strategy_agg` already prioritised the
+`capital_transfers` ledger sum over the first-equity-entry fallback, before
+this feature existed. Keeping that ledger populated from the equity-entry
+screen (instead of requiring a second manual entry in the Capital Ledger
+UI) is the entire fix. Baseline becomes the sum of every flagged
+contribution, so pnl = latest equity − that sum, correctly excluding
+capital days from trading P&L — and the same number feeds Total Capital
+Invested / Capital Allocated everywhere that reads it (Portfolio hero
+strip, Capital Flow Summary, Capital at a Glance, pod/strategy breakdowns),
+since it's the identical ledger those already read.
+
+"Initial Investment" and "Add-On" are functionally identical (both are
+inbound capital, both count the same way) — the two labels exist purely so
+the equity records table can show which rows were capital events vs
+genuine trading days. Contribution amount = that day's CHG NLV (or the
+full Equity value if there's no previous record, e.g. the very first
+entry for a brand-new client). Must be a positive inflow — the form
+validates client-side, the backend re-validates and 400s otherwise;
+withdrawals stay on the existing Banked Profit / Capital Return flow,
+unaffected. If the client/account isn't yet linked to a strategy (Manage
+Pods & Strategies), the checkbox is still selectable but submit is blocked
+with an inline explanation — nothing to attribute the transfer to yet.
+
+Editing a flagged row's date/CHG NLV updates the linked ledger row in
+place; un-flagging it (back to "Trading Day") deletes the ledger row;
+deleting the equity row deletes its linked ledger row too — one-directional
+sync equity-entry → ledger. Editing the ledger row directly from the
+Capital Ledger UI does not write back to the CHG NLV column (known,
+acceptable limitation — rare, and the capital math is still correct either
+way since the ledger is the source of truth).
+
+**Schema (additive, run once — see `supabase_capital_flow_migration.sql`):**
+`capital_flow_type` (`text`, nullable, `'initial'|'addon'|NULL`) and
+`capital_transfer_id` (`bigint`, nullable, application-level link, not a
+hard FK) added to `axia_daily_equity`, `ig_daily_equity`, and every
+already-registered daily-cadence Data Feed's `<slug>_daily_equity` table.
+The Data Feed "Generate SQL" template (`data_feeds.py`) now includes both
+columns by default, so any feed created from now on needs no extra
+migration.
+
 ---
 
 ## 11. Fund Monthly Statements & OANDA FX Bridge (12-FLAGS)

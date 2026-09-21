@@ -54,6 +54,8 @@ from src.services.supabase_service import (
     get_client, invalidate_all_cache, get_data_feed_by_slug,
     list_fund_statements, get_fund_statement_prev, create_fund_statement,
     update_fund_statement, delete_fund_statement, refetch_fund_statement_fx,
+    sync_capital_flow_transfer, resync_capital_flow_transfer, delete_capital_flow_transfer,
+    CAPITAL_FLOW_TYPES,
 )
 
 router = APIRouter(prefix="/api/data-feeds", tags=["data-feeds"])
@@ -142,6 +144,8 @@ CREATE TABLE {equity_table} (
     equity     numeric NOT NULL,
     chg_nlv    numeric,
     notes      text,
+    capital_flow_type   text CHECK (capital_flow_type IS NULL OR capital_flow_type IN ('initial','addon')),
+    capital_transfer_id bigint,
     created_at timestamptz NOT NULL DEFAULT now(),
     UNIQUE (client, account, trade_date, currency)
 );"""
@@ -342,6 +346,7 @@ class EquityCreate(BaseModel):
     equity:     float
     chg_nlv:    Optional[float] = None
     notes:      Optional[str]  = None
+    capital_flow_type: Optional[str] = None
 
 
 class EquityUpdate(BaseModel):
@@ -350,6 +355,7 @@ class EquityUpdate(BaseModel):
     equity:     Optional[float] = None
     chg_nlv:    Optional[float] = None
     notes:      Optional[str]   = None
+    capital_flow_type: Optional[str] = None
 
 
 @router.get("/{slug}/equity")
@@ -406,6 +412,8 @@ def create_equity(slug: str, body: EquityCreate):
     feed = _require_feed(slug)
     _require_cadence(feed, "daily")
     sb = get_client()
+    if body.capital_flow_type is not None and body.capital_flow_type not in CAPITAL_FLOW_TYPES:
+        raise HTTPException(status_code=400, detail=f"capital_flow_type must be one of {CAPITAL_FLOW_TYPES}.")
     payload = {
         "client":     body.client,
         "account":    body.account,
@@ -414,7 +422,20 @@ def create_equity(slug: str, body: EquityCreate):
         "equity":     body.equity,
         "chg_nlv":    body.chg_nlv,
         "notes":      body.notes,
+        "capital_flow_type":   body.capital_flow_type,
+        "capital_transfer_id": None,
     }
+    if body.capital_flow_type:
+        contribution = body.chg_nlv if body.chg_nlv is not None else body.equity
+        try:
+            payload["capital_transfer_id"] = sync_capital_flow_transfer(
+                client_table=feed["clients_table"], client=body.client, account=body.account,
+                client_field="data_feed_client_id", feed_id=feed["id"],
+                trade_date=body.trade_date, contribution=contribution,
+                capital_flow_type=body.capital_flow_type, label=feed["name"],
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
     try:
         row = sb.table(feed["equity_table"]).insert(payload).execute().data[0]
         invalidate_all_cache()
@@ -433,9 +454,40 @@ def update_equity(slug: str, record_id: str, body: EquityUpdate):
     feed = _require_feed(slug)
     _require_cadence(feed, "daily")
     sb = get_client()
+    existing = sb.table(feed["equity_table"]).select("*").eq("id", record_id).execute().data
+    if not existing:
+        raise HTTPException(status_code=404, detail="Record not found.")
+    old = existing[0]
+
     payload = body.model_dump(exclude_unset=True)
     if not payload:
         raise HTTPException(status_code=400, detail="No fields to update.")
+    if payload.get("capital_flow_type") is not None and payload["capital_flow_type"] not in CAPITAL_FLOW_TYPES:
+        raise HTTPException(status_code=400, detail=f"capital_flow_type must be one of {CAPITAL_FLOW_TYPES}.")
+
+    new_type     = payload["capital_flow_type"] if "capital_flow_type" in payload else old.get("capital_flow_type")
+    new_date     = payload.get("trade_date", old["trade_date"])
+    new_chg      = payload["chg_nlv"] if "chg_nlv" in payload else old.get("chg_nlv")
+    new_eq       = payload.get("equity", old.get("equity"))
+    contribution = new_chg if new_chg is not None else new_eq
+
+    try:
+        if old.get("capital_transfer_id") and new_type not in CAPITAL_FLOW_TYPES:
+            delete_capital_flow_transfer(old["capital_transfer_id"])
+            payload["capital_transfer_id"] = None
+        elif new_type in CAPITAL_FLOW_TYPES:
+            if old.get("capital_transfer_id"):
+                resync_capital_flow_transfer(old["capital_transfer_id"], new_date, contribution, new_type, feed["name"])
+            else:
+                payload["capital_transfer_id"] = sync_capital_flow_transfer(
+                    client_table=feed["clients_table"], client=old["client"], account=old["account"],
+                    client_field="data_feed_client_id", feed_id=feed["id"],
+                    trade_date=new_date, contribution=contribution,
+                    capital_flow_type=new_type, label=feed["name"],
+                )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
     try:
         rows = sb.table(feed["equity_table"]).update(payload).eq("id", record_id).execute().data
         if not rows:
@@ -455,6 +507,9 @@ def delete_equity(slug: str, record_id: str):
     feed = _require_feed(slug)
     _require_cadence(feed, "daily")
     sb = get_client()
+    existing = sb.table(feed["equity_table"]).select("capital_transfer_id").eq("id", record_id).execute().data
+    if existing and existing[0].get("capital_transfer_id"):
+        delete_capital_flow_transfer(existing[0]["capital_transfer_id"])
     sb.table(feed["equity_table"]).delete().eq("id", record_id).execute()
     invalidate_all_cache()
     return JSONResponse(status_code=204, content=None)

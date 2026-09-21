@@ -17,6 +17,13 @@
  * - Equity input (formatted 2dp + commas)
  * - Equity (NLV) and CHG NLV are bidirectionally linked off the previous
  *   day's equity: type either one, the other auto-fills (2026-09-09)
+ * - Capital flow flag (2026-09-21): flag a row as "Initial Investment" or
+ *   "Add-On" when the CHG NLV is new client money in, not trading P&L —
+ *   auto-logs a matching Wallet->Strategy capital_transfers ledger row so
+ *   Capital Invested/Allocated everywhere (Portfolio hero, Capital Flow
+ *   Summary, Capital at a Glance, pod/strategy breakdowns) picks it up, and
+ *   that day's CHG NLV is excluded from trading P&L. See
+ *   supabase_service.sync_capital_flow_transfer / README §10.2.
  * - Confirm / Discard with popup
  * - Records table with inline edit + delete
  */
@@ -243,6 +250,8 @@ export default function AxiaEquityEntry({
   const [chgRaw,     setChgRaw]     = useState('')      // formatted string
   const [prevRecord, setPrevRecord] = useState(null)    // { trade_date, equity }
   const [prevLoading,setPrevLoading]= useState(false)
+  // '' (ordinary trading day) | 'initial' | 'addon' — see file header comment.
+  const [capitalFlowType, setCapitalFlowType] = useState('')
 
   // New client form
   const [showNewClient, setShowNewClient] = useState(false)
@@ -269,6 +278,7 @@ export default function AxiaEquityEntry({
   const [editDate,     setEditDate]     = useState('')
   const [editCurrency, setEditCurrency] = useState('GBP')
   const [editNotes,    setEditNotes]    = useState('')
+  const [editFlowType, setEditFlowType] = useState('')
 
   // ---- Load clients ----
   useEffect(() => {
@@ -398,6 +408,22 @@ export default function AxiaEquityEntry({
 
     const finalChg = parseNum(chgRaw)
 
+    if (capitalFlowType) {
+      const contribution = finalChg ?? eq
+      if (!(contribution > 0)) {
+        setError('Initial Investment / Add-On must be a positive capital inflow (CHG NLV, or Equity if there is no previous record).')
+        return
+      }
+      if (!linkedStrategy) {
+        setError('This client/account isn’t linked to a strategy yet — link it in Manage Pods & Strategies before flagging Initial Investment / Add-On.')
+        return
+      }
+    }
+
+    const flowLabel = capitalFlowType === 'initial' ? 'Initial Investment'
+      : capitalFlowType === 'addon' ? 'Add-On'
+      : 'Trading day (default)'
+
     setConfirmPopup({
       variant: 'confirm',
       message: (
@@ -413,7 +439,15 @@ export default function AxiaEquityEntry({
           <span style={{ color: C.textMid }}>Equity (NLV):</span>{' '}
           <strong style={{ color: C.accent }}>{fmtNum(eq)}</strong><br />
           <span style={{ color: C.textMid }}>CHG NLV:</span>{' '}
-          <strong style={{ color: numColor(finalChg) }}>{fmtNum(finalChg)}</strong>
+          <strong style={{ color: numColor(finalChg) }}>{fmtNum(finalChg)}</strong><br />
+          <span style={{ color: C.textMid }}>Type:</span>{' '}
+          <strong style={{ color: capitalFlowType ? C.pos : C.textMid }}>{flowLabel}</strong>
+          {capitalFlowType && (
+            <div style={{ marginTop: 8, fontSize: 12, color: C.textSub }}>
+              This will also log a {fmtNum(finalChg ?? eq)} {currency} Wallet → Strategy capital transfer,
+              so it counts as Capital Invested/Allocated, not trading P&L.
+            </div>
+          )}
         </>
       ),
       onConfirm: () => submitRecord(eq, finalChg),
@@ -434,6 +468,7 @@ export default function AxiaEquityEntry({
           currency,
           equity:     eq,
           chg_nlv:    finalChg,
+          capital_flow_type: capitalFlowType || null,
         }),
       })
       if (!res.ok) {
@@ -443,6 +478,7 @@ export default function AxiaEquityEntry({
       setSuccess(`Saved — ${fmtDate(date)} ${currency} ${fmtNum(eq)}`)
       setEquityRaw('')
       setChgRaw('')
+      setCapitalFlowType('')
       setPage(0)
       await loadRecords(0)
     } catch (e) { setError(e.message) }
@@ -470,6 +506,7 @@ export default function AxiaEquityEntry({
     setEditDate(row.trade_date)
     setEditCurrency(row.currency)
     setEditNotes(row.notes || '')
+    setEditFlowType(row.capital_flow_type || '')
   }
 
   const cancelEdit = () => { setEditId(null) }
@@ -477,13 +514,15 @@ export default function AxiaEquityEntry({
   const saveEdit = (row) => {
     const newEq  = parseNum(editEquity)
     const newChg = parseNum(editChgNlv)
+    const flowLabel = editFlowType === 'initial' ? 'Initial Investment'
+      : editFlowType === 'addon' ? 'Add-On' : 'Trading day'
     setConfirmPopup({
       variant: 'warn',
-      message: `Update ${fmtDate(editDate)} ${editCurrency} — equity to ${fmtNum(newEq)}, CHG NLV to ${fmtNum(newChg)}?`,
+      message: `Update ${fmtDate(editDate)} ${editCurrency} — equity to ${fmtNum(newEq)}, CHG NLV to ${fmtNum(newChg)}, type: ${flowLabel}?`,
       onConfirm: async () => {
         setConfirmPopup(null)
         try {
-          await fetch(`${BASE}${apiPrefix}/equity/${row.id}`, {
+          const res = await fetch(`${BASE}${apiPrefix}/equity/${row.id}`, {
             method:  'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -492,8 +531,10 @@ export default function AxiaEquityEntry({
               equity:     newEq,
               chg_nlv:    newChg,
               notes:      editNotes || null,
+              capital_flow_type: editFlowType || null,
             }),
           })
+          if (!res.ok) { const e = await res.json(); throw new Error(e.detail || 'Update failed') }
           setEditId(null)
           await loadRecords()
         } catch (e) { setError(e.message) }
@@ -767,6 +808,41 @@ export default function AxiaEquityEntry({
           Enter either Equity (NLV) or CHG NLV — the other fills in automatically from the previous day.
         </div>
 
+        {/* Capital flow flag — marks this CHG NLV as new client money in
+            (Initial Investment / Add-On), not trading P&L. Auto-logs a
+            Wallet -> Strategy capital transfer on submit (see file header). */}
+        <Field style={{ marginTop: 14 }}>
+          <Label>Capital Flow (optional)</Label>
+          <div style={{ display: 'flex', borderRadius: 6, border: `1px solid ${C.border}`, overflow: 'hidden', width: 'fit-content' }}>
+            {[
+              { v: '',        label: 'Trading Day' },
+              { v: 'initial', label: 'Initial Investment' },
+              { v: 'addon',   label: 'Add-On' },
+            ].map(opt => (
+              <button
+                key={opt.v || 'trading'}
+                onClick={() => setCapitalFlowType(opt.v)}
+                style={{
+                  padding: '8px 14px', border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 600,
+                  whiteSpace: 'nowrap', transition: 'all 0.15s',
+                  borderLeft: opt.v === '' ? 'none' : `1px solid ${C.border}`,
+                  background: capitalFlowType === opt.v ? C.posDim : 'transparent',
+                  color: capitalFlowType === opt.v ? C.pos : C.textMid,
+                }}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+          {capitalFlowType && (
+            <div style={{ marginTop: 8, fontSize: 11, color: linkedStrategy ? C.textSub : C.warn }}>
+              {linkedStrategy
+                ? `This CHG NLV will be logged as capital in — added to ${linkedStrategy.name}'s Capital Invested/Allocated, excluded from trading P&L.`
+                : 'Client isn’t linked to a strategy yet — link it in Manage Pods & Strategies first, or this can’t be recorded as capital.'}
+            </div>
+          )}
+        </Field>
+
         {/* Prev record hint */}
         {prevRecord && (
           <div style={{ marginTop: 6, fontSize: 11, color: C.textSub }}>
@@ -794,7 +870,7 @@ export default function AxiaEquityEntry({
 
         {/* Actions */}
         <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
-          <Btn variant="confirm" onClick={handleSubmit} disabled={!equityRaw || !selClient || loading}>
+          <Btn variant="confirm" onClick={handleSubmit} disabled={!equityRaw || !selClient || loading || (capitalFlowType && !linkedStrategy)}>
             {loading ? 'Saving…' : 'Submit Entry'}
           </Btn>
           <Btn variant="discard" onClick={() => {
@@ -802,7 +878,7 @@ export default function AxiaEquityEntry({
               variant: 'danger',
               message: 'Discard this entry? All unsaved values will be cleared.',
               onConfirm: () => {
-                setEquityRaw(''); setChgRaw('')
+                setEquityRaw(''); setChgRaw(''); setCapitalFlowType('')
                 setDate(todayISO()); setCurrency('GBP')
                 setError(null); setSuccess(null)
                 setConfirmPopup(null)
@@ -843,7 +919,7 @@ export default function AxiaEquityEntry({
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
             <thead>
               <tr>
-                {['DATE', 'CCY', 'EQUITY (NLV)', 'CHG NLV', 'NOTES', ''].map(h => (
+                {['DATE', 'CCY', 'EQUITY (NLV)', 'CHG NLV', 'TYPE', 'NOTES', ''].map(h => (
                   <th key={h} style={{
                     background: C.bg, color: C.textSub, padding: '9px 12px',
                     textAlign: h === 'EQUITY (NLV)' || h === 'CHG NLV' ? 'right' : 'left',
@@ -880,6 +956,15 @@ export default function AxiaEquityEntry({
                           style={{ ...inlineInputStyle(), textAlign: 'right', width: 110, fontFamily: 'monospace' }} />
                       </td>
                       <td style={tdStyle()}>
+                        <select value={editFlowType}
+                          onChange={e => setEditFlowType(e.target.value)}
+                          style={{ ...inlineInputStyle(), width: 120, background: '#111C2B' }}>
+                          <option value="">Trading Day</option>
+                          <option value="initial">Initial Investment</option>
+                          <option value="addon">Add-On</option>
+                        </select>
+                      </td>
+                      <td style={tdStyle()}>
                         <input value={editNotes} onChange={e => setEditNotes(e.target.value)}
                           placeholder="Notes…"
                           style={{ ...inlineInputStyle(), width: '100%' }} />
@@ -903,6 +988,19 @@ export default function AxiaEquityEntry({
                       </td>
                       <td style={{ ...tdStyle('right'), fontFamily: 'monospace', fontWeight: 600, color: numColor(row.chg_nlv) }}>
                         {row.chg_nlv != null ? (row.chg_nlv >= 0 ? '+' : '') + fmtNum(row.chg_nlv) : '—'}
+                      </td>
+                      <td style={tdStyle()}>
+                        {row.capital_flow_type ? (
+                          <span style={{
+                            padding: '2px 8px', borderRadius: 4, fontSize: 9, fontWeight: 700,
+                            letterSpacing: '0.4px', textTransform: 'uppercase',
+                            background: C.posDim, border: `1px solid ${C.posBorder}`, color: C.pos,
+                          }}>
+                            {row.capital_flow_type === 'initial' ? 'Initial' : 'Add-On'}
+                          </span>
+                        ) : (
+                          <span style={{ color: C.textSub, fontSize: 10 }}>—</span>
+                        )}
                       </td>
                       <td style={{ ...tdStyle(), color: C.textSub, fontSize: 10 }}>{row.notes || '—'}</td>
                       <td style={tdStyle()}>

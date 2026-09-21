@@ -27,7 +27,11 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from src.services.supabase_service import get_client, invalidate_all_cache
+from src.services.supabase_service import (
+    get_client, invalidate_all_cache,
+    sync_capital_flow_transfer, resync_capital_flow_transfer, delete_capital_flow_transfer,
+    CAPITAL_FLOW_TYPES,
+)
 
 
 router = APIRouter(prefix="/api/axia", tags=["axia"])
@@ -57,6 +61,9 @@ class EquityCreate(BaseModel):
     equity:     float
     chg_nlv:    Optional[float] = None
     notes:      Optional[str]  = None
+    # 'initial' | 'addon' | None (ordinary trading day) — see
+    # supabase_service.sync_capital_flow_transfer for what this triggers.
+    capital_flow_type: Optional[str] = None
 
 
 class EquityUpdate(BaseModel):
@@ -65,6 +72,7 @@ class EquityUpdate(BaseModel):
     equity:     Optional[float] = None
     chg_nlv:    Optional[float] = None
     notes:      Optional[str]   = None
+    capital_flow_type: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -216,6 +224,8 @@ def prev_equity(
 @router.post("/equity", status_code=201)
 def create_equity(body: EquityCreate):
     sb = get_client()
+    if body.capital_flow_type is not None and body.capital_flow_type not in CAPITAL_FLOW_TYPES:
+        raise HTTPException(status_code=400, detail=f"capital_flow_type must be one of {CAPITAL_FLOW_TYPES}.")
     payload = {
         "client":     body.client,
         "account":    body.account,
@@ -224,7 +234,20 @@ def create_equity(body: EquityCreate):
         "equity":     body.equity,
         "chg_nlv":    body.chg_nlv,
         "notes":      body.notes,
+        "capital_flow_type":   body.capital_flow_type,
+        "capital_transfer_id": None,
     }
+    if body.capital_flow_type:
+        contribution = body.chg_nlv if body.chg_nlv is not None else body.equity
+        try:
+            payload["capital_transfer_id"] = sync_capital_flow_transfer(
+                client_table="axia_clients", client=body.client, account=body.account,
+                client_field="axia_client_id", feed_id=None,
+                trade_date=body.trade_date, contribution=contribution,
+                capital_flow_type=body.capital_flow_type, label="AXIA",
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
     try:
         row = sb.table("axia_daily_equity").insert(payload).execute().data[0]
         invalidate_all_cache()
@@ -241,6 +264,11 @@ def create_equity(body: EquityCreate):
 @router.patch("/equity/{record_id}")
 def update_equity(record_id: str, body: EquityUpdate):
     sb = get_client()
+    existing = sb.table("axia_daily_equity").select("*").eq("id", record_id).execute().data
+    if not existing:
+        raise HTTPException(status_code=404, detail="Record not found.")
+    old = existing[0]
+
     # exclude_unset (not "is not None") — a field the client actually sent as
     # null (e.g. clearing Notes) must still reach the update. Filtering on
     # "v is not None" silently dropped explicit nulls, so clearing Notes in
@@ -248,6 +276,33 @@ def update_equity(record_id: str, body: EquityUpdate):
     payload = body.model_dump(exclude_unset=True)
     if not payload:
         raise HTTPException(status_code=400, detail="No fields to update.")
+    if payload.get("capital_flow_type") is not None and payload["capital_flow_type"] not in CAPITAL_FLOW_TYPES:
+        raise HTTPException(status_code=400, detail=f"capital_flow_type must be one of {CAPITAL_FLOW_TYPES}.")
+
+    new_type     = payload["capital_flow_type"] if "capital_flow_type" in payload else old.get("capital_flow_type")
+    new_date     = payload.get("trade_date", old["trade_date"])
+    new_chg      = payload["chg_nlv"] if "chg_nlv" in payload else old.get("chg_nlv")
+    new_eq       = payload.get("equity", old.get("equity"))
+    contribution = new_chg if new_chg is not None else new_eq
+
+    try:
+        if old.get("capital_transfer_id") and new_type not in CAPITAL_FLOW_TYPES:
+            # Un-flagged back to a normal trading day — drop the linked ledger row.
+            delete_capital_flow_transfer(old["capital_transfer_id"])
+            payload["capital_transfer_id"] = None
+        elif new_type in CAPITAL_FLOW_TYPES:
+            if old.get("capital_transfer_id"):
+                resync_capital_flow_transfer(old["capital_transfer_id"], new_date, contribution, new_type, "AXIA")
+            else:
+                payload["capital_transfer_id"] = sync_capital_flow_transfer(
+                    client_table="axia_clients", client=old["client"], account=old["account"],
+                    client_field="axia_client_id", feed_id=None,
+                    trade_date=new_date, contribution=contribution,
+                    capital_flow_type=new_type, label="AXIA",
+                )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
     try:
         rows = (
             sb.table("axia_daily_equity")
@@ -271,6 +326,9 @@ def update_equity(record_id: str, body: EquityUpdate):
 @router.delete("/equity/{record_id}", status_code=204)
 def delete_equity(record_id: str):
     sb = get_client()
+    existing = sb.table("axia_daily_equity").select("capital_transfer_id").eq("id", record_id).execute().data
+    if existing and existing[0].get("capital_transfer_id"):
+        delete_capital_flow_transfer(existing[0]["capital_transfer_id"])
     sb.table("axia_daily_equity").delete().eq("id", record_id).execute()
     invalidate_all_cache()
     return JSONResponse(status_code=204, content=None)
