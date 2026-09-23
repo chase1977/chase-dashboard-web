@@ -24,8 +24,10 @@ from src.services.analysis_service import (
 
 router = APIRouter(prefix="/api/analysis", tags=["analysis"])
 
-# Fields kept server-side only -- never sent to the client
-_INTERNAL_KEYS = {"_raw"}
+# Fields kept server-side only -- never sent to the client. `_rate_lookup`
+# is keyed by (date, currency) tuples (2026-09-23) -- not valid JSON, must
+# never leave this stripping step.
+_INTERNAL_KEYS = {"_raw", "_rate_lookup", "_rate_meta"}
 
 
 def _strip_internal(data: dict) -> dict:
