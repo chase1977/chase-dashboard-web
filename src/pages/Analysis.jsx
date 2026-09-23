@@ -341,6 +341,64 @@ function TraderModal({ file, trader, setTrader, account, setAccount,
   )
 }
 
+// ─── Account Filter Bar ─────────────────────────────────────────────────────
+// 2026-09-23: one uploaded Excel can hold several accounts (see the Data &
+// Reports parser). This bar lets the person scope the whole dashboard to a
+// single account or view them combined, without re-uploading — each choice
+// calls GET /api/analysis/{id}/filter and recomputes every KPI server-side
+// straight from that account's own rows, never mixed with another's.
+function AccountFilterBar({ allAccounts, selected, onChange, loading }) {
+  if (!allAccounts || allAccounts.length < 2) return null   // single-account file — nothing to filter
+
+  const isAll = selected.length === 0
+  const toggle = acc => {
+    if (selected.includes(acc)) onChange(selected.filter(a => a !== acc))
+    else onChange([...selected, acc])
+  }
+
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+      padding: '10px 20px', background: '#0A1522', borderBottom: `1px solid ${C.border}`,
+    }}>
+      <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.6px', textTransform: 'uppercase', color: C.muted, marginRight: 4 }}>
+        Account
+      </span>
+      <button
+        onClick={() => onChange([])}
+        disabled={loading}
+        style={{
+          padding: '5px 12px', borderRadius: 20, fontSize: 12, fontWeight: 600, cursor: loading ? 'wait' : 'pointer',
+          border: `1px solid ${isAll ? C.accent : C.border}`,
+          background: isAll ? 'rgba(56,189,248,0.12)' : 'transparent',
+          color: isAll ? C.accent : C.muted,
+        }}
+      >
+        All accounts combined
+      </button>
+      {allAccounts.map(acc => {
+        const active = selected.includes(acc)
+        return (
+          <button
+            key={acc}
+            onClick={() => toggle(acc)}
+            disabled={loading}
+            style={{
+              padding: '5px 12px', borderRadius: 20, fontSize: 12, fontWeight: 600, cursor: loading ? 'wait' : 'pointer',
+              border: `1px solid ${active ? C.accent : C.border}`,
+              background: active ? 'rgba(56,189,248,0.12)' : 'transparent',
+              color: active ? C.accent : C.muted,
+            }}
+          >
+            {acc}
+          </button>
+        )
+      })}
+      {loading && <span style={{ fontSize: 11, color: C.muted, marginLeft: 4 }}>recalculating…</span>}
+    </div>
+  )
+}
+
 // ─── Main Page ────────────────────────────────────────────────────────────────
 export default function Analysis() {
   const [phase, setPhase]         = useState('upload')   // upload | modal | dashboard
@@ -349,6 +407,9 @@ export default function Analysis() {
   const [account, setAccount]     = useState('47511')
   const [analysisId, setAnalysisId]   = useState(null)
   const [analysisData, setAnalysisData] = useState(null)
+  const [allAccounts, setAllAccounts]   = useState([])   // every account present in the raw upload — filter bar options never shrink
+  const [selectedAccounts, setSelectedAccounts] = useState([]) // [] = all combined
+  const [accountFilterLoading, setAccountFilterLoading] = useState(false)
   const [loading, setLoading]         = useState(false)
   const [exporting, setExporting]     = useState(false)
   const [gbpRetrying, setGbpRetrying] = useState(false)
@@ -389,6 +450,8 @@ export default function Analysis() {
       const payload = await res.json()
       setAnalysisId(payload.analysis_id)
       setAnalysisData(payload.data)
+      setAllAccounts(payload.data?.accounts || [])
+      setSelectedAccounts([])
       setTrader(payload.trader)
       setAccount(payload.account)
       setPhase('dashboard')
@@ -470,11 +533,38 @@ export default function Analysis() {
       const json = await res.json()
       setAnalysisId(json.analysis_id)
       setAnalysisData(json.data)
+      setAllAccounts(json.data?.accounts || [])
+      setSelectedAccounts([])
       setPhase('dashboard')
     } catch (err) {
       setError(err.message)
     } finally {
       setLoading(false)
+    }
+  }
+
+  // ── Account filter — recompute every KPI scoped to the selected account(s),
+  // straight from the cached raw rows server-side (see /api/analysis/{id}/filter).
+  // [] selected == every account combined. ──────────────────────────────────
+  const applyAccountFilter = async accounts => {
+    if (!analysisId) return
+    setSelectedAccounts(accounts)
+    setAccountFilterLoading(true)
+    setError(null)
+    try {
+      const params = accounts.length ? `?accounts=${accounts.map(encodeURIComponent).join(',')}` : ''
+      const res = await fetch(`${API}/api/analysis/${analysisId}/filter${params}`)
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error(body.detail || `Filter failed (${res.status})`)
+      }
+      const data = await res.json()
+      setAnalysisData(data)
+      setAccount(accounts.length === 1 ? accounts[0] : accounts.length > 1 ? accounts.join('+') : 'Combined')
+    } catch (err) {
+      setError('Account filter: ' + err.message)
+    } finally {
+      setAccountFilterLoading(false)
     }
   }
 
@@ -529,6 +619,8 @@ export default function Analysis() {
     setFile(null)
     setAnalysisData(null)
     setAnalysisId(null)
+    setAllAccounts([])
+    setSelectedAccounts([])
     setError(null)
     setShareUrl(null)
   }
@@ -564,6 +656,12 @@ export default function Analysis() {
   if (phase === 'dashboard' && analysisData) {
     return (
       <>
+        <AccountFilterBar
+          allAccounts={allAccounts}
+          selected={selectedAccounts}
+          onChange={applyAccountFilter}
+          loading={accountFilterLoading}
+        />
         <AxiaAnalysisDashboard
           data={analysisData}
           trader={trader}

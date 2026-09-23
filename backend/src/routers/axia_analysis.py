@@ -11,6 +11,7 @@ from fastapi.responses import StreamingResponse
 
 from src.services.analysis_service import (
     delete_saved_analysis,
+    filter_analysis_by_accounts,
     generate_excel_report,
     get_analysis,
     get_saved_analysis,
@@ -54,6 +55,34 @@ async def upload_analysis(file: UploadFile = File(...)):
 
     analysis_id = store_analysis(data)
     return {"analysis_id": analysis_id, "data": _strip_internal(data)}
+
+
+@router.get("/{analysis_id}/filter")
+def filter_analysis(
+    analysis_id: str,
+    accounts: str = Query(default="", description="Comma-separated account numbers to scope to; omit/empty for every account combined."),
+):
+    """
+    Recompute the analysis scoped to one or more accounts, or every account
+    combined (default). Cheap to recompute per request from the cached raw
+    per-trade rows -- 2026-09-23 account filter, see README. Does not touch
+    /export or /save, which keep operating on whatever was last uploaded;
+    export a filtered view by re-running /upload against a single-account
+    Excel if a saved report needs to be account-scoped.
+    """
+    if not get_analysis(analysis_id):
+        raise HTTPException(
+            status_code=404,
+            detail="Analysis not found or expired -- please re-upload the file",
+        )
+
+    wanted = [a.strip() for a in accounts.split(",") if a.strip()] or None
+    try:
+        data = filter_analysis_by_accounts(analysis_id, wanted)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    return _strip_internal(data)
 
 
 @router.post("/{analysis_id}/refresh-gbp")

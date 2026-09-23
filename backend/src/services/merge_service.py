@@ -3,11 +3,16 @@
 Merge multiple AXIA statement Excel files into a single chronological workbook.
 
 Reads data rows from each .xlsx (skips headers and TOTALS rows),
-sorts by TRADE DATE ascending, outputs via write_statement_excel.
+sorts by TRADE DATE then ACCOUNT, outputs via write_statement_excel.
+
+Kept for legacy single-account Excels downloaded before the 2026-09-23
+multi-account fix (see statement_service.py) -- the new batch-upload flow
+in statement.py handles merging natively from parsed PDFs and should be
+preferred going forward, but this still works correctly on any Excel that
+carries the CLIENT/ACCOUNT columns (added 2026-09-23), current schema only.
 """
 
 from datetime import datetime
-from io import BytesIO
 from pathlib import Path
 from typing import List
 
@@ -18,21 +23,23 @@ from src.services.excel_writer import write_statement_excel
 # Column index mapping (1-based) matching excel_writer.COLUMNS order
 _COL = {
     "TRADE DATE":         1,
-    "DELIVERY / PRODUCT": 2,
-    "LONG":               3,
-    "SHORT":              4,
-    "REALIZED PnL":       5,
-    "COMMISION FEES":     6,
-    "MARKET FEES":        7,
-    "NFA FEES":           8,
-    "TOTAL COMMS":        9,
-    "TOTAL PnL":          10,
-    "CURRENCY":           11,
+    "CLIENT":             2,
+    "ACCOUNT":            3,
+    "DELIVERY / PRODUCT": 4,
+    "LONG":               5,
+    "SHORT":              6,
+    "REALIZED PnL":       7,
+    "COMMISION FEES":     8,
+    "MARKET FEES":        9,
+    "NFA FEES":           10,
+    "TOTAL COMMS":        11,
+    "TOTAL PnL":          12,
+    "CURRENCY":           13,
 }
 
 
 def _read_excel_rows(path: Path) -> list[dict]:
-    """Read data rows from a single AXIA statement Excel file."""
+    """Read data rows from a single AXIA statement Excel file (current schema)."""
     wb = openpyxl.load_workbook(str(path), data_only=True)
 
     # Use the first sheet (Statement)
@@ -49,13 +56,10 @@ def _read_excel_rows(path: Path) -> list[dict]:
         # Skip empty rows
         if not any(row):
             continue
-        # Skip TOTALS rows (col A = "TOTALS" string)
-        first = row[0]
-        if isinstance(first, str) and first.strip().upper() in ("TOTALS", "TOTAL"):
-            continue
 
         trade_date = row[_COL["TRADE DATE"] - 1]
-        # Must have a valid date — skip footer/summary rows
+        # TOTALS rows leave TRADE DATE blank -- must have a valid date to be
+        # a real trade row, skip footer/summary rows otherwise
         if trade_date is None:
             continue
         if isinstance(trade_date, str):
@@ -66,17 +70,14 @@ def _read_excel_rows(path: Path) -> list[dict]:
                 try:
                     trade_date = datetime.strptime(trade_date, "%d-%b-%Y")
                 except ValueError:
-                    continue  # unparseable → skip
+                    continue  # unparseable -> skip
 
         td_str = trade_date.strftime("%Y-%m-%d") if isinstance(trade_date, datetime) else str(trade_date)
 
-        def _v(col_name):
-            val = row[_COL[col_name] - 1]
-            # TOTAL COMMS / TOTAL PnL columns may be formula results
-            return val
-
         rows.append({
             "trade_date":       td_str,
+            "client":           row[_COL["CLIENT"] - 1] or "",
+            "account":          row[_COL["ACCOUNT"] - 1] or "",
             "delivery_product": row[_COL["DELIVERY / PRODUCT"] - 1] or "",
             "long":             row[_COL["LONG"] - 1],
             "short":            row[_COL["SHORT"] - 1],
@@ -92,7 +93,9 @@ def _read_excel_rows(path: Path) -> list[dict]:
 def merge_statements(excel_paths: List[Path]) -> bytes:
     """
     Merge multiple AXIA statement Excel files.
-    Returns merged Excel bytes sorted by trade_date ASC.
+    Returns merged Excel bytes sorted by trade_date ASC, then account.
+    Every account present across the input files stays correctly tagged and
+    gets its own TOTALS subtotal -- see excel_writer.write_statement_excel.
     """
     all_rows = []
     for path in excel_paths:
@@ -101,18 +104,20 @@ def merge_statements(excel_paths: List[Path]) -> bytes:
     if not all_rows:
         raise ValueError("No data rows found in provided Excel files.")
 
-    # Sort by trade_date ascending
-    all_rows.sort(key=lambda r: r["trade_date"])
+    all_rows.sort(key=lambda r: (r["trade_date"], r.get("account") or ""))
 
     # Derive date range for merged filename hint
     dates      = [r["trade_date"] for r in all_rows]
     date_from  = min(dates)
     date_to    = max(dates)
 
+    accounts_seen = sorted({r.get("account") or "" for r in all_rows if r.get("account")})
+    clients_seen  = sorted({r.get("client") or "" for r in all_rows if r.get("client")})
+
     merged_data = {
         "trade_date": f"{date_from} to {date_to}",
-        "client":     None,
-        "account":    None,
+        "client":     clients_seen[0] if len(clients_seen) == 1 else None,
+        "account":    accounts_seen[0] if len(accounts_seen) == 1 else None,
         "rows":       all_rows,
     }
 

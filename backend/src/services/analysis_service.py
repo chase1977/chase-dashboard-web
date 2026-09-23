@@ -46,9 +46,10 @@ _cache: dict[str, dict] = {}
 def parse_statement(file_bytes: bytes) -> dict:
     """
     Parse AXIA statement Excel file and return full analysis dict.
-    Expected columns: TRADE DATE, DELIVERY / PRODUCT, LONG, SHORT,
-    REALIZED PnL, COMMISION FEES, MARKET FEES, NFA FEES, TOTAL COMMS,
-    TOTAL PnL, CURRENCY
+    Expected columns: TRADE DATE, CLIENT, ACCOUNT, DELIVERY / PRODUCT, LONG,
+    SHORT, REALIZED PnL, COMMISION FEES, MARKET FEES, NFA FEES, TOTAL COMMS,
+    TOTAL PnL, CURRENCY (CLIENT/ACCOUNT added 2026-09-23 -- older single
+    -account exports without them still parse fine, just with account '').
     """
     wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
     ws = wb.active
@@ -72,6 +73,8 @@ def parse_statement(file_bytes: bytes) -> dict:
 
         raw.append({
             'date':            str(td),
+            'client':          str(r.get('CLIENT')  or '').strip(),
+            'account':         str(r.get('ACCOUNT') or '').strip(),
             'instrument':      str(r.get('DELIVERY / PRODUCT', '')).strip(),
             'currency':        str(r.get('CURRENCY', 'USD')).strip(),
             'long':            float(r.get('LONG')            or 0),
@@ -87,6 +90,17 @@ def parse_statement(file_bytes: bytes) -> dict:
     if not raw:
         raise ValueError("No valid data rows found in spreadsheet")
 
+    return _compute_analysis(raw)
+
+
+def _compute_analysis(raw: list[dict]) -> dict:
+    """
+    Build the full analysis dict from a list of already-parsed trade rows.
+    Factored out (2026-09-23) so the Analysis tab's account filter can
+    recompute this from a subset of `raw` (see filter_analysis_by_accounts)
+    without re-parsing or re-uploading the Excel -- same aggregation, same
+    numbers, just scoped to whichever account(s) are selected.
+    """
     # -- Aggregate by instrument -----------------------------------------------
     asset_map: dict[str, dict] = {}
     for r in raw:
@@ -218,6 +232,9 @@ def parse_statement(file_bytes: bytes) -> dict:
     _gbp_lookup, _gbp_meta = _build_rate_lookup(raw)
     _gbp_view               = _compute_gbp_view(raw, _gbp_lookup, _gbp_meta)
 
+    accounts_present = sorted({r['account'] for r in raw if r.get('account')})
+    clients_present  = sorted({r['client']  for r in raw if r.get('client')})
+
     return {
         'date_range': {
             'from':         all_dates[0],
@@ -225,6 +242,8 @@ def parse_statement(file_bytes: bytes) -> dict:
             'trading_days': len(all_dates),
             'dates':        all_dates,
         },
+        'accounts': accounts_present,   # every distinct account present in this (possibly filtered) view
+        'clients':  clients_present,
         'summary': {
             'total_instruments': len(assets),
             'currencies':        currencies,
@@ -557,6 +576,31 @@ def store_analysis(data: dict) -> str:
 def get_analysis(analysis_id: str) -> Optional[dict]:
     entry = _cache.get(analysis_id)
     return entry['data'] if entry else None
+
+
+def filter_analysis_by_accounts(analysis_id: str, accounts: Optional[list[str]]) -> dict:
+    """
+    Recompute the full analysis dict scoped to a subset of accounts (or
+    every account, when `accounts` is None/empty) from the cached raw
+    per-trade rows -- 2026-09-23 account filter. Does NOT overwrite the
+    cached (unfiltered) analysis, so switching the filter back to "All
+    accounts" or to a different account never loses data; every call
+    recomputes fresh off `_raw`, which always holds every row from the
+    original upload regardless of what was last filtered.
+    """
+    data = get_analysis(analysis_id)
+    if not data:
+        raise ValueError("Analysis not found or expired -- please re-upload the file")
+
+    raw = data.get('_raw') or []
+    if accounts:
+        wanted = set(accounts)
+        raw = [r for r in raw if r.get('account') in wanted]
+
+    if not raw:
+        raise ValueError("No rows for the requested account(s).")
+
+    return _compute_analysis(raw)
 
 
 def _strip_internal(data: dict) -> dict:

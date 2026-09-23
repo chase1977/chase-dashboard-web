@@ -2,11 +2,19 @@
 """
 Excel writer for AXIA statement extraction output.
 
-Replicates the exact column layout of 4751R.xlsx:
-  A: TRADE DATE       B: DELIVERY / PRODUCT   C: LONG    D: SHORT
-  E: REALIZED PnL     F: COMMISION FEES        G: MARKET FEES
-  H: NFA FEES         I: TOTAL COMMS (formula) J: TOTAL PnL (formula)
-  K: CURRENCY
+Multi-account fix (2026-09-23): CLIENT and ACCOUNT columns added (B, C) so
+a workbook holding multiple accounts (common -- one PDF can contain several,
+see statement_service.py) keeps every row correctly attributed, and the
+TOTALS block is grouped by (ACCOUNT, CURRENCY) instead of CURRENCY alone --
+summing across accounts in one subtotal would silently mix two different
+books' numbers back together, exactly the bug this whole fix removes.
+
+Column layout:
+  A: TRADE DATE       B: CLIENT               C: ACCOUNT
+  D: DELIVERY/PRODUCT E: LONG                  F: SHORT
+  G: REALIZED PnL     H: COMMISION FEES        I: MARKET FEES
+  J: NFA FEES         K: TOTAL COMMS (formula) L: TOTAL PnL (formula)
+  M: CURRENCY
 """
 
 from io import BytesIO
@@ -35,6 +43,8 @@ _ROW_FONT      = Font(name="Calibri", size=10)
 _TOTAL_FILL    = PatternFill("solid", fgColor="D9E1F2")
 _TOTAL_FONT    = Font(name="Calibri", bold=True, size=10)
 
+_SECTION_FONT  = Font(name="Calibri", bold=True, size=11, color="1F3864")
+
 _THIN   = Side(style="thin", color="BFBFBF")
 _BORDER = Border(left=_THIN, right=_THIN, top=_THIN, bottom=_THIN)
 
@@ -49,6 +59,8 @@ _FMT_NUM2  = "#,##0.00;[RED]-#,##0.00"
 
 COLUMNS = [
     ("TRADE DATE",          14, "center", _FMT_DATE),
+    ("CLIENT",               9, "center", "@"),
+    ("ACCOUNT",              9, "center", "@"),
     ("DELIVERY / PRODUCT",  26, "left",   "@"),
     ("LONG",                 9, "center", _FMT_INT),
     ("SHORT",                9, "center", _FMT_INT),
@@ -73,10 +85,14 @@ def write_statement_excel(
     output_path: Optional[str | Path] = None,
 ) -> bytes:
     """
-    Write extracted statement data to an Excel file matching the 4751R.xlsx layout.
+    Write extracted statement data to an Excel file.
 
     Args:
-        data:        Output of statement_service.extract_statement()
+        data:        Output of statement_service.extract_statement() (or a
+                      {"rows": [...]} dict built from cached/filtered rows --
+                      see statement.py's batch-download endpoint). Each row
+                      must carry "client" and "account" (may be "" if truly
+                      unknown, never omitted).
         output_path: Optional path to save. If None, returns bytes only.
 
     Returns:
@@ -121,7 +137,9 @@ def write_statement_excel(
         except (ValueError, TypeError):
             td_val = td_raw
 
-        _cell(col["TRADE DATE"],         td_val,                         "center", _FMT_DATE)
+        _cell(col["TRADE DATE"],         td_val,                          "center", _FMT_DATE)
+        _cell(col["CLIENT"],             row.get("client", "") or "",     "center", "@")
+        _cell(col["ACCOUNT"],            row.get("account", "") or "",    "center", "@")
         _cell(col["DELIVERY / PRODUCT"], row.get("delivery_product", ""), "left",   "@")
         _cell(col["LONG"],               row.get("long"),                 "center", _FMT_INT)
         _cell(col["SHORT"],              row.get("short"),                "center", _FMT_INT)
@@ -130,12 +148,12 @@ def write_statement_excel(
         _cell(col["MARKET FEES"],        row.get("market_fees"),         "right",  _FMT_NUM2)
         _cell(col["NFA FEES"],           row.get("nfa_fees"),            "right",  _FMT_NUM2)
 
-        f_col = get_column_letter(col["COMMISION FEES"])
-        g_col = get_column_letter(col["MARKET FEES"])
-        h_col = get_column_letter(col["NFA FEES"])
+        h_col = get_column_letter(col["COMMISION FEES"])
+        i_col = get_column_letter(col["MARKET FEES"])
+        j_col = get_column_letter(col["NFA FEES"])
         comm_cell = ws.cell(
             row=row_idx, column=col["TOTAL COMMS"],
-            value=f"={f_col}{row_idx}+{g_col}{row_idx}+{h_col}{row_idx}",
+            value=f"={h_col}{row_idx}+{i_col}{row_idx}+{j_col}{row_idx}",
         )
         comm_cell.font          = _ROW_FONT
         comm_cell.fill          = fill
@@ -143,11 +161,11 @@ def write_statement_excel(
         comm_cell.alignment     = Alignment(horizontal="right", vertical="center")
         comm_cell.number_format = _FMT_NUM2
 
-        e_col = get_column_letter(col["REALIZED PnL"])
-        i_col = get_column_letter(col["TOTAL COMMS"])
+        g_col = get_column_letter(col["REALIZED PnL"])
+        k_col = get_column_letter(col["TOTAL COMMS"])
         pnl_cell = ws.cell(
             row=row_idx, column=col["TOTAL PnL"],
-            value=f"={e_col}{row_idx}+{i_col}{row_idx}",
+            value=f"={g_col}{row_idx}+{k_col}{row_idx}",
         )
         pnl_cell.font          = _ROW_FONT
         pnl_cell.fill          = fill
@@ -157,26 +175,40 @@ def write_statement_excel(
 
         _cell(col["CURRENCY"], row.get("currency", ""), "center", "@")
 
-    # ---- Totals row (per currency) ----
+    # ---- Totals block -- one row per (ACCOUNT, CURRENCY) pair (2026-09-23:
+    # was CURRENCY-only, which would silently sum two different accounts'
+    # numbers into one subtotal once a workbook holds more than one account) ----
     if rows:
         last_data_row = len(rows) + 1
         totals_row    = last_data_row + 2
 
-        ws.cell(row=totals_row, column=1, value="TOTALS").font = _TOTAL_FONT
+        ws.cell(row=totals_row - 1, column=_HDR["DELIVERY / PRODUCT"],
+                value="TOTALS BY ACCOUNT / CURRENCY").font = _SECTION_FONT
 
         from collections import defaultdict
-        ccy_rows: dict = defaultdict(list)
+        group_rows: dict = defaultdict(list)   # (account, currency) -> [row indices]
+        group_order: list = []
         for r_idx, row in enumerate(rows, start=2):
-            ccy_rows[row.get("currency", "")].append(r_idx)
+            key = (row.get("account") or "", row.get("currency") or "")
+            if key not in group_rows:
+                group_order.append(key)
+            group_rows[key].append(r_idx)
 
         offset = 0
-        for ccy, r_idxs in ccy_rows.items():
-            t_row    = totals_row + offset
-            ccy_cell = ws.cell(row=t_row, column=_HDR["CURRENCY"], value=ccy)
-            ccy_cell.font      = _TOTAL_FONT
-            ccy_cell.fill      = _TOTAL_FILL
-            ccy_cell.border    = _BORDER
-            ccy_cell.alignment = Alignment(horizontal="center", vertical="center")
+        for key in group_order:
+            acct, ccy = key
+            r_idxs = group_rows[key]
+            t_row  = totals_row + offset
+
+            label_cell = ws.cell(row=t_row, column=_HDR["DELIVERY / PRODUCT"], value="TOTALS")
+            acct_cell  = ws.cell(row=t_row, column=_HDR["ACCOUNT"],  value=acct)
+            ccy_cell   = ws.cell(row=t_row, column=_HDR["CURRENCY"], value=ccy)
+            for c in (label_cell, acct_cell, ccy_cell):
+                c.font      = _TOTAL_FONT
+                c.fill      = _TOTAL_FILL
+                c.border    = _BORDER
+                c.alignment = Alignment(horizontal="center", vertical="center")
+            label_cell.alignment = Alignment(horizontal="left", vertical="center")
 
             for col_name in ("LONG", "SHORT", "REALIZED PnL",
                              "COMMISION FEES", "MARKET FEES", "NFA FEES",
@@ -194,16 +226,36 @@ def write_statement_excel(
 
             offset += 1
 
-    # ---- Metadata sheet ----
-    meta      = wb.create_sheet("Info")
+    # ---- Info sheet -- overview + per-account breakdown table ----
+    meta = wb.create_sheet("Info")
     meta["A1"] = "Trade Date"
     meta["B1"] = data.get("trade_date", "")
-    meta["A2"] = "Client"
-    meta["B2"] = data.get("client", "")
-    meta["A3"] = "Account"
-    meta["B3"] = data.get("account", "")
+    meta["A2"] = "Client(s)"
+    meta["B2"] = ", ".join(sorted({(r.get("client") or "") for r in rows if r.get("client")})) or data.get("client", "")
+    meta["A3"] = "Account(s)"
+    meta["B3"] = ", ".join(sorted({(r.get("account") or "") for r in rows if r.get("account")})) or data.get("account", "")
     meta["A4"] = "Rows Extracted"
     meta["B4"] = len(rows)
+    for r in (1, 2, 3, 4):
+        meta.cell(row=r, column=1).font = _TOTAL_FONT
+
+    accounts_meta = data.get("accounts")
+    if accounts_meta:
+        hdr_row = 6
+        headers = ["CLIENT", "ACCOUNT", "TRADE DATE", "ROWS", "CURRENCIES"]
+        for c_idx, h in enumerate(headers, start=1):
+            cell = meta.cell(row=hdr_row, column=c_idx, value=h)
+            cell.font   = _HEADER_FONT
+            cell.fill   = _HEADER_FILL
+            cell.border = _BORDER
+        for i, acc in enumerate(accounts_meta, start=hdr_row + 1):
+            meta.cell(row=i, column=1, value=acc.get("client", "")).border   = _BORDER
+            meta.cell(row=i, column=2, value=acc.get("account", "")).border  = _BORDER
+            meta.cell(row=i, column=3, value=acc.get("trade_date", acc.get("date_from", ""))).border = _BORDER
+            meta.cell(row=i, column=4, value=acc.get("row_count", 0)).border = _BORDER
+            meta.cell(row=i, column=5, value=", ".join(acc.get("currencies", []))).border = _BORDER
+        for c_idx, w in enumerate((10, 10, 14, 8, 20), start=1):
+            meta.column_dimensions[get_column_letter(c_idx)].width = w
 
     # ---- Save ----
     buf = BytesIO()

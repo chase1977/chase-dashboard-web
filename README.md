@@ -1600,6 +1600,87 @@ UI alone won't say why.
 
 ---
 
+## 17.5 Statement Parser — Multi-Account, Multi-Day Batch (2026-09-23)
+
+**Problem.** A single AXIA "Daily Detail Statement" PDF can carry MULTIPLE
+accounts under one Client id (e.g. Client `4751R` → Accounts `47511`,
+`47512`, `47513`, `47514`, `47515`), each account's pages grouped
+sequentially, each starting with its own FINANCIAL SUMMARY page repeating
+that account's own Client/Account/Trade Date header. The old parser
+(`statement_service.py`) locked onto the FIRST Client/Account it saw on
+page 1 and never re-read the header again, so every subsequent page's
+trades — regardless of which account they actually belonged to — got
+accumulated into that one account's totals. An instrument traded on two
+different accounts the same day (not rare — same underlying, different
+books) silently summed together under one label. There was also no
+Account column anywhere downstream (Excel schema, merge, Analysis parser)
+even after the correct account was known, so there was no way to recover
+per-account granularity once written to a spreadsheet.
+
+**Fix — parser.** `statement_service.py`'s `StatementParser` now re-reads
+Client/Account on every page (Trade Date is read once, same for the whole
+statement). When the (client, account) pair changes from the page before,
+that's a new account block — an isolated `{"conf": {}, "pnl": {}}`
+accumulator is created for it and section/product tracking resets, so
+nothing bleeds across the boundary. `extract_statement()` now returns
+`rows` (every account's rows, each tagged `client`+`account`) and
+`accounts` (a per-account breakdown: row count, currencies, trade date).
+
+**Fix — Excel schema.** `excel_writer.py` adds CLIENT (col B) and ACCOUNT
+(col C) columns to the Statement sheet (shifts everything after it two
+columns right — this is a breaking schema change from the pre-2026-09-23
+layout, intentional). The TOTALS block at the bottom is now grouped by
+**(ACCOUNT, CURRENCY)** instead of CURRENCY alone — summing across accounts
+into one subtotal would silently mix two books back together, exactly the
+bug this fix removes. An "Info" sheet lists every account detected with its
+row count/currencies/date, even accounts with zero activity that day (kept
+visible so a quiet account isn't mistaken for a missing one).
+`merge_service.py` (legacy Excel-to-Excel merge) reads/writes the same
+CLIENT/ACCOUNT columns so old-style merging of already-downloaded Excels
+stays correct too.
+
+**Fix — batch upload + account picker.** `statement.py` now exposes:
+- `POST /api/statement/upload` (one PDF) and `POST /api/statement/upload-batch`
+  (any number of PDFs — e.g. every daily statement from 16-Feb through
+  today in one drop) — both return the SAME shape: `{batch_token, accounts,
+  date_range, total_rows, skipped}`. Parsed rows are cached server-side
+  in-memory (`_PARSED_CACHE`, same recency-trimmed pattern as
+  `analysis_service`'s cache) keyed by `batch_token` — nothing is written
+  to disk until a download is actually requested.
+- `GET /api/statement/batch/{batch_token}/download?accounts=A,B&mode=combined|separate`
+  — `combined` (default) returns one workbook with every selected account
+  tagged + totalled separately inside it; `separate` with 2+ accounts
+  returns a ZIP of one workbook per account. This is what
+  `StatementUpload.jsx`'s new account-picker table calls once the person
+  has ticked which account(s) they want.
+- An account that only starts appearing partway through a batch (e.g.
+  opened mid-year) is handled automatically — its `date_from` in the
+  breakdown is simply later, no special-casing needed; it's derived purely
+  from the rows actually present for that account.
+
+`StatementUpload.jsx` was redesigned around this: drop one or many PDFs →
+Parse → an account-picker table (client, account, date range, row count,
+currencies, a checkbox per account, defaulting to every account that had
+trade activity) → Download Combined or Download Separately (ZIP).
+
+**Fix — Analysis tab account filter.** `analysis_service.py`'s aggregation
+body was factored out into `_compute_analysis(raw)` so it can run on any
+subset of rows, not just everything in the uploaded file. `parse_statement()`
+now also reads CLIENT/ACCOUNT off the Excel and tags every raw row with
+them; the returned `data['accounts']` lists every distinct account present.
+A new `GET /api/analysis/{analysis_id}/filter?accounts=A,B` (empty/omitted
+= every account combined) recomputes the full analysis dict from the
+cached `_raw` rows scoped to just those accounts — same numbers `/upload`
+would have produced had only that account's Excel been uploaded, computed
+without re-uploading anything. `Analysis.jsx` renders an account filter bar
+above the dashboard (only when the upload actually contains 2+ accounts)
+that calls this endpoint on each change; `AxiaAnalysisDashboard.jsx` itself
+is untouched — it just receives whichever `data` the filter currently
+resolves to. Export/Save still operate on whatever was last uploaded/
+filtered into `analysisData` — no separate change needed there.
+
+---
+
 ## 18. Roadmap — Outstanding
 
 - [ ] **Pod/portfolio-level watermark adjustment for non-AXIA strategies**
