@@ -771,9 +771,16 @@ export default function AxiaAnalysisDashboard({
     <div style={{ background:C.bg, minHeight:'calc(100vh - 56px)', padding: isMobile ? '18px 14px' : '28px 36px', color:C.text }}>
 
       {/* ── Header ─────────────────────────────────────────────────────────── */}
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:28, flexWrap:'wrap', gap:12 }}>
+      {/* Title/meta and the button toolbar are permanently separate rows
+          (2026-09-23 fix, Nish) rather than one row split with space-between.
+          Toggling GBP adds a "GBP VIEW" pill to the title row, which used to
+          widen that row just enough to push the whole toolbar onto its own
+          line unpredictably -- native vs GBP looked like two different
+          layouts. Stacking them always keeps the toolbar's position fixed
+          regardless of what the title row is showing. */}
+      <div style={{ display:'flex', flexDirection:'column', gap:14, marginBottom:28 }}>
         <div>
-          <div style={{ display:'flex', alignItems:'center', gap:12 }}>
+          <div style={{ display:'flex', alignItems:'center', gap:12, flexWrap:'wrap' }}>
             <div style={{ fontSize:22, fontWeight:700, color:C.text, letterSpacing:'-0.3px' }}>AXIA Strategy — Trade Analysis</div>
             {gbpMode && (
               <div style={{ padding:'3px 10px', borderRadius:20, background:'rgba(52,211,153,0.15)', border:'1px solid rgba(52,211,153,0.4)', fontSize:11, fontWeight:700, color:C.pos, letterSpacing:'0.6px' }}>
@@ -803,7 +810,7 @@ export default function AxiaAnalysisDashboard({
           </div>
         </div>
 
-        <div style={{ display:'flex', gap:10, flexWrap:'wrap', alignItems:'center' }}>
+        <div style={{ display:'flex', gap:10, flexWrap:'wrap', alignItems:'center', justifyContent: isMobile ? 'flex-start' : 'flex-end' }}>
           {!readOnly && (
             <button onClick={onNewUpload} style={{ padding:'9px 18px', borderRadius:8, cursor:'pointer', border:`1px solid ${C.border}`, background:'transparent', color:C.dim, fontSize:13, transition:'all 0.15s' }}>
               ↑ New Upload
