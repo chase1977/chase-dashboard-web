@@ -736,7 +736,7 @@ async function exportAllGraphs(setExportingGraphs) {
 // ─── Main Dashboard ───────────────────────────────────────────────────────────
 export default function AxiaAnalysisDashboard({
   data, trader, account, onNewUpload, onExport, exporting, onGbpRetry, gbpRetrying,
-  readOnly = false, forceGbp = false, onSaveShare, saving = false,
+  readOnly = false, forceGbp = false, onSaveShare, saving = false, onEditDetails,
 }) {
   const isMobile = useIsMobile()
   const [exportingGraphs, setExportingGraphs] = useState(false)
@@ -789,6 +789,15 @@ export default function AxiaAnalysisDashboard({
           <div style={{ display:'flex', gap:20, fontSize:13, color:C.muted, marginTop:6, flexWrap:'wrap' }}>
             <span>Trader: <span style={{ color:C.accent, fontWeight:600 }}>{trader}</span></span>
             <span>Account: <span style={{ color:C.accent, fontWeight:600 }}>{account}</span></span>
+            {!readOnly && onEditDetails && (
+              <button
+                onClick={onEditDetails}
+                title="Edit Trader / Account"
+                style={{ border:'none', background:'transparent', color:C.muted, fontSize:12, cursor:'pointer', padding:0, textDecoration:'underline', textUnderlineOffset:2 }}
+              >
+                ✎ Edit
+              </button>
+            )}
             <span>Period: <span style={{ color:C.dim }}>{fmtDate(data.date_range.from)} → {fmtDate(data.date_range.to)}</span></span>
             <span style={{ color:C.dim }}>{data.date_range.trading_days} trading day{data.date_range.trading_days!==1?'s':''}</span>
           </div>

@@ -148,16 +148,17 @@ function ShareLinkModal({ url, onClose }) {
 }
 
 // ─── Upload Zone ──────────────────────────────────────────────────────────────
-function UploadZone({ onFile, error, savedAnalyses, savedLoading, onOpenSaved, onDeleteSaved }) {
+function UploadZone({ onFile, error, loading, savedAnalyses, savedLoading, onOpenSaved, onDeleteSaved }) {
   const [dragging, setDragging] = useState(false)
   const ref = useRef()
 
   const handleDrop = useCallback(e => {
     e.preventDefault()
+    if (loading) return
     setDragging(false)
     const f = e.dataTransfer.files[0]
     if (f) onFile(f)
-  }, [onFile])
+  }, [onFile, loading])
 
   return (
     <div style={{
@@ -187,28 +188,40 @@ function UploadZone({ onFile, error, savedAnalyses, savedLoading, onOpenSaved, o
 
         {/* Drop zone */}
         <div
-          onClick={() => ref.current?.click()}
+          onClick={() => !loading && ref.current?.click()}
           onDrop={handleDrop}
-          onDragOver={e => { e.preventDefault(); setDragging(true) }}
+          onDragOver={e => { e.preventDefault(); if (!loading) setDragging(true) }}
           onDragLeave={() => setDragging(false)}
           style={{
             border: `2px dashed ${dragging ? C.accent : C.border}`,
             borderRadius: 16, padding: 'clamp(28px, 8vw, 52px) clamp(16px, 6vw, 36px)',
             background: dragging ? 'rgba(56,189,248,0.05)' : C.card,
-            cursor: 'pointer', transition: 'all 0.2s',
+            cursor: loading ? 'wait' : 'pointer', transition: 'all 0.2s', opacity: loading ? 0.7 : 1,
           }}
         >
-          <div style={{ fontSize: 'clamp(36px, 10vw, 48px)', marginBottom: 20 }}>📊</div>
-          <div style={{ fontSize: 17, fontWeight: 600, color: C.dim, marginBottom: 8 }}>
-            Drop AXIA Statement Excel here
-          </div>
-          <div style={{ fontSize: 13, color: C.muted }}>or click to browse</div>
-          <div style={{
-            display: 'inline-block', marginTop: 16, padding: '4px 12px',
-            background: '#132030', borderRadius: 6, fontSize: 11, color: C.muted,
-          }}>
-            .xlsx · .xls
-          </div>
+          {loading ? (
+            <>
+              <div style={{ fontSize: 'clamp(36px, 10vw, 48px)', marginBottom: 20 }}>⏳</div>
+              <div style={{ fontSize: 17, fontWeight: 600, color: C.accent, marginBottom: 8 }}>
+                Parsing & analysing…
+              </div>
+              <div style={{ fontSize: 13, color: C.muted }}>Trader/Account are auto-detected — you can overwrite them once the dashboard opens.</div>
+            </>
+          ) : (
+            <>
+              <div style={{ fontSize: 'clamp(36px, 10vw, 48px)', marginBottom: 20 }}>📊</div>
+              <div style={{ fontSize: 17, fontWeight: 600, color: C.dim, marginBottom: 8 }}>
+                Drop AXIA Statement Excel here
+              </div>
+              <div style={{ fontSize: 13, color: C.muted }}>or click to browse — runs straight through, no confirmation step needed</div>
+              <div style={{
+                display: 'inline-block', marginTop: 16, padding: '4px 12px',
+                background: '#132030', borderRadius: 6, fontSize: 11, color: C.muted,
+              }}>
+                .xlsx · .xls
+              </div>
+            </>
+          )}
         </div>
 
         <input
@@ -252,88 +265,55 @@ function UploadZone({ onFile, error, savedAnalyses, savedLoading, onOpenSaved, o
   )
 }
 
-// ─── Trader / Account Modal ───────────────────────────────────────────────────
-function TraderModal({ file, trader, setTrader, account, setAccount,
-                       onConfirm, onCancel, loading, error }) {
+// ─── Edit Details Modal ─────────────────────────────────────────────────────
+// 2026-09-23 (Nish): Trader/Account no longer block getting to the
+// dashboard — they're auto-detected from the filename (or a sensible
+// fallback) and the analysis runs immediately. This is just the optional
+// overwrite, reachable from the dashboard header's ✎ Edit. Pure display/
+// export labels — never touches the cached analysis, so no re-upload or
+// recompute happens on save.
+function EditDetailsModal({ trader, account, onSave, onClose }) {
+  const [t, setT] = useState(trader)
+  const [a, setA] = useState(account)
+
   return (
     <div style={{
-      background: C.bg, minHeight: 'calc(100vh - 56px)',
-      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 'clamp(16px, 6vw, 32px)',
+      position: 'fixed', inset: 0, background: 'rgba(2,8,18,0.7)', zIndex: 1000,
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24,
     }}>
       <div style={{
-        background: C.card, border: `1px solid ${C.border}`,
-        borderRadius: 16, padding: 'clamp(22px, 6vw, 44px)', maxWidth: 500, width: '100%',
+        background: C.card, border: `1px solid ${C.border}`, borderRadius: 16,
+        padding: 'clamp(20px, 6vw, 36px)', maxWidth: 440, width: '100%',
       }}>
-
-        <div style={{ fontSize: 20, fontWeight: 700, color: C.text, marginBottom: 6 }}>
-          Confirm Statement Details
+        <div style={{ fontSize: 18, fontWeight: 700, color: C.text, marginBottom: 6 }}>
+          Edit Trader / Account
         </div>
-        <div style={{ fontSize: 13, color: C.muted, marginBottom: 30 }}>
-          File:{' '}
-          <span style={{ color: C.accent, fontWeight: 600 }}>{file?.name}</span>
+        <div style={{ fontSize: 13, color: C.muted, marginBottom: 22, lineHeight: 1.5 }}>
+          Display and export labels only — changing these doesn't re-run the analysis.
         </div>
 
-        {/* Trader */}
-        <label style={{
-          display: 'block', fontSize: 11, color: C.dim, fontWeight: 700,
-          letterSpacing: '0.6px', textTransform: 'uppercase', marginBottom: 8,
-        }}>
+        <label style={{ display: 'block', fontSize: 11, color: C.dim, fontWeight: 700, letterSpacing: '0.6px', textTransform: 'uppercase', marginBottom: 8 }}>
           Trader Name
         </label>
-        <input
-          value={trader}
-          onChange={e => setTrader(e.target.value)}
-          placeholder="e.g. Josh M."
-          style={inputStyle}
-        />
+        <input value={t} onChange={e => setT(e.target.value)} placeholder="e.g. Josh M." style={inputStyle} />
 
-        {/* Account */}
-        <label style={{
-          display: 'block', fontSize: 11, color: C.dim, fontWeight: 700,
-          letterSpacing: '0.6px', textTransform: 'uppercase', marginBottom: 8, marginTop: 20,
-        }}>
-          Account Number
+        <label style={{ display: 'block', fontSize: 11, color: C.dim, fontWeight: 700, letterSpacing: '0.6px', textTransform: 'uppercase', marginBottom: 8, marginTop: 18 }}>
+          Account Label
         </label>
         <input
-          value={account}
-          onChange={e => setAccount(e.target.value)}
-          placeholder="e.g. 47511"
-          style={{ ...inputStyle, marginBottom: 32 }}
-          onKeyDown={e => e.key === 'Enter' && onConfirm()}
+          value={a} onChange={e => setA(e.target.value)} placeholder="e.g. 47511"
+          style={{ ...inputStyle, marginBottom: 24 }}
+          onKeyDown={e => e.key === 'Enter' && onSave(t, a)}
         />
 
-        {error && (
-          <div style={{
-            marginBottom: 20, padding: '11px 16px',
-            background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)',
-            borderRadius: 8, color: '#FCA5A5', fontSize: 13,
-          }}>
-            {error}
-          </div>
-        )}
-
         <div style={{ display: 'flex', gap: 12 }}>
-          <button
-            onClick={onCancel}
-            style={{
-              flex: 1, padding: 13, borderRadius: 8, cursor: 'pointer',
-              border: `1px solid ${C.border}`, background: 'transparent',
-              color: C.muted, fontSize: 14, transition: 'all 0.15s',
-            }}
-          >
+          <button onClick={onClose}
+            style={{ flex: 1, padding: 12, borderRadius: 8, cursor: 'pointer', border: `1px solid ${C.border}`, background: 'transparent', color: C.muted, fontSize: 14 }}>
             Cancel
           </button>
-          <button
-            onClick={onConfirm}
-            disabled={loading || !trader.trim() || !account.trim()}
-            style={{
-              flex: 2, padding: 13, borderRadius: 8, cursor: 'pointer',
-              border: 'none', background: C.navy, color: C.accent,
-              fontSize: 14, fontWeight: 700, opacity: loading ? 0.7 : 1,
-              transition: 'all 0.15s',
-            }}
-          >
-            {loading ? 'Analysing…' : 'Run Analysis →'}
+          <button onClick={() => onSave(t, a)} disabled={!t.trim() || !a.trim()}
+            style={{ flex: 2, padding: 12, borderRadius: 8, cursor: 'pointer', border: 'none', background: C.navy, color: C.accent, fontSize: 14, fontWeight: 700 }}>
+            Save
           </button>
         </div>
       </div>
@@ -401,7 +381,8 @@ function AccountFilterBar({ allAccounts, selected, onChange, loading }) {
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
 export default function Analysis() {
-  const [phase, setPhase]         = useState('upload')   // upload | modal | dashboard
+  const [phase, setPhase]         = useState('upload')   // upload | dashboard
+  const [editingDetails, setEditingDetails] = useState(false)
   const [file, setFile]           = useState(null)
   const [trader, setTrader]       = useState('Josh M.')
   const [account, setAccount]     = useState('47511')
@@ -498,7 +479,13 @@ export default function Analysis() {
     }
   }
 
-  // ── Handle file pick ──────────────────────────────────────────────────────
+  // ── Handle file pick — auto-runs straight to the dashboard, no confirm
+  // step. Trader/Account are guessed from the filename (AXIA-{client}-{account}_*,
+  // the shape the parser's own downloads use) when possible, and always
+  // stay editable afterward from the dashboard header's ✎ Edit Details —
+  // they're display/export labels only, never used in the KPI math, so
+  // overwriting them later needs no re-analysis. 2026-09-23 (Nish): removed
+  // the old blocking Trader/Account modal gate. ─────────────────────────────
   const handleFile = f => {
     if (!f) return
     const ext = f.name.toLowerCase()
@@ -506,25 +493,23 @@ export default function Analysis() {
       setError('Please upload an Excel file (.xlsx or .xls)')
       return
     }
-    // Auto-extract trader + account from filename: AXIA-{trader}-{account}_*
     const match = f.name.match(/^AXIA-([^-]+)-([^_\.]+)/i)
-    if (match) {
-      setTrader(match[1])
-      setAccount(match[2])
-    }
+    const guessedAccount = match ? match[2] : null
+    if (match) setAccount(match[2])
     setFile(f)
     setError(null)
-    setPhase('modal')
+    runAnalysis(f, guessedAccount)
   }
 
   // ── Run analysis (upload → backend) ──────────────────────────────────────
-  const runAnalysis = async () => {
-    if (!file) return
+  const runAnalysis = async (fileArg, guessedAccount) => {
+    const f = fileArg || file
+    if (!f) return
     setLoading(true)
     setError(null)
     try {
       const form = new FormData()
-      form.append('file', file)
+      form.append('file', f)
       const res = await fetch(`${API}/api/analysis/upload`, { method: 'POST', body: form })
       if (!res.ok) {
         const body = await res.json().catch(() => ({}))
@@ -533,8 +518,15 @@ export default function Analysis() {
       const json = await res.json()
       setAnalysisId(json.analysis_id)
       setAnalysisData(json.data)
-      setAllAccounts(json.data?.accounts || [])
+      const detectedAccounts = json.data?.accounts || []
+      setAllAccounts(detectedAccounts)
       setSelectedAccounts([])
+      // Filename gave no account hint — fall back to what the parser itself
+      // found in the file: the single account if there's only one, else a
+      // plain "Combined" label until the person picks one from the filter bar.
+      if (!guessedAccount) {
+        setAccount(detectedAccounts.length === 1 ? detectedAccounts[0] : 'Combined')
+      }
       setPhase('dashboard')
     } catch (err) {
       setError(err.message)
@@ -613,6 +605,13 @@ export default function Analysis() {
     }
   }
 
+  // ── Save edited Trader/Account (display/export labels only, no re-analysis) ──
+  const saveDetails = (newTrader, newAccount) => {
+    setTrader(newTrader)
+    setAccount(newAccount)
+    setEditingDetails(false)
+  }
+
   // ── Reset ─────────────────────────────────────────────────────────────────
   const reset = () => {
     setPhase('upload')
@@ -631,24 +630,11 @@ export default function Analysis() {
       <UploadZone
         onFile={handleFile}
         error={error}
+        loading={loading}
         savedAnalyses={savedAnalyses}
         savedLoading={savedLoading}
         onOpenSaved={handleOpenSaved}
         onDeleteSaved={handleDeleteSaved}
-      />
-    )
-  }
-
-  if (phase === 'modal') {
-    return (
-      <TraderModal
-        file={file}
-        trader={trader}   setTrader={setTrader}
-        account={account} setAccount={setAccount}
-        onConfirm={runAnalysis}
-        onCancel={reset}
-        loading={loading}
-        error={error}
       />
     )
   }
@@ -673,8 +659,17 @@ export default function Analysis() {
           gbpRetrying={gbpRetrying}
           onSaveShare={handleSaveShare}
           saving={savingShare}
+          onEditDetails={() => setEditingDetails(true)}
         />
         {shareUrl && <ShareLinkModal url={shareUrl} onClose={() => setShareUrl(null)} />}
+        {editingDetails && (
+          <EditDetailsModal
+            trader={trader}
+            account={account}
+            onSave={saveDetails}
+            onClose={() => setEditingDetails(false)}
+          />
+        )}
       </>
     )
   }
