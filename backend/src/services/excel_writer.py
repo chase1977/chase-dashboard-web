@@ -148,30 +148,25 @@ def write_statement_excel(
         _cell(col["MARKET FEES"],        row.get("market_fees"),         "right",  _FMT_NUM2)
         _cell(col["NFA FEES"],           row.get("nfa_fees"),            "right",  _FMT_NUM2)
 
-        h_col = get_column_letter(col["COMMISION FEES"])
-        i_col = get_column_letter(col["MARKET FEES"])
-        j_col = get_column_letter(col["NFA FEES"])
-        comm_cell = ws.cell(
-            row=row_idx, column=col["TOTAL COMMS"],
-            value=f"={h_col}{row_idx}+{i_col}{row_idx}+{j_col}{row_idx}",
-        )
-        comm_cell.font          = _ROW_FONT
-        comm_cell.fill          = fill
-        comm_cell.border        = _BORDER
-        comm_cell.alignment     = Alignment(horizontal="right", vertical="center")
-        comm_cell.number_format = _FMT_NUM2
+        # TOTAL COMMS / TOTAL PnL written as literal computed values, NOT
+        # formula strings (2026-09-23 fix). openpyxl never caches a formula's
+        # result -- a workbook it wrote itself carries no cached value for
+        # "=H2+I2+J2", so re-reading it with data_only=True (as
+        # analysis_service.parse_statement does) gets back None for every
+        # formula cell unless the file was opened+saved in real Excel first.
+        # That silently zeroed out comms/PnL (and every chart derived from
+        # them) whenever a parser-downloaded or merged workbook was fed
+        # straight back into the Analysis tab. Computing the numbers here in
+        # Python removes the dependency on Excel ever touching the file.
+        comm_fees_val = float(row.get("commission_fees") or 0)
+        market_fees_val = float(row.get("market_fees") or 0)
+        nfa_fees_val = float(row.get("nfa_fees") or 0)
+        realized_pnl_val = float(row.get("realized_pnl") or 0)
+        total_comms_val = comm_fees_val + market_fees_val + nfa_fees_val
+        total_pnl_val = realized_pnl_val + total_comms_val
 
-        g_col = get_column_letter(col["REALIZED PnL"])
-        k_col = get_column_letter(col["TOTAL COMMS"])
-        pnl_cell = ws.cell(
-            row=row_idx, column=col["TOTAL PnL"],
-            value=f"={g_col}{row_idx}+{k_col}{row_idx}",
-        )
-        pnl_cell.font          = _ROW_FONT
-        pnl_cell.fill          = fill
-        pnl_cell.border        = _BORDER
-        pnl_cell.alignment     = Alignment(horizontal="right", vertical="center")
-        pnl_cell.number_format = _FMT_NUM2
+        _cell(col["TOTAL COMMS"], total_comms_val, "right", _FMT_NUM2)
+        _cell(col["TOTAL PnL"],   total_pnl_val,   "right", _FMT_NUM2)
 
         _cell(col["CURRENCY"], row.get("currency", ""), "center", "@")
 
@@ -210,18 +205,46 @@ def write_statement_excel(
                 c.alignment = Alignment(horizontal="center", vertical="center")
             label_cell.alignment = Alignment(horizontal="left", vertical="center")
 
-            for col_name in ("LONG", "SHORT", "REALIZED PnL",
-                             "COMMISION FEES", "MARKET FEES", "NFA FEES",
-                             "TOTAL COMMS", "TOTAL PnL"):
-                col_idx  = _HDR[col_name]
-                col_ltr  = get_column_letter(col_idx)
-                refs     = "+".join(f"{col_ltr}{r}" for r in r_idxs)
-                fmt      = _FMT_INT if col_name in ("LONG", "SHORT") else _FMT_NUM2
-                tc = ws.cell(row=t_row, column=col_idx, value=f"={refs}")
+            # Literal computed sums, not formula strings -- same reasoning as
+            # the per-row TOTAL COMMS/TOTAL PnL fix above: a formula written
+            # by openpyxl has no cached value until opened in real Excel.
+            _row_by_idx = {r_idx: rows[r_idx - 2] for r_idx in r_idxs}
+            for col_name, source_key in (
+                ("LONG",            "long"),
+                ("SHORT",           "short"),
+                ("REALIZED PnL",    "realized_pnl"),
+                ("COMMISION FEES",  "commission_fees"),
+                ("MARKET FEES",     "market_fees"),
+                ("NFA FEES",        "nfa_fees"),
+            ):
+                col_idx = _HDR[col_name]
+                fmt     = _FMT_INT if col_name in ("LONG", "SHORT") else _FMT_NUM2
+                total   = sum(float(_row_by_idx[r].get(source_key) or 0) for r in r_idxs)
+                tc = ws.cell(row=t_row, column=col_idx, value=total)
                 tc.font          = _TOTAL_FONT
                 tc.fill          = _TOTAL_FILL
                 tc.border        = _BORDER
                 tc.number_format = fmt
+                tc.alignment     = Alignment(horizontal="right", vertical="center")
+
+            total_comm_val = sum(
+                float(_row_by_idx[r].get("commission_fees") or 0)
+                + float(_row_by_idx[r].get("market_fees") or 0)
+                + float(_row_by_idx[r].get("nfa_fees") or 0)
+                for r in r_idxs
+            )
+            total_pnl_val = sum(
+                float(_row_by_idx[r].get("realized_pnl") or 0)
+                for r in r_idxs
+            ) + total_comm_val
+
+            for col_name, val in (("TOTAL COMMS", total_comm_val), ("TOTAL PnL", total_pnl_val)):
+                col_idx = _HDR[col_name]
+                tc = ws.cell(row=t_row, column=col_idx, value=val)
+                tc.font          = _TOTAL_FONT
+                tc.fill          = _TOTAL_FILL
+                tc.border        = _BORDER
+                tc.number_format = _FMT_NUM2
                 tc.alignment     = Alignment(horizontal="right", vertical="center")
 
             offset += 1
