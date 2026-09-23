@@ -115,10 +115,15 @@ def export_analysis(
     trader:  str  = Query(default="Unknown Trader"),
     account: str  = Query(default="--"),
     gbp:     bool = Query(default=False),
+    accounts: str = Query(default="", description="Comma-separated account numbers to scope the export to, matching the dashboard's active account filter; omit/empty for every account combined."),
 ):
     """
     Generate and download the professional Excel analysis report.
     Pass ?gbp=true to export the GBP-converted report with FX Rate Log sheet.
+    Pass ?accounts=A,B to scope the export to the same account(s) currently
+    selected on the dashboard (2026-09-23 fix) -- without this the export
+    always pulled the full unfiltered analysis, so a filtered dashboard view
+    and its export could show different numbers.
     Uses the analysis stored from the /upload call (cached by analysis_id).
     """
     if not get_analysis(analysis_id):
@@ -127,8 +132,9 @@ def export_analysis(
             detail="Analysis not found or expired -- please re-upload the file",
         )
 
+    wanted = [a.strip() for a in accounts.split(",") if a.strip()] or None
     try:
-        xlsx_bytes = generate_excel_report(analysis_id, trader, account, gbp=gbp)
+        xlsx_bytes = generate_excel_report(analysis_id, trader, account, gbp=gbp, accounts=wanted)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:

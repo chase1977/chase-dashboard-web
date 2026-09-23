@@ -622,6 +622,12 @@ export default function Analysis() {
     try {
       const params = new URLSearchParams({ trader, account })
       if (gbpMode) params.set('gbp', 'true')
+      // Scope the export to whatever account filter is active on the
+      // dashboard right now (2026-09-23 fix) -- without this the export
+      // always regenerated from the full unfiltered analysis, so a
+      // dashboard filtered to one account could still export every
+      // account's rows mixed back in (wrong instrument count, wrong lots).
+      if (selectedAccounts.length) params.set('accounts', selectedAccounts.join(','))
       const res = await fetch(`${API}/api/analysis/${analysisId}/export?${params}`)
       if (!res.ok) throw new Error('Export failed')
       const blob = await res.blob()

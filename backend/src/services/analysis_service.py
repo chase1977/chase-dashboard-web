@@ -11,11 +11,26 @@ import uuid
 from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import requests
 import openpyxl
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+
+_UK_TZ = ZoneInfo("Europe/London")
+
+
+def _generated_timestamp() -> str:
+    """
+    Report "Generated:" stamp, UK local time with the correct BST/GMT label
+    for whichever side of the DST switch `now` falls on, alongside UTC for
+    an unambiguous cross-reference (2026-09-23, Nish).
+    """
+    now_utc = datetime.utcnow().replace(tzinfo=ZoneInfo("UTC"))
+    now_uk  = now_utc.astimezone(_UK_TZ)
+    uk_label = "BST" if now_uk.dst() else "GMT"
+    return f"{now_uk.strftime('%Y-%m-%d %H:%M')} {uk_label} ({now_utc.strftime('%H:%M')} UTC)"
 
 # OANDA REST API credentials (GBP rate conversion)
 _OANDA_URL   = os.getenv('OANDA_API_URL', 'https://api-fxpractice.oanda.com/v3')
@@ -886,7 +901,7 @@ def _generate_gbp_excel_report(data: dict, trader: str, account: str) -> bytes:
         f"Trader: {trader}   |   Account: {account}   |   "
         f"Period: {data['date_range']['from']} -> {data['date_range']['to']}   |   "
         f"Currencies converted to GBP via OANDA daily close rates   |   "
-        f"Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}"
+        f"Generated: {_generated_timestamp()}"
     )
     s.font      = Font(italic=True, color="FFFFFF", name="Calibri", size=10)
     s.fill      = PatternFill("solid", fgColor=_MID_NAVY)
@@ -1117,8 +1132,24 @@ def _generate_gbp_excel_report(data: dict, trader: str, account: str) -> bytes:
 
 # --- Excel Export -------------------------------------------------------------
 
-def generate_excel_report(analysis_id: str, trader: str, account: str, gbp: bool = False) -> bytes:
-    data = get_analysis(analysis_id)
+def generate_excel_report(
+    analysis_id: str, trader: str, account: str, gbp: bool = False,
+    accounts: Optional[list[str]] = None,
+) -> bytes:
+    """
+    `accounts` (2026-09-23 fix, Nish): when the dashboard has the account
+    filter applied (single account, or a combination), the export must be
+    recomputed scoped to exactly that same selection -- previously this
+    always pulled the raw, full, unfiltered cached analysis regardless of
+    what the dashboard was showing, so a filtered-to-one-account export
+    silently mixed other accounts' rows back in (wrong instrument counts,
+    wrong lots, wrong PnL). Recomputing via filter_analysis_by_accounts
+    keeps the export numbers identical to whatever the dashboard displays.
+    """
+    if accounts:
+        data = filter_analysis_by_accounts(analysis_id, accounts)
+    else:
+        data = get_analysis(analysis_id)
     if not data:
         raise ValueError("Analysis not found or expired -- please re-upload the file")
     if gbp:
@@ -1144,7 +1175,7 @@ def generate_excel_report(analysis_id: str, trader: str, account: str, gbp: bool
     s = ws1['A2']
     s.value     = (f'Trader: {trader}   |   Account: {account}   |   '
                    f'Period: {data["date_range"]["from"]} -> {data["date_range"]["to"]}   |   '
-                   f'Generated: {datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")}')
+                   f'Generated: {_generated_timestamp()}')
     s.font      = Font(italic=True, color='FFFFFF', name='Calibri', size=10)
     s.fill      = PatternFill('solid', fgColor=_MID_NAVY)
     s.alignment = _ctr()

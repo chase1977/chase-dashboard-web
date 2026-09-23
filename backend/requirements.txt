@@ -11,3 +11,4 @@ pydantic
 supabase
 pdfplumber
 requests
+tzdata
