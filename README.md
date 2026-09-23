@@ -1728,5 +1728,6 @@ uvicorn src.main:app --reload   # http://localhost:8000
 - Never run SQL directly — always hand over exact SQL + verification steps.
 - Schema changes are additive-only (no drops/renames on live tables).
 - Never push to git/Netlify unless explicitly asked.
+- Two git remotes exist: `origin` (chase1977/chase-dashboard-web) and `fork` (nish-vek10/chase-dashboard-web) -- **Netlify watches `fork`, not `origin`**. Every git push command given must push both remotes (`git push origin main && git push fork main`), confirmed with Nish 2026-09-23 after a deploy silently didn't update because only `origin` was pushed.
 - No scope creep — confirm before adding anything not explicitly requested.
 - All UI must work on desktop and mobile.
