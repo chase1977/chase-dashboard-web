@@ -695,7 +695,10 @@ async function exportAllGraphs(setExportingGraphs) {
       'chart-asset-pnl', 'chart-daily-pnl', 'chart-cumulative',
       'chart-volume', 'chart-comm-drag', 'chart-comm-pie',
       'chart-heatmap', 'chart-equity-explorer',
-      'chart-winners-curves', 'chart-losers-curves',
+      // 2026-09-23 (Nish): swapped the landscape equity-curve cards for the
+      // small Top 5 Winners/Losers tables instead — the landscape ones cut
+      // off instrument names and don't show comm drag %, these do.
+      'chart-top-winners', 'chart-top-losers',
     ]
 
     for (const id of chartIds) {
@@ -897,11 +900,11 @@ export default function AxiaAnalysisDashboard({
             <SectionLabel>Commission Breakdown{gbpMode ? ' (GBP)' : ''}</SectionLabel>
             <CommPie breakdown={activeData.commission_breakdown} />
           </Card>
-          <Card>
+          <Card id="chart-top-winners">
             <SectionLabel>Top 5 Winners</SectionLabel>
             <RankList items={topWinners} variant="winner" />
           </Card>
-          <Card>
+          <Card id="chart-top-losers">
             <SectionLabel>Top 5 Losers</SectionLabel>
             <RankList items={topLosers} variant="loser" />
           </Card>
