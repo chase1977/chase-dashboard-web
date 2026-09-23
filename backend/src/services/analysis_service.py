@@ -108,13 +108,29 @@ def parse_statement(file_bytes: bytes) -> dict:
     return _compute_analysis(raw)
 
 
-def _compute_analysis(raw: list[dict]) -> dict:
+def _compute_analysis(
+    raw: list[dict],
+    rate_lookup: Optional[dict] = None,
+    rate_meta: Optional[dict] = None,
+) -> dict:
     """
     Build the full analysis dict from a list of already-parsed trade rows.
     Factored out (2026-09-23) so the Analysis tab's account filter can
     recompute this from a subset of `raw` (see filter_analysis_by_accounts)
     without re-parsing or re-uploading the Excel -- same aggregation, same
     numbers, just scoped to whichever account(s) are selected.
+
+    `rate_lookup`/`rate_meta` (2026-09-23 fix, Nish): pass through the GBP
+    rate lookup already fetched for this analysis instead of hitting OANDA
+    again. Every call used to fetch its own fresh rates -- one at upload,
+    another whenever the account filter changed, another for every Excel
+    export -- and each independent OANDA call could land on a slightly
+    different value for the same date (most likely the most recent day's
+    close, which can still be moving), so the dashboard and a same-session
+    export of the same account could show different GBP numbers. Reusing
+    one fetch for the whole analysis makes every view -- dashboard, filtered
+    account, Excel export -- agree exactly, always. Only an explicit "Retry
+    GBP" (see refresh_gbp_rates) intentionally re-fetches.
     """
     # -- Aggregate by instrument -----------------------------------------------
     asset_map: dict[str, dict] = {}
@@ -244,8 +260,11 @@ def _compute_analysis(raw: list[dict]) -> dict:
         a['comm_drag_pct'] = round((comms / gross * 100) if gross > 0 else 0, 1)
 
     # -- GBP view via OANDA daily close rates ----------------------------------
-    _gbp_lookup, _gbp_meta = _build_rate_lookup(raw)
-    _gbp_view               = _compute_gbp_view(raw, _gbp_lookup, _gbp_meta)
+    if rate_lookup is not None and rate_meta is not None:
+        _gbp_lookup, _gbp_meta = rate_lookup, rate_meta
+    else:
+        _gbp_lookup, _gbp_meta = _build_rate_lookup(raw)
+    _gbp_view = _compute_gbp_view(raw, _gbp_lookup, _gbp_meta)
 
     accounts_present = sorted({r['account'] for r in raw if r.get('account')})
     clients_present  = sorted({r['client']  for r in raw if r.get('client')})
@@ -278,7 +297,9 @@ def _compute_analysis(raw: list[dict]) -> dict:
         'top_winners':            sorted(assets, key=lambda x: x['net_pnl'], reverse=True)[:5],
         'top_losers':             sorted(assets, key=lambda x: x['net_pnl'])[:5],
         'portfolio_daily_detail': portfolio_daily_detail,
-        '_raw':                   raw,   # kept for /refresh-gbp; stripped before API response
+        '_raw':          raw,        # kept for /refresh-gbp and /filter; stripped before API response
+        '_rate_lookup':  _gbp_lookup, # kept so every downstream filter/export reuses the SAME fetch
+        '_rate_meta':    _gbp_meta,   # instead of hitting OANDA again -- stripped before API response
         **_gbp_view,
     }
 
@@ -334,6 +355,21 @@ def _build_rate_lookup(raw: list[dict]) -> tuple[dict[tuple, float], dict]:
     """
     Build a {(date, ccy): gbp_rate} lookup from OANDA daily closes.
     Backward-fills weekends / holidays with the last available rate.
+
+    Confirmed 2026-09-23 (Nish): every trade is converted using the OANDA
+    daily CLOSE for that trade's own TRADE DATE (`r['date']`, straight from
+    the statement -- never "today" or the upload time). A trade dated
+    16-Feb always converts at 16-Feb's close, a trade dated 22-Sep always
+    converts at 22-Sep's close, regardless of when the statement was
+    uploaded or when this report is generated. If the exact date has no
+    candle (weekend/holiday, market closed) it falls back to the most
+    recent PRIOR trading day's close -- see the `ad <= d` check below --
+    never a later/future date and never a live/current rate. This is also
+    why `_compute_analysis` no longer re-fetches per filter/export (see its
+    docstring): the lookup itself is already pinned to fixed historical
+    dates, so reusing one fetch changes nothing about correctness, it only
+    removes a second independent OANDA round-trip that could return a
+    marginally different number for the same date.
 
     Returns (lookup, meta) where meta = {ok, fetched, failed, unknown}.
     - ok      : True only if every non-GBP currency got real rates
@@ -602,6 +638,11 @@ def filter_analysis_by_accounts(analysis_id: str, accounts: Optional[list[str]])
     accounts" or to a different account never loses data; every call
     recomputes fresh off `_raw`, which always holds every row from the
     original upload regardless of what was last filtered.
+
+    Reuses the analysis's original `_rate_lookup`/`_rate_meta` (2026-09-23
+    fix) instead of fetching GBP rates again -- see _compute_analysis's
+    docstring for why: an independent OANDA fetch per filter/export could
+    return slightly different numbers than the dashboard's own fetch.
     """
     data = get_analysis(analysis_id)
     if not data:
@@ -615,12 +656,28 @@ def filter_analysis_by_accounts(analysis_id: str, accounts: Optional[list[str]])
     if not raw:
         raise ValueError("No rows for the requested account(s).")
 
-    return _compute_analysis(raw)
+    return _compute_analysis(raw, rate_lookup=data.get('_rate_lookup'), rate_meta=data.get('_rate_meta'))
 
 
 def _strip_internal(data: dict) -> dict:
-    """Remove server-only keys before persisting/returning analysis data."""
-    return {k: v for k, v in data.items() if k not in {"_raw"}}
+    """
+    Remove every server-only key before this data ever reaches the client.
+    `_rate_lookup` is keyed by (date, currency) tuples, which are not valid
+    JSON -- it (and `_raw`) must never be returned from an API response.
+    """
+    return {k: v for k, v in data.items() if k not in {"_raw", "_rate_lookup", "_rate_meta"}}
+
+
+def _strip_for_persist(data: dict) -> dict:
+    """
+    Keep `_raw` when saving to Supabase (needed so a reopened saved analysis
+    can still use the account filter / GBP refresh -- see persist_analysis),
+    but drop `_rate_lookup`: its (date, currency) tuple keys aren't valid
+    JSON and would break the jsonb write. A reopened analysis simply
+    re-fetches GBP rates fresh on its first filter/export after reopening,
+    same as before this fix, and stays self-consistent from that point on.
+    """
+    return {k: v for k, v in data.items() if k not in {"_rate_lookup", "_rate_meta"}}
 
 
 def persist_analysis(analysis_id: str, trader: str, account: str, label: Optional[str] = None) -> str:
@@ -657,7 +714,7 @@ def persist_analysis(analysis_id: str, trader: str, account: str, label: Optiona
         "date_from":  data["date_range"]["from"],
         "date_to":    data["date_range"]["to"],
         "currencies": data["summary"]["currencies"],
-        "data":       data,
+        "data":       _strip_for_persist(data),
     }
     sb = get_client()
     sb.table("axia_saved_analyses").upsert(row, on_conflict="id").execute()
@@ -743,8 +800,13 @@ def refresh_gbp_rates(analysis_id: str) -> dict:
 
     gbp_view = _compute_gbp_view(raw, lookup, meta)
 
-    # Merge updated GBP fields into the cached data
+    # Merge updated GBP fields into the cached data, and store the fresh
+    # lookup/meta too (2026-09-23 fix) so every filter/export from this
+    # point on reuses THIS fetch rather than each silently re-fetching its
+    # own (and potentially drifting from what "Retry GBP" just showed).
     data.update(gbp_view)
+    data['_rate_lookup'] = lookup
+    data['_rate_meta']   = meta
 
     return gbp_view
 
