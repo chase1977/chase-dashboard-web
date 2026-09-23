@@ -237,21 +237,19 @@ def create_equity(body: EquityCreate):
         "capital_flow_type":   body.capital_flow_type,
         "capital_transfer_id": None,
     }
-    if body.capital_flow_type:
-        contribution = body.chg_nlv if body.chg_nlv is not None else body.equity
-        try:
-            payload["capital_transfer_id"] = sync_capital_flow_transfer(
-                client_table="axia_clients", client=body.client, account=body.account,
-                client_field="axia_client_id", feed_id=None,
-                trade_date=body.trade_date, contribution=contribution,
-                capital_flow_type=body.capital_flow_type, label="AXIA",
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
+    # Insert the equity row FIRST, before any capital_transfers ledger side
+    # effect. Bugfix 2026-09-21 (OPTIOS report — Capital Invested showed
+    # exactly double a single equity row's value): the old order created the
+    # ledger row BEFORE this insert, so when the insert then hit the
+    # (client,account,trade_date,currency) unique constraint — e.g. a
+    # double-submit — the ledger row it had already committed had nothing
+    # to roll it back, leaving an orphan contribution baked permanently into
+    # the strategy's baseline. Now a genuine duplicate 409s here with zero
+    # side effects; the ledger row is only created after this succeeds, and
+    # if THAT then fails we delete the row we just inserted so nothing
+    # half-persists either way.
     try:
         row = sb.table("axia_daily_equity").insert(payload).execute().data[0]
-        invalidate_all_cache()
-        return row
     except Exception as exc:
         if "duplicate" in str(exc).lower() or "unique" in str(exc).lower():
             raise HTTPException(
@@ -259,6 +257,23 @@ def create_equity(body: EquityCreate):
                 detail=f"Record already exists for {body.client}/{body.account} on {body.trade_date} ({body.currency}). Edit the existing row instead."
             )
         raise HTTPException(status_code=500, detail=str(exc))
+
+    if body.capital_flow_type:
+        contribution = body.chg_nlv if body.chg_nlv is not None else body.equity
+        try:
+            transfer_id = sync_capital_flow_transfer(
+                client_table="axia_clients", client=body.client, account=body.account,
+                client_field="axia_client_id", feed_id=None,
+                trade_date=body.trade_date, contribution=contribution,
+                capital_flow_type=body.capital_flow_type, label="AXIA",
+            )
+            row = sb.table("axia_daily_equity").update({"capital_transfer_id": transfer_id}).eq("id", row["id"]).execute().data[0]
+        except ValueError as exc:
+            sb.table("axia_daily_equity").delete().eq("id", row["id"]).execute()
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    invalidate_all_cache()
+    return row
 
 
 @router.patch("/equity/{record_id}")
@@ -285,24 +300,10 @@ def update_equity(record_id: str, body: EquityUpdate):
     new_eq       = payload.get("equity", old.get("equity"))
     contribution = new_chg if new_chg is not None else new_eq
 
-    try:
-        if old.get("capital_transfer_id") and new_type not in CAPITAL_FLOW_TYPES:
-            # Un-flagged back to a normal trading day — drop the linked ledger row.
-            delete_capital_flow_transfer(old["capital_transfer_id"])
-            payload["capital_transfer_id"] = None
-        elif new_type in CAPITAL_FLOW_TYPES:
-            if old.get("capital_transfer_id"):
-                resync_capital_flow_transfer(old["capital_transfer_id"], new_date, contribution, new_type, "AXIA")
-            else:
-                payload["capital_transfer_id"] = sync_capital_flow_transfer(
-                    client_table="axia_clients", client=old["client"], account=old["account"],
-                    client_field="axia_client_id", feed_id=None,
-                    trade_date=new_date, contribution=contribution,
-                    capital_flow_type=new_type, label="AXIA",
-                )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-
+    # Apply the row update FIRST — same root cause/fix as create_equity
+    # above. Ledger sync only happens once this succeeds; if it then fails,
+    # the row is reverted back to its pre-update values so nothing
+    # half-applies either way.
     try:
         rows = (
             sb.table("axia_daily_equity")
@@ -313,14 +314,37 @@ def update_equity(record_id: str, body: EquityUpdate):
         )
         if not rows:
             raise HTTPException(status_code=404, detail="Record not found.")
-        invalidate_all_cache()
-        return rows[0]
     except HTTPException:
         raise
     except Exception as exc:
         if "duplicate" in str(exc).lower() or "unique" in str(exc).lower():
             raise HTTPException(status_code=409, detail="Another record already exists for that date/currency.")
         raise HTTPException(status_code=500, detail=str(exc))
+
+    saved = rows[0]
+    try:
+        if old.get("capital_transfer_id") and new_type not in CAPITAL_FLOW_TYPES:
+            # Un-flagged back to a normal trading day — drop the linked ledger row.
+            delete_capital_flow_transfer(old["capital_transfer_id"])
+            saved = sb.table("axia_daily_equity").update({"capital_transfer_id": None}).eq("id", record_id).execute().data[0]
+        elif new_type in CAPITAL_FLOW_TYPES:
+            if old.get("capital_transfer_id"):
+                resync_capital_flow_transfer(old["capital_transfer_id"], new_date, contribution, new_type, "AXIA")
+            else:
+                transfer_id = sync_capital_flow_transfer(
+                    client_table="axia_clients", client=old["client"], account=old["account"],
+                    client_field="axia_client_id", feed_id=None,
+                    trade_date=new_date, contribution=contribution,
+                    capital_flow_type=new_type, label="AXIA",
+                )
+                saved = sb.table("axia_daily_equity").update({"capital_transfer_id": transfer_id}).eq("id", record_id).execute().data[0]
+    except ValueError as exc:
+        revert_fields = {k: old.get(k) for k in payload.keys()}
+        sb.table("axia_daily_equity").update(revert_fields).eq("id", record_id).execute()
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    invalidate_all_cache()
+    return saved
 
 
 @router.delete("/equity/{record_id}", status_code=204)

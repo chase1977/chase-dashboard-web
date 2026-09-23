@@ -425,21 +425,16 @@ def create_equity(slug: str, body: EquityCreate):
         "capital_flow_type":   body.capital_flow_type,
         "capital_transfer_id": None,
     }
-    if body.capital_flow_type:
-        contribution = body.chg_nlv if body.chg_nlv is not None else body.equity
-        try:
-            payload["capital_transfer_id"] = sync_capital_flow_transfer(
-                client_table=feed["clients_table"], client=body.client, account=body.account,
-                client_field="data_feed_client_id", feed_id=feed["id"],
-                trade_date=body.trade_date, contribution=contribution,
-                capital_flow_type=body.capital_flow_type, label=feed["name"],
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
+    # Insert equity row FIRST, before any capital_transfers ledger side effect.
+    # Bugfix 2026-09-21 (mirrors axia_equity.py/ig_equity.py — OPTIOS
+    # double-count root cause): old order created ledger row before this
+    # insert, so a duplicate insert here left an orphan, permanently
+    # double-counted ledger row with nothing to roll it back. Now a genuine
+    # duplicate 409s with zero side effects; ledger row only created after
+    # this succeeds, and if that then fails we delete the row we just
+    # inserted.
     try:
         row = sb.table(feed["equity_table"]).insert(payload).execute().data[0]
-        invalidate_all_cache()
-        return row
     except Exception as exc:
         if "duplicate" in str(exc).lower() or "unique" in str(exc).lower():
             raise HTTPException(
@@ -447,6 +442,23 @@ def create_equity(slug: str, body: EquityCreate):
                 detail=f"Record already exists for {body.client}/{body.account} on {body.trade_date} ({body.currency}). Edit the existing row instead."
             )
         raise HTTPException(status_code=500, detail=str(exc))
+
+    if body.capital_flow_type:
+        contribution = body.chg_nlv if body.chg_nlv is not None else body.equity
+        try:
+            transfer_id = sync_capital_flow_transfer(
+                client_table=feed["clients_table"], client=body.client, account=body.account,
+                client_field="data_feed_client_id", feed_id=feed["id"],
+                trade_date=body.trade_date, contribution=contribution,
+                capital_flow_type=body.capital_flow_type, label=feed["name"],
+            )
+            row = sb.table(feed["equity_table"]).update({"capital_transfer_id": transfer_id}).eq("id", row["id"]).execute().data[0]
+        except ValueError as exc:
+            sb.table(feed["equity_table"]).delete().eq("id", row["id"]).execute()
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    invalidate_all_cache()
+    return row
 
 
 @router.patch("/{slug}/equity/{record_id}")
@@ -471,35 +483,43 @@ def update_equity(slug: str, record_id: str, body: EquityUpdate):
     new_eq       = payload.get("equity", old.get("equity"))
     contribution = new_chg if new_chg is not None else new_eq
 
-    try:
-        if old.get("capital_transfer_id") and new_type not in CAPITAL_FLOW_TYPES:
-            delete_capital_flow_transfer(old["capital_transfer_id"])
-            payload["capital_transfer_id"] = None
-        elif new_type in CAPITAL_FLOW_TYPES:
-            if old.get("capital_transfer_id"):
-                resync_capital_flow_transfer(old["capital_transfer_id"], new_date, contribution, new_type, feed["name"])
-            else:
-                payload["capital_transfer_id"] = sync_capital_flow_transfer(
-                    client_table=feed["clients_table"], client=old["client"], account=old["account"],
-                    client_field="data_feed_client_id", feed_id=feed["id"],
-                    trade_date=new_date, contribution=contribution,
-                    capital_flow_type=new_type, label=feed["name"],
-                )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-
+    # Apply row update FIRST — same fix as create_equity above. Ledger sync
+    # only happens once this succeeds; if it then fails, row is reverted back
+    # to its pre-update values so nothing half-applies either way.
     try:
         rows = sb.table(feed["equity_table"]).update(payload).eq("id", record_id).execute().data
         if not rows:
             raise HTTPException(status_code=404, detail="Record not found.")
-        invalidate_all_cache()
-        return rows[0]
     except HTTPException:
         raise
     except Exception as exc:
         if "duplicate" in str(exc).lower() or "unique" in str(exc).lower():
             raise HTTPException(status_code=409, detail="Another record already exists for that date/currency.")
         raise HTTPException(status_code=500, detail=str(exc))
+
+    saved = rows[0]
+    try:
+        if old.get("capital_transfer_id") and new_type not in CAPITAL_FLOW_TYPES:
+            delete_capital_flow_transfer(old["capital_transfer_id"])
+            saved = sb.table(feed["equity_table"]).update({"capital_transfer_id": None}).eq("id", record_id).execute().data[0]
+        elif new_type in CAPITAL_FLOW_TYPES:
+            if old.get("capital_transfer_id"):
+                resync_capital_flow_transfer(old["capital_transfer_id"], new_date, contribution, new_type, feed["name"])
+            else:
+                transfer_id = sync_capital_flow_transfer(
+                    client_table=feed["clients_table"], client=old["client"], account=old["account"],
+                    client_field="data_feed_client_id", feed_id=feed["id"],
+                    trade_date=new_date, contribution=contribution,
+                    capital_flow_type=new_type, label=feed["name"],
+                )
+                saved = sb.table(feed["equity_table"]).update({"capital_transfer_id": transfer_id}).eq("id", record_id).execute().data[0]
+    except ValueError as exc:
+        revert_fields = {k: old.get(k) for k in payload.keys()}
+        sb.table(feed["equity_table"]).update(revert_fields).eq("id", record_id).execute()
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    invalidate_all_cache()
+    return saved
 
 
 @router.delete("/{slug}/equity/{record_id}", status_code=204)
