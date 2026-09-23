@@ -272,9 +272,10 @@ function UploadZone({ onFile, error, loading, savedAnalyses, savedLoading, onOpe
 // overwrite, reachable from the dashboard header's ✎ Edit. Pure display/
 // export labels — never touches the cached analysis, so no re-upload or
 // recompute happens on save.
-function EditDetailsModal({ trader, account, onSave, onClose }) {
+function EditDetailsModal({ trader, account, detectedAccounts, isNewUpload, onSave, onClose }) {
   const [t, setT] = useState(trader)
   const [a, setA] = useState(account)
+  const showAccountChips = detectedAccounts && detectedAccounts.length > 1
 
   return (
     <div style={{
@@ -283,33 +284,60 @@ function EditDetailsModal({ trader, account, onSave, onClose }) {
     }}>
       <div style={{
         background: C.card, border: `1px solid ${C.border}`, borderRadius: 16,
-        padding: 'clamp(20px, 6vw, 36px)', maxWidth: 440, width: '100%',
+        padding: 'clamp(20px, 6vw, 36px)', maxWidth: 460, width: '100%',
       }}>
         <div style={{ fontSize: 18, fontWeight: 700, color: C.text, marginBottom: 6 }}>
-          Edit Trader / Account
+          {isNewUpload ? 'Trader / Account Detected' : 'Edit Trader / Account'}
         </div>
         <div style={{ fontSize: 13, color: C.muted, marginBottom: 22, lineHeight: 1.5 }}>
-          Display and export labels only — changing these doesn't re-run the analysis.
+          {isNewUpload
+            ? 'Auto-filled from the uploaded file — trader defaults to the Client ID. Review, overwrite if needed, or just close this.'
+            : "Display and export labels only — changing these doesn't re-run the analysis."}
         </div>
 
         <label style={{ display: 'block', fontSize: 11, color: C.dim, fontWeight: 700, letterSpacing: '0.6px', textTransform: 'uppercase', marginBottom: 8 }}>
           Trader Name
         </label>
-        <input value={t} onChange={e => setT(e.target.value)} placeholder="e.g. Josh M." style={inputStyle} />
+        <input value={t} onChange={e => setT(e.target.value)} placeholder="e.g. Josh M. or Client ID" style={inputStyle} />
 
         <label style={{ display: 'block', fontSize: 11, color: C.dim, fontWeight: 700, letterSpacing: '0.6px', textTransform: 'uppercase', marginBottom: 8, marginTop: 18 }}>
           Account Label
         </label>
         <input
           value={a} onChange={e => setA(e.target.value)} placeholder="e.g. 47511"
-          style={{ ...inputStyle, marginBottom: 24 }}
+          style={inputStyle}
           onKeyDown={e => e.key === 'Enter' && onSave(t, a)}
         />
+
+        {showAccountChips && (
+          <>
+            <div style={{ fontSize: 11, color: C.muted, marginTop: 10, marginBottom: 8 }}>
+              This file holds {detectedAccounts.length} accounts — pick one, or leave as-is for combined:
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 24 }}>
+              {detectedAccounts.map(acc => (
+                <button
+                  key={acc}
+                  onClick={() => setA(acc)}
+                  style={{
+                    padding: '5px 12px', borderRadius: 20, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                    border: `1px solid ${a === acc ? C.accent : C.border}`,
+                    background: a === acc ? 'rgba(56,189,248,0.12)' : 'transparent',
+                    color: a === acc ? C.accent : C.muted,
+                  }}
+                >
+                  {acc}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+        {!showAccountChips && <div style={{ marginBottom: 24 }} />}
 
         <div style={{ display: 'flex', gap: 12 }}>
           <button onClick={onClose}
             style={{ flex: 1, padding: 12, borderRadius: 8, cursor: 'pointer', border: `1px solid ${C.border}`, background: 'transparent', color: C.muted, fontSize: 14 }}>
-            Cancel
+            {isNewUpload ? 'Keep as detected' : 'Cancel'}
           </button>
           <button onClick={() => onSave(t, a)} disabled={!t.trim() || !a.trim()}
             style={{ flex: 2, padding: 12, borderRadius: 8, cursor: 'pointer', border: 'none', background: C.navy, color: C.accent, fontSize: 14, fontWeight: 700 }}>
@@ -383,6 +411,7 @@ function AccountFilterBar({ allAccounts, selected, onChange, loading }) {
 export default function Analysis() {
   const [phase, setPhase]         = useState('upload')   // upload | dashboard
   const [editingDetails, setEditingDetails] = useState(false)
+  const [editingIsNewUpload, setEditingIsNewUpload] = useState(false)
   const [file, setFile]           = useState(null)
   const [trader, setTrader]       = useState('Josh M.')
   const [account, setAccount]     = useState('47511')
@@ -519,15 +548,24 @@ export default function Analysis() {
       setAnalysisId(json.analysis_id)
       setAnalysisData(json.data)
       const detectedAccounts = json.data?.accounts || []
+      const detectedClients  = json.data?.clients  || []
       setAllAccounts(detectedAccounts)
       setSelectedAccounts([])
       // Filename gave no account hint — fall back to what the parser itself
       // found in the file: the single account if there's only one, else a
       // plain "Combined" label until the person picks one from the filter bar.
-      if (!guessedAccount) {
-        setAccount(detectedAccounts.length === 1 ? detectedAccounts[0] : 'Combined')
-      }
+      const finalAccount = guessedAccount || (detectedAccounts.length === 1 ? detectedAccounts[0] : 'Combined')
+      if (!guessedAccount) setAccount(finalAccount)
+      // Trader defaults to the Client ID pulled straight from the uploaded
+      // file (2026-09-23, Nish) rather than a hardcoded name — still fully
+      // editable in the popup that opens right after.
+      const finalTrader = detectedClients.length ? detectedClients.join(' / ') : trader
+      setTrader(finalTrader)
       setPhase('dashboard')
+      // Auto-show the detected Trader/Account for a quick, optional review —
+      // never blocks the dashboard, which is already rendered underneath.
+      setEditingIsNewUpload(true)
+      setEditingDetails(true)
     } catch (err) {
       setError(err.message)
     } finally {
@@ -610,6 +648,7 @@ export default function Analysis() {
     setTrader(newTrader)
     setAccount(newAccount)
     setEditingDetails(false)
+    setEditingIsNewUpload(false)
   }
 
   // ── Reset ─────────────────────────────────────────────────────────────────
@@ -622,6 +661,8 @@ export default function Analysis() {
     setSelectedAccounts([])
     setError(null)
     setShareUrl(null)
+    setEditingDetails(false)
+    setEditingIsNewUpload(false)
   }
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -659,15 +700,17 @@ export default function Analysis() {
           gbpRetrying={gbpRetrying}
           onSaveShare={handleSaveShare}
           saving={savingShare}
-          onEditDetails={() => setEditingDetails(true)}
+          onEditDetails={() => { setEditingIsNewUpload(false); setEditingDetails(true) }}
         />
         {shareUrl && <ShareLinkModal url={shareUrl} onClose={() => setShareUrl(null)} />}
         {editingDetails && (
           <EditDetailsModal
             trader={trader}
             account={account}
+            detectedAccounts={allAccounts}
+            isNewUpload={editingIsNewUpload}
             onSave={saveDetails}
-            onClose={() => setEditingDetails(false)}
+            onClose={() => { setEditingDetails(false); setEditingIsNewUpload(false) }}
           />
         )}
       </>
