@@ -458,13 +458,30 @@ export default function Analysis() {
         throw new Error(body.detail || `Failed to load saved analysis (${res.status})`)
       }
       const payload = await res.json()
+      const detectedAccounts = payload.data?.accounts || []
       setAnalysisId(payload.analysis_id)
       setAnalysisData(payload.data)
-      setAllAccounts(payload.data?.accounts || [])
-      setSelectedAccounts([])
+      setAllAccounts(detectedAccounts)
       setTrader(payload.trader)
-      setAccount(payload.account)
       setPhase('dashboard')
+
+      // Re-derive which account(s) were active when this was saved, from the
+      // saved account label, and recompute that exact scoped view via the
+      // same /filter endpoint a fresh upload uses (2026-09-23 fix: this
+      // endpoint now works post-reopen too -- see persist_analysis). Keeps a
+      // reopened saved analysis fully interactive: the account filter bar,
+      // native/GBP toggle, and every hover/tooltip behave exactly like a
+      // brand-new upload, not a frozen snapshot.
+      const savedLabel = (payload.account || '').trim()
+      const guessedSelection = savedLabel && savedLabel !== 'Combined'
+        ? savedLabel.split('+').map(a => a.trim()).filter(a => detectedAccounts.includes(a))
+        : []
+      if (guessedSelection.length) {
+        await applyAccountFilter(guessedSelection)   // also sets `account` label, kept in sync with the actual scoped data
+      } else {
+        setSelectedAccounts([])
+        setAccount(payload.account)
+      }
     } catch (err) {
       setError(err.message)
     } finally {

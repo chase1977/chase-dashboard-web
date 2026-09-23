@@ -615,6 +615,18 @@ def persist_analysis(analysis_id: str, trader: str, account: str, label: Optiona
     Reuses `analysis_id` as the row's primary key -- the share link is just
     that UUID, and export/refresh-gbp keep working against the same id.
     Raises ValueError if the analysis is not in the in-memory cache.
+
+    2026-09-23 fix (Nish): the row now keeps `_raw` (every original trade row,
+    every account, unfiltered) instead of stripping it before saving. Without
+    it, reopening a saved analysis re-warmed the in-memory cache with no raw
+    rows to recompute from, so the account filter bar and GBP refresh both
+    silently failed on a saved/reopened analysis -- toggling accounts or
+    "All combined" just errored out and the view never changed, unlike a
+    fresh upload where the same actions work. `_raw` never reaches the
+    client either way -- the API layer strips it via `_strip_internal()`
+    before responding (see axia_analysis.get_saved / filter_analysis), so
+    this only makes the DB row itself carry the full data, same as the
+    in-memory cache already does for a fresh upload.
     """
     from src.services.supabase_service import get_client
 
@@ -622,7 +634,6 @@ def persist_analysis(analysis_id: str, trader: str, account: str, label: Optiona
     if not data:
         raise ValueError("Analysis not found or expired -- please re-upload the file")
 
-    clean = _strip_internal(data)
     row = {
         "id":         analysis_id,
         "trader":     trader,
@@ -631,7 +642,7 @@ def persist_analysis(analysis_id: str, trader: str, account: str, label: Optiona
         "date_from":  data["date_range"]["from"],
         "date_to":    data["date_range"]["to"],
         "currencies": data["summary"]["currencies"],
-        "data":       clean,
+        "data":       data,
     }
     sb = get_client()
     sb.table("axia_saved_analyses").upsert(row, on_conflict="id").execute()
