@@ -255,13 +255,26 @@ def generate_csv(data_dir: str) -> bytes:
     always matches the dashboard -- not a separate reimplementation that
     could drift. Kept inside this same "Raw Data CSV" download rather than
     a separate button, since Nish already downloads this file daily.
+
+    2026-09-24 fix (Nish report): the legacy snapshots.csv/entities.csv
+    files this used to build the first section from were never deployed to
+    Railway -- reading them threw FileNotFoundError and took the WHOLE
+    download down with a 500, before ever reaching the (already-working)
+    live strategies section below. Wrapped in its own try/except so a
+    missing/broken legacy data dir degrades to "no legacy section" instead
+    of failing the entire CSV -- the live strategies section never depended
+    on these files anyway.
     """
-    snaps    = ds.get_snapshots(data_dir)
-    entities = ds.get_entities(data_dir)
-    latest   = snaps.sort_values("timestamp").groupby("entity_id").last().reset_index()
-    merged   = latest.merge(entities[["entity_id","name","entity_type",
-                                       "trading_style","status"]], on="entity_id", how="left")
-    out = merged.to_csv(index=False)
+    out = ""
+    try:
+        snaps    = ds.get_snapshots(data_dir)
+        entities = ds.get_entities(data_dir)
+        latest   = snaps.sort_values("timestamp").groupby("entity_id").last().reset_index()
+        merged   = latest.merge(entities[["entity_id","name","entity_type",
+                                           "trading_style","status"]], on="entity_id", how="left")
+        out = merged.to_csv(index=False)
+    except Exception:
+        pass
 
     try:
         pod_pfees_map = sb_svc._build_pod_pfees_map()
@@ -279,7 +292,8 @@ def generate_csv(data_dir: str) -> bytes:
             }
             for s in sorted(strategy_data, key=lambda r: r["name"])
         ])
-        out += "\n\nSTRATEGIES (all statuses, live)\n" + strat_df.to_csv(index=False)
+        sep  = "\n\n" if out else ""
+        out += sep + "STRATEGIES (all statuses, live)\n" + strat_df.to_csv(index=False)
     except Exception:
         # Strategies section is a bonus on top of the existing snapshot CSV
         # -- never let a live-data hiccup break the download entirely.
