@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import Optional
 
 from src.services import data_service as ds
+from src.services import supabase_service as sb_svc
 
 # ---------------------------------------------------------------------------
 # Config — colours used in the Excel workbook
@@ -242,13 +243,49 @@ def _write_summary_sheet(ws, kpis, title_font, meta_font, body_font,
 # ---------------------------------------------------------------------------
 
 def generate_csv(data_dir: str) -> bytes:
-    """Return the full latest snapshots merged with entity metadata as CSV bytes."""
+    """
+    Return the full latest snapshots merged with entity metadata as CSV
+    bytes, with a second section appended underneath for every live
+    strategy (2026-09-24, Nish) — name, status, initial investment, and
+    current equity both gross (before watermark/profit-share) and net
+    (Chase's actual economic equity, after watermark/profit-share).
+
+    The strategies section reuses get_strategies_with_kpis_fast, the exact
+    same KPI engine the Portfolio page's Strategy Overview cards use, so it
+    always matches the dashboard -- not a separate reimplementation that
+    could drift. Kept inside this same "Raw Data CSV" download rather than
+    a separate button, since Nish already downloads this file daily.
+    """
     snaps    = ds.get_snapshots(data_dir)
     entities = ds.get_entities(data_dir)
     latest   = snaps.sort_values("timestamp").groupby("entity_id").last().reset_index()
     merged   = latest.merge(entities[["entity_id","name","entity_type",
                                        "trading_style","status"]], on="entity_id", how="left")
-    return merged.to_csv(index=False).encode()
+    out = merged.to_csv(index=False)
+
+    try:
+        pod_pfees_map = sb_svc._build_pod_pfees_map()
+        balance_hist  = sb_svc.get_balance_history()
+        strategy_data = sb_svc.get_strategies_with_kpis_fast(
+            pod_pfees_map=pod_pfees_map, balance_hist=balance_hist,
+        )
+        strat_df = pd.DataFrame([
+            {
+                "Strategy Name":                s["name"],
+                "Status":                        s.get("status", "Active"),
+                "Initial Investment (GBP)":      round(s["kpis"]["initial_investment"], 2),
+                "Current Equity - Gross (GBP)":  round(s["kpis"]["current_equity_gross"], 2),
+                "Current Equity - Net (GBP)":    round(s["kpis"]["current_equity"], 2),
+            }
+            for s in sorted(strategy_data, key=lambda r: r["name"])
+        ])
+        out += "\n\nSTRATEGIES (all statuses, live)\n" + strat_df.to_csv(index=False)
+    except Exception:
+        # Strategies section is a bonus on top of the existing snapshot CSV
+        # -- never let a live-data hiccup break the download entirely.
+        pass
+
+    return out.encode()
 
 
 # ---------------------------------------------------------------------------
