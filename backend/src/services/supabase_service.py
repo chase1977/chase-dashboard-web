@@ -951,7 +951,7 @@ def _axia_strategy_agg(
             continue
         series = _axia_equity_series(cl["client"], cl["account"], equity_table)
         if not series:
-            out[s["id"]] = {"invested": 0.0, "pnl": 0.0, "baseline": 0.0, "series": []}
+            out[s["id"]] = {"invested": 0.0, "pnl": 0.0, "baseline": 0.0, "series": [], "raw_equity": 0.0}
             continue
         latest       = series[-1]["equity"]
         flagged_total = _axia_flagged_equity_total(cl["client"], cl["account"], equity_table)
@@ -965,10 +965,11 @@ def _axia_strategy_agg(
                 baseline = series[0]["equity"]
         chase_equity, chase_pnl = _apply_watermark(s, latest, baseline)
         out[s["id"]] = {
-            "invested": chase_equity,
-            "pnl":      chase_pnl,
-            "baseline": baseline,
-            "series":   series,
+            "invested":   chase_equity,
+            "pnl":        chase_pnl,
+            "baseline":   baseline,
+            "series":     series,
+            "raw_equity": round(latest, 2),   # gross, before watermark/profit-share -- 2026-09-24 CSV export
         }
     return out
 
@@ -2417,6 +2418,21 @@ def get_strategies_with_kpis_fast(pod_pfees_map: dict, balance_hist: list[dict])
         # raw pfees-derived baseline the watermark pass-through expects.
         # Apply here only for the remaining general case (Darwinex still
         # open, manual strategies) — not AXIA/fund/closed-Darwinex-specific.
+        # gross_equity (2026-09-24 CSV export, Nish): the raw equity BEFORE
+        # watermark/profit-share, from whichever source this strategy is
+        # actually keyed off. Captured before any of the branches below
+        # overwrite `agg` with the post-watermark net figure.
+        if axia_contrib is not None:
+            gross_equity = axia_contrib.get("raw_equity", axia_contrib["invested"])
+        elif fund_contrib is not None:
+            gross_equity = fund_contrib.get("raw_invested", fund_contrib["invested"])
+        elif darwinex_contrib is not None:
+            gross_equity = 0.0   # closed strategy — nothing left open, gross == net == 0
+        elif not has_data:
+            gross_equity = initial   # at-par, no watermark applies
+        else:
+            gross_equity = agg["invested"]   # general branch, raw pfees-derived equity, pre-watermark
+
         if not has_data:
             # No real performance source tracked for this strategy yet.
             # Active: show real Capital Invested at par (equity == invested,
@@ -2484,6 +2500,7 @@ def get_strategies_with_kpis_fast(pod_pfees_map: dict, balance_hist: list[dict])
             "kpis": {
                 "initial_investment": round(initial, 2),
                 "current_equity":     agg["invested"],
+                "current_equity_gross": round(gross_equity, 2),   # before watermark/profit-share (2026-09-24 CSV export)
                 "performance":        round(agg["pnl"] / initial, 6) if initial else 0.0,
                 "total_pnl":          agg["pnl"],
                 "banked_profit":      banked,

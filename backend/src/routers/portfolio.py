@@ -11,7 +11,10 @@ Endpoints:
 """
 
 from fastapi import APIRouter, Query, HTTPException
+from fastapi.responses import StreamingResponse
 from typing import Optional
+import csv
+import io
 import os
 import datetime
 
@@ -125,6 +128,58 @@ def get_portfolio(time_range: str = Query("SI")):
         equity_curve     = equity_curve,
         allocation       = allocation,
         pnl_contribution = pnl_contribution,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Strategies CSV export — all strategies, every status, straight off the
+# same get_strategies_with_kpis_fast KPI engine the dashboard itself calls
+# above (2026-09-24, Nish). Guarantees this always matches whatever the
+# Portfolio/Strategy Overview pages show, including watermark/profit-share
+# and every equity source (AXIA/IG, other Data Feeds, fund NAV statements,
+# closed Darwinex, closed manual strategies) — no separate SQL to maintain
+# or let drift. Hit this endpoint (or click the export button) whenever an
+# up-to-date snapshot is needed; it always reads live.
+# ---------------------------------------------------------------------------
+
+@router.get("/strategies/export-csv")
+def export_strategies_csv():
+    """
+    CSV: strategy name, status, initial investment, current equity gross
+    (before watermark/profit-share), current equity net (Chase's actual
+    economic equity, after watermark/profit-share) — every strategy,
+    active AND inactive/closed. One row per strategy, live from Supabase.
+    """
+    pod_pfees_map = sb_svc._build_pod_pfees_map()
+    balance_hist  = sb_svc.get_balance_history()
+    strategy_data = sb_svc.get_strategies_with_kpis_fast(
+        pod_pfees_map=pod_pfees_map,
+        balance_hist=balance_hist,
+    )
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        "Strategy Name", "Status",
+        "Initial Investment (GBP)",
+        "Current Equity - Gross (GBP)",
+        "Current Equity - Net (GBP)",
+    ])
+    for s in sorted(strategy_data, key=lambda r: r["name"]):
+        k = s["kpis"]
+        writer.writerow([
+            s["name"],
+            s.get("status", "Active"),
+            f"{k['initial_investment']:.2f}",
+            f"{k['current_equity_gross']:.2f}",
+            f"{k['current_equity']:.2f}",
+        ])
+
+    filename = f"Chase-Strategies-{datetime.date.today().isoformat()}.csv"
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 
