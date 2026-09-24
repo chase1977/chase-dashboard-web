@@ -736,11 +736,17 @@ async function exportAllGraphs(setExportingGraphs) {
 // ─── Main Dashboard ───────────────────────────────────────────────────────────
 export default function AxiaAnalysisDashboard({
   data, trader, account, onNewUpload, onExport, exporting, onGbpRetry, gbpRetrying,
-  readOnly = false, forceGbp = false, onSaveShare, saving = false, onEditDetails,
+  readOnly = false, forceGbp = false, initialGbp, onSaveShare, saving = false, onEditDetails,
 }) {
   const isMobile = useIsMobile()
   const [exportingGraphs, setExportingGraphs] = useState(false)
-  const [gbpMode, setGbpMode]                 = useState(forceGbp)
+  // `forceGbp` (legacy) LOCKS the view to GBP with no toggle at all.
+  // `initialGbp` just picks the starting tab -- still fully switchable.
+  // 2026-09-24 (Nish): the shared/manager link used to pass forceGbp, which
+  // hid the Native/GBP toggle entirely on that view. Managers now get the
+  // exact same toggle traders see on the dashboard; SharedAnalysis.jsx
+  // passes initialGbp instead so the link still opens on GBP by default.
+  const [gbpMode, setGbpMode]                 = useState(initialGbp ?? forceGbp)
 
   // Switch between native multi-currency view and unified GBP view
   const activeData = useMemo(() => {
@@ -872,7 +878,7 @@ export default function AxiaAnalysisDashboard({
             <button
               onClick={onSaveShare}
               disabled={saving || !hasGbpData}
-              title={!hasGbpData ? 'GBP rates unavailable — fetch GBP rates before sharing (boss view is GBP-only)' : 'Save this analysis and get a shareable read-only link (GBP view)'}
+              title={!hasGbpData ? 'GBP rates unavailable — fetch GBP rates before sharing (the shared link opens on GBP, but still lets them switch to Native)' : 'Save this analysis and get a shareable read-only link'}
               style={{ padding:'9px 22px', borderRadius:8, cursor:(saving||!hasGbpData)?'not-allowed':'pointer', border:`1px solid ${C.pos}`, background:'rgba(52,211,153,0.12)', color:C.pos, fontSize:13, fontWeight:700, opacity:(saving||!hasGbpData)?0.5:1, transition:'all 0.15s' }}
             >
               {saving ? 'Saving…' : '🔗 Save & Share'}

@@ -2,7 +2,8 @@
 /**
  * Public read-only AXIA Trade Analysis view.
  * Fetches a previously saved analysis by id -- no upload, no auth.
- * Always renders the GBP view (locked), for sharing with non-traders (e.g. managers).
+ * Opens on the GBP view when available (2026-09-24: no longer locked --
+ * managers can switch to Native and back, same toggle as the dashboard).
  */
 
 import { useEffect, useState } from 'react'
@@ -84,10 +85,14 @@ export default function SharedAnalysis() {
 
   const { trader, account, data } = state.payload
 
-  const handleExport = async () => {
+  // Export matches whichever tab (Native/GBP) is active on screen -- the
+  // dashboard calls onExport(gbpMode) from its own toggle state (2026-09-24,
+  // Nish: managers can now switch tabs here same as the trader dashboard).
+  const handleExport = async (gbpMode = true) => {
     setExporting(true)
     try {
-      const params = new URLSearchParams({ trader, account, gbp: 'true' })
+      const params = new URLSearchParams({ trader, account })
+      if (gbpMode) params.set('gbp', 'true')
       const res = await fetch(`${API}/api/analysis/${shareId}/export?${params}`)
       if (!res.ok) throw new Error('Export failed')
       const blob = await res.blob()
@@ -95,7 +100,8 @@ export default function SharedAnalysis() {
       const link = document.createElement('a')
       link.href = url
       const dr = data?.date_range
-      link.download = `AXIA-Analysis-${account}_${dr?.from || 'report'}_to_${dr?.to || ''}_GBP.xlsx`
+      const suffix = gbpMode ? '_GBP' : ''
+      link.download = `AXIA-Analysis-${account}_${dr?.from || 'report'}_to_${dr?.to || ''}${suffix}.xlsx`
       link.click()
       URL.revokeObjectURL(url)
     } catch {
@@ -105,28 +111,19 @@ export default function SharedAnalysis() {
     }
   }
 
-  if (!data.gbp_assets) {
-    return (
-      <CenteredMessage>
-        <div style={{ fontSize: 40, marginBottom: 16 }}>⚠️</div>
-        <div style={{ fontSize: 17, fontWeight: 700, color: C.text, marginBottom: 8 }}>
-          GBP View Unavailable
-        </div>
-        <div style={{ fontSize: 13, color: C.muted }}>
-          This saved analysis does not have a GBP conversion. Ask the sender to
-          refresh GBP rates and re-share the link.
-        </div>
-      </CenteredMessage>
-    )
-  }
-
+  // 2026-09-24 (Nish): previously this whole page refused to render at all
+  // without a GBP conversion, and even when GBP was present it locked the
+  // view to GBP-only with no toggle -- managers couldn't see Native, unlike
+  // the trader dashboard. Now it opens on GBP when available (native
+  // otherwise) but stays fully switchable, exactly like the dashboard
+  // traders see right after uploading.
   return (
     <AxiaAnalysisDashboard
       data={data}
       trader={trader}
       account={account}
       readOnly
-      forceGbp
+      initialGbp={!!data.gbp_assets}
       onExport={handleExport}
       exporting={exporting}
     />
