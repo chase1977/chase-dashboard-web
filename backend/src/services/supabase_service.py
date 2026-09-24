@@ -878,6 +878,27 @@ def _strategy_capital_invested(s: dict, net_deployed: dict, axia_agg: dict,
     return float(s.get("initial_investment") or 0)
 
 
+def _round2(x: float) -> float:
+    """
+    Round to 2dp the way a person expects (round-HALF-UP), not the way
+    Python's built-in round() sometimes does.
+
+    Bug found 2026-09-24 (Nish report, NEWS-01): a 50% profit share on
+    £4,532.53 is exactly £2,266.265 -- but round(2266.265, 2) returns
+    2266.26, not 2266.27. Reason: 2266.265 isn't exactly representable in
+    binary floating point; it's actually stored as ~2266.26499999999...,
+    so Python's round() (which is also banker's-rounding on true halfway
+    ties, a second, separate reason it can differ from round-half-up) sees
+    a value already fractionally below .265 and rounds down. Decimal,
+    constructed from the value's own repr (str(x), not float(x) again --
+    that would just reintroduce the same binary imprecision), sidesteps
+    both problems and always rounds financial halves up, matching what
+    anyone doing this by hand would expect.
+    """
+    from decimal import Decimal, ROUND_HALF_UP
+    return float(Decimal(str(x)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+
 def _apply_watermark(strategy: dict, raw_equity: float, baseline: float):
     """
     Adjust raw fund/broker equity down to Chase's actual economic equity,
@@ -892,19 +913,22 @@ def _apply_watermark(strategy: dict, raw_equity: float, baseline: float):
     current_equity == raw_equity).
 
     Returns (chase_equity, chase_pnl) where chase_pnl = chase_equity - baseline.
+    Uses _round2 (round-half-up), not Python's built-in round() -- see its
+    docstring for why a plain round() can silently round a profit-share
+    split down by a cent on an exact-half-cent boundary (e.g. NEWS-01).
     """
     wm    = strategy.get("watermark")
     share = strategy.get("profit_share_pct")
     if wm is None or share is None:
-        return round(raw_equity, 2), round(raw_equity - baseline, 2)
+        return _round2(raw_equity), _round2(raw_equity - baseline)
     wm    = float(wm)
     share = float(share)
     if raw_equity <= wm:
         chase_equity = raw_equity
     else:
         chase_equity = wm + (raw_equity - wm) * (share / 100.0)
-    chase_equity = round(chase_equity, 2)
-    return chase_equity, round(chase_equity - baseline, 2)
+    chase_equity = _round2(chase_equity)
+    return chase_equity, _round2(chase_equity - baseline)
 
 
 def _axia_strategy_agg(
