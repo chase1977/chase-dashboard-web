@@ -1,11 +1,16 @@
 // src/pages/Analysis.jsx
 /**
- * AXIA Trade Analysis page.
- * Flow: Upload zone → Trader/Account modal → Dashboard.
+ * Analysis page — two tabs:
+ *   AXIA Analyse (default) — AXIA trade analysis.
+ *     Flow: Upload zone → Trader/Account modal → Dashboard.
+ *   GlobalGTX — Global Trading X daily statement reconciliation
+ *     (src/components/GlobalGtxTab.jsx).
+ * Both tabs stay mounted; switching never loses AXIA upload state.
  */
 
 import { useState, useCallback, useRef, useEffect } from 'react'
 import AxiaAnalysisDashboard from '../components/AxiaAnalysisDashboard.jsx'
+import GlobalGtxTab from '../components/GlobalGtxTab.jsx'
 
 const API = import.meta.env.VITE_API_BASE ?? ''
 
@@ -408,7 +413,7 @@ function AccountFilterBar({ allAccounts, selected, onChange, loading }) {
 }
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
-export default function Analysis() {
+function AxiaAnalyse() {
   const [phase, setPhase]         = useState('upload')   // upload | dashboard
   const [editingDetails, setEditingDetails] = useState(false)
   const [editingIsNewUpload, setEditingIsNewUpload] = useState(false)
@@ -741,4 +746,48 @@ export default function Analysis() {
   }
 
   return null
+}
+
+// ─── Page shell — tab switcher ─────────────────────────────────────────────────
+const TABS = [
+  { key: 'axia', label: 'AXIA Analyse' },
+  { key: 'gtx',  label: 'GlobalGTX' },
+]
+
+function TabBar({ active, onChange }) {
+  return (
+    <div style={{
+      background: C.bg, borderBottom: `1px solid ${C.border}`,
+      padding: '0 clamp(12px, 4vw, 32px)', display: 'flex', gap: 4, overflowX: 'auto',
+    }}>
+      {TABS.map(t => {
+        const on = t.key === active
+        return (
+          <button
+            key={t.key}
+            onClick={() => onChange(t.key)}
+            style={{
+              padding: '14px 18px', background: 'transparent', border: 'none', cursor: 'pointer',
+              borderBottom: `2px solid ${on ? C.accent : 'transparent'}`, marginBottom: -1,
+              color: on ? C.text : C.muted, fontSize: 13, fontWeight: on ? 700 : 500,
+              letterSpacing: '0.3px', whiteSpace: 'nowrap', flexShrink: 0,
+            }}
+          >
+            {t.label}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+export default function Analysis() {
+  const [tab, setTab] = useState('axia')
+  return (
+    <>
+      <TabBar active={tab} onChange={setTab} />
+      <div style={{ display: tab === 'axia' ? 'block' : 'none' }}><AxiaAnalyse /></div>
+      <div style={{ display: tab === 'gtx'  ? 'block' : 'none' }}><GlobalGtxTab /></div>
+    </>
+  )
 }

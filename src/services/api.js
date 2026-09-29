@@ -371,3 +371,35 @@ export function deleteDataFeedStatement(slug, id) {
 export function refetchDataFeedStatementFx(slug, id) {
   return _post(`/api/data-feeds/${slug}/statements/${id}/refetch-fx`, {})
 }
+
+// ---------------------------------------------------------------------------
+// GlobalGTX — daily statement reconciliation (Analysis page tab)
+// ---------------------------------------------------------------------------
+
+export function fetchGtxState() {
+  return get('/api/gtx/state')
+}
+
+export function previewGtxStatement(stmtDate, text) {
+  return _post('/api/gtx/preview', { stmt_date: stmtDate, text })
+}
+
+export function saveGtxStatement(stmtDate, text, { notes = null, overwrite = false } = {}) {
+  return _post('/api/gtx/statements', { stmt_date: stmtDate, text, notes, overwrite })
+}
+
+export function fetchGtxStatementRaw(id) {
+  return get(`/api/gtx/statements/${id}/raw`)
+}
+
+export function deleteGtxStatement(id) {
+  return _delete(`/api/gtx/statements/${id}`)
+}
+
+export function fetchGtxSettings() {
+  return get('/api/gtx/settings')
+}
+
+export function updateGtxSettings(patch) {
+  return _patch('/api/gtx/settings', patch)
+}
