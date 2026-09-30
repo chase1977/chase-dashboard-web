@@ -32,6 +32,9 @@ Endpoints:
   POST   /api/data-feeds/{slug}/equity
   PATCH  /api/data-feeds/{slug}/equity/{id}
   DELETE /api/data-feeds/{slug}/equity/{id}
+  GET    /api/data-feeds/{slug}/fx-preview   USD -> GBP quote for a USD feed entry
+                                             (2026-09-30, INVESTGTX: record closed-trade
+                                             P/L in USD, stored as a GBP row)
 
   Monthly-cadence feeds (mirrors fund_statements.py exactly, table resolved
   from the registry):
@@ -44,6 +47,7 @@ Endpoints:
 """
 
 import re
+from datetime import date as _date
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
@@ -57,6 +61,7 @@ from src.services.supabase_service import (
     sync_capital_flow_transfer, resync_capital_flow_transfer, delete_capital_flow_transfer,
     CAPITAL_FLOW_TYPES,
 )
+from src.services.oanda_service import get_conversion_rate
 
 router = APIRouter(prefix="/api/data-feeds", tags=["data-feeds"])
 
@@ -146,6 +151,10 @@ CREATE TABLE {equity_table} (
     notes      text,
     capital_flow_type   text CHECK (capital_flow_type IS NULL OR capital_flow_type IN ('initial','addon')),
     capital_transfer_id bigint,
+    source_currency text,
+    source_amount   numeric,
+    fx_rate         numeric,
+    fx_rate_at      timestamptz,
     created_at timestamptz NOT NULL DEFAULT now(),
     UNIQUE (client, account, trade_date, currency)
 );"""
@@ -343,10 +352,17 @@ class EquityCreate(BaseModel):
     account:    str
     trade_date: str
     currency:   str = "GBP"
-    equity:     float
+    equity:     Optional[float] = None   # required unless source_currency is set
     chg_nlv:    Optional[float] = None
     notes:      Optional[str]  = None
     capital_flow_type: Optional[str] = None
+    # USD -> GBP entry (feed currency must match source_currency, e.g. INVESTGTX
+    # = USD). source_amount is the realised change in USD; the server converts
+    # it at get_conversion_rate(trade_date), stores a GBP row (equity =
+    # previous GBP equity + converted change) and keeps the USD figure + rate
+    # for audit. Portfolio only reads GBP rows, so this is what feeds it.
+    source_currency: Optional[str]   = None
+    source_amount:   Optional[float] = None
 
 
 class EquityUpdate(BaseModel):
@@ -407,6 +423,55 @@ def prev_equity(
     return rows[0] if rows else None
 
 
+# ---------------------------------------------------------------------------
+# USD -> GBP conversion for USD-currency daily feeds (2026-09-30)
+# ---------------------------------------------------------------------------
+
+def _require_fx_feed(feed: dict, source_currency: str) -> None:
+    feed_ccy = (feed.get("currency") or "GBP").upper()
+    if source_currency.upper() != "USD" or feed_ccy != "USD":
+        raise HTTPException(
+            status_code=400,
+            detail=f"USD -> GBP entry is only available on USD feeds (feed '{feed['slug']}' is {feed_ccy}).",
+        )
+
+
+def _quote(trade_date: str, amount: float) -> dict:
+    try:
+        d = _date.fromisoformat(trade_date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="trade_date must be YYYY-MM-DD.")
+    fx = get_conversion_rate(d)
+    if not fx or not fx.get("rate"):
+        raise HTTPException(status_code=502, detail="Could not fetch GBP/USD rate from OANDA — nothing saved. Try again.")
+    return {**fx, "amount": amount, "gbp": round(amount / fx["rate"], 2)}
+
+
+def _fx_note(q: dict) -> str:
+    sign = "-" if q["amount"] < 0 else "+"
+    when = (f"1-min close {q['rate_at'][11:16]} UTC" if q["source"] == "minute"
+            else f"daily close {q['candle_date'][8:10]}-{q['candle_date'][5:7]}-{q['candle_date'][:4]}")
+    return f"{sign}${abs(q['amount']):,.2f} @ {q['rate']:.5f} ({when})"
+
+
+def _prev_gbp(sb, table: str, client: str, account: str, trade_date: str) -> Optional[dict]:
+    rows = (
+        sb.table(table).select("trade_date, equity")
+        .eq("client", client).eq("account", account).eq("currency", "GBP")
+        .lt("trade_date", trade_date).order("trade_date", desc=True).limit(1)
+        .execute().data or []
+    )
+    return rows[0] if rows else None
+
+
+@router.get("/{slug}/fx-preview")
+def fx_preview(slug: str, amount: float = Query(...), date: str = Query(...)):
+    feed = _require_feed(slug)
+    _require_cadence(feed, "daily")
+    _require_fx_feed(feed, "USD")
+    return _quote(date, amount)
+
+
 @router.post("/{slug}/equity", status_code=201)
 def create_equity(slug: str, body: EquityCreate):
     feed = _require_feed(slug)
@@ -414,6 +479,40 @@ def create_equity(slug: str, body: EquityCreate):
     sb = get_client()
     if body.capital_flow_type is not None and body.capital_flow_type not in CAPITAL_FLOW_TYPES:
         raise HTTPException(status_code=400, detail=f"capital_flow_type must be one of {CAPITAL_FLOW_TYPES}.")
+
+    fx_fields = {}
+    if body.source_currency:
+        # USD -> GBP path. Trading-day P/L only; strictly in date order so the
+        # running GBP equity chain can't be broken by a back-dated insert.
+        _require_fx_feed(feed, body.source_currency)
+        if body.capital_flow_type:
+            raise HTTPException(status_code=400, detail="USD -> GBP entry is for trading-day P/L only — record capital flows in GBP.")
+        if body.source_amount is None:
+            raise HTTPException(status_code=400, detail="Enter the realised change in USD.")
+        prev = _prev_gbp(sb, feed["equity_table"], body.client, body.account, body.trade_date)
+        if not prev:
+            raise HTTPException(status_code=400, detail="No earlier GBP record to build on — record the GBP initial investment first.")
+        later = (
+            sb.table(feed["equity_table"]).select("trade_date")
+            .eq("client", body.client).eq("account", body.account).eq("currency", "GBP")
+            .gt("trade_date", body.trade_date).limit(1).execute().data or []
+        )
+        if later:
+            raise HTTPException(status_code=409, detail=f"A later GBP record exists ({later[0]['trade_date']}). Record USD entries in date order.")
+        q = _quote(body.trade_date, body.source_amount)
+        body.currency = "GBP"
+        body.chg_nlv  = q["gbp"]
+        body.equity   = round(float(prev["equity"]) + q["gbp"], 2)
+        body.notes    = _fx_note(q) + (f" · {body.notes}" if body.notes else "")
+        fx_fields = {
+            "source_currency": "USD",
+            "source_amount":   body.source_amount,
+            "fx_rate":         q["rate"],
+            "fx_rate_at":      q["rate_at"],      # None for a daily close (date is in notes)
+        }
+    elif body.equity is None:
+        raise HTTPException(status_code=400, detail="Enter a valid equity value.")
+
     payload = {
         "client":     body.client,
         "account":    body.account,
@@ -424,6 +523,7 @@ def create_equity(slug: str, body: EquityCreate):
         "notes":      body.notes,
         "capital_flow_type":   body.capital_flow_type,
         "capital_transfer_id": None,
+        **fx_fields,
     }
     # Insert equity row FIRST, before any capital_transfers ledger side effect.
     # Bugfix 2026-09-21 (mirrors axia_equity.py/ig_equity.py — OPTIOS

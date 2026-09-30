@@ -24,6 +24,12 @@
  *   Summary, Capital at a Glance, pod/strategy breakdowns) picks it up, and
  *   that day's CHG NLV is excluded from trading P&L. See
  *   supabase_service.sync_capital_flow_transfer / README §10.2.
+ * - USD -> GBP entry mode (2026-09-30, `fxFrom="USD"` — passed only for USD
+ *   data feeds, i.e. INVESTGTX): type the realised change in USD; the backend
+ *   converts at OANDA GBP/USD (today -> last 1-min close, past date -> that
+ *   day's daily close), saves a normal GBP row (equity = prev GBP equity +
+ *   converted change) and writes "+$x @ rate (source)" into Notes. Every
+ *   other feed/instance (fxFrom null) renders and behaves exactly as before.
  * - Confirm / Discard with popup
  * - Records table with inline edit + delete
  */
@@ -223,6 +229,7 @@ export default function AxiaEquityEntry({
   apiPrefix       = '/api/axia',
   label           = 'AXIA',
   clientLinkField = 'axia_client_id',
+  fxFrom          = null,          // 'USD' -> enables USD P/L -> GBP entry mode
 } = {}) {
   // ---- State ----
   const [clients,    setClients]    = useState([])
@@ -252,6 +259,13 @@ export default function AxiaEquityEntry({
   const [prevLoading,setPrevLoading]= useState(false)
   // '' (ordinary trading day) | 'initial' | 'addon' — see file header comment.
   const [capitalFlowType, setCapitalFlowType] = useState('')
+
+  // USD -> GBP entry mode (fxFrom set only for USD feeds) — see file header.
+  const [fxMode,    setFxMode]    = useState(Boolean(fxFrom))
+  const [fxRaw,     setFxRaw]     = useState('')        // formatted USD string
+  const [fxQuote,   setFxQuote]   = useState(null)      // { rate, source, rate_at, candle_date, stale, gbp }
+  const [fxLoading, setFxLoading] = useState(false)
+  const [fxError,   setFxError]   = useState(null)
 
   // New client form
   const [showNewClient, setShowNewClient] = useState(false)
@@ -420,6 +434,112 @@ export default function AxiaEquityEntry({
   }
 
   const lockEquity = Boolean(capitalFlowType) && prevRecord?.equity != null
+
+  // ---- USD -> GBP mode ----
+  // Mode switch: fx mode always records a GBP trading-day row.
+  useEffect(() => {
+    if (fxMode) {
+      setCurrency('GBP'); setCapitalFlowType(''); setEquityRaw(''); setChgRaw('')
+    } else {
+      setFxRaw(''); setFxQuote(null); setFxError(null)
+    }
+  }, [fxMode])
+
+  // Debounced rate quote whenever the USD amount or date changes.
+  useEffect(() => {
+    if (!fxMode) return
+    setFxQuote(null); setFxError(null)
+    const amt = parseNum(fxRaw)
+    if (amt == null || !date) return
+    let cancelled = false
+    const t = setTimeout(async () => {
+      setFxLoading(true)
+      try {
+        const res  = await fetch(`${BASE}${apiPrefix}/fx-preview?amount=${amt}&date=${date}`)
+        const data = await res.json()
+        if (!res.ok) throw new Error(data.detail || 'Rate fetch failed')
+        if (!cancelled) setFxQuote(data)
+      } catch (e) { if (!cancelled) setFxError(e.message) }
+      finally { if (!cancelled) setFxLoading(false) }
+    }, 450)
+    return () => { cancelled = true; clearTimeout(t); setFxLoading(false) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fxMode, fxRaw, date])
+
+  const onFxChange = (e) => {
+    const raw = e.target.value.replace(/,/g, '')
+    if (raw === '' || raw === '-') { setFxRaw(raw); return }
+    if (isNaN(parseFloat(raw))) return
+    setFxRaw(formatInput(raw))
+  }
+
+  const fmtSigned = (v) => (v == null ? '—' : `${v > 0 ? '+' : ''}${fmtNum(v)}`)
+  const fxRateLabel = (q) => q.source === 'minute'
+    ? `OANDA 1-min close ${q.rate_at.slice(11, 16)} UTC (live — re-fetched on save)`
+    : `OANDA daily close ${fmtDate(q.candle_date)}`
+  const fxEquity = fxQuote && prevRecord?.equity != null ? +(prevRecord.equity + fxQuote.gbp).toFixed(2) : null
+
+  const handleSubmitFx = () => {
+    const amt = parseNum(fxRaw)
+    if (amt == null)  { setError(`Enter the realised change in ${fxFrom}.`); return }
+    if (!selClient)   { setError('Select a client/account.'); return }
+    if (!prevRecord)  { setError('No earlier GBP record — record the GBP initial investment first.'); return }
+    if (!fxQuote)     { setError('Waiting for the GBP/USD rate — try again in a moment.'); return }
+    setConfirmPopup({
+      variant: 'confirm',
+      message: (
+        <>
+          <strong style={{ color: C.accent }}>Confirm entry ({fxFrom} → GBP)</strong>
+          <br /><br />
+          <span style={{ color: C.textMid }}>Client:</span>{' '}
+          <strong>{selClient.client} / {selClient.account}</strong><br />
+          <span style={{ color: C.textMid }}>Date:</span>{' '}
+          <strong>{fmtDate(date)}</strong><br />
+          <span style={{ color: C.textMid }}>Realised change:</span>{' '}
+          <strong style={{ color: numColor(amt) }}>{amt < 0 ? '-' : '+'}${fmtNum(Math.abs(amt))}</strong><br />
+          <span style={{ color: C.textMid }}>Rate:</span>{' '}
+          <strong>{fxQuote.rate.toFixed(5)}</strong>{' '}
+          <span style={{ color: C.textSub, fontSize: 12 }}>{fxRateLabel(fxQuote)}</span><br />
+          <span style={{ color: C.textMid }}>CHG NLV (GBP):</span>{' '}
+          <strong style={{ color: numColor(fxQuote.gbp) }}>{fmtSigned(fxQuote.gbp)}</strong><br />
+          <span style={{ color: C.textMid }}>Equity (NLV, GBP):</span>{' '}
+          <strong style={{ color: C.accent }}>{fmtNum(fxEquity)}</strong>
+          {fxQuote.source === 'minute' && (
+            <div style={{ marginTop: 8, fontSize: 12, color: C.textSub }}>
+              Live rate is re-fetched at save — final GBP figures are shown after saving.
+            </div>
+          )}
+        </>
+      ),
+      onConfirm: () => submitFx(amt),
+    })
+  }
+
+  const submitFx = async (amt) => {
+    setConfirmPopup(null)
+    setLoading(true); setError(null); setSuccess(null)
+    try {
+      const res = await fetch(`${BASE}${apiPrefix}/equity`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          client:          selClient.client,
+          account:         selClient.account,
+          trade_date:      date,
+          currency:        'GBP',
+          source_currency: fxFrom,
+          source_amount:   amt,
+        }),
+      })
+      const row = await res.json()
+      if (!res.ok) throw new Error(row.detail || 'Submit failed')
+      setSuccess(`Saved — ${fmtDate(date)} GBP ${fmtSigned(row.chg_nlv)} → Equity ${fmtNum(row.equity)} · ${row.notes}`)
+      setFxRaw('')
+      setPage(0)
+      await loadRecords(0)
+    } catch (e) { setError(e.message) }
+    finally { setLoading(false) }
+  }
 
   // ---- Submit ----
   const handleSubmit = () => {
@@ -776,6 +896,24 @@ export default function AxiaEquityEntry({
               style={{ width: 150 }} />
           </Field>
 
+          {/* Entry mode — USD feeds only (fxFrom set) */}
+          {fxFrom && (
+            <Field>
+              <Label>Entry mode</Label>
+              <div style={{ display: 'flex', borderRadius: 6, border: `1px solid ${C.border}`, overflow: 'hidden', width: 'fit-content' }}>
+                {[[true, `${fxFrom} P/L → GBP`], [false, 'GBP NLV']].map(([v, l]) => (
+                  <button key={l} onClick={() => setFxMode(v)} style={{
+                    padding: '9px 14px', border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 600,
+                    whiteSpace: 'nowrap', borderLeft: v ? 'none' : `1px solid ${C.border}`,
+                    background: fxMode === v ? C.accentDim : 'transparent',
+                    color: fxMode === v ? C.accent : C.textMid,
+                  }}>{l}</button>
+                ))}
+              </div>
+            </Field>
+          )}
+
+          {!fxMode && (<>
           {/* Currency */}
           <Field>
             <Label>Currency</Label>
@@ -831,8 +969,53 @@ export default function AxiaEquityEntry({
               }}
             />
           </Field>
+          </>)}
+
+          {/* USD -> GBP fields (fx mode) */}
+          {fxMode && (<>
+            <Field style={{ flex: 1, minWidth: 170 }}>
+              <Label>Realised change ({fxFrom})</Label>
+              <Input
+                value={fxRaw}
+                onChange={onFxChange}
+                placeholder="+4,495.70"
+                style={{
+                  fontFamily: 'monospace', fontSize: 14, letterSpacing: '0.3px', fontWeight: 600,
+                  color: (parseNum(fxRaw) ?? 0) < 0 ? C.neg : (parseNum(fxRaw) ?? 0) > 0 ? C.pos : C.text,
+                  borderColor: (parseNum(fxRaw) ?? 0) < 0 ? C.negBorder : (parseNum(fxRaw) ?? 0) > 0 ? C.posBorder : C.border,
+                }}
+              />
+            </Field>
+            <Field style={{ minWidth: 150 }}>
+              <Label>
+                CHG NLV (GBP)
+                {fxLoading && <span style={{ color: C.textSub, fontWeight: 400 }}> fetching rate…</span>}
+              </Label>
+              <Input value={fxQuote ? fmtSigned(fxQuote.gbp) : ''} disabled placeholder="auto"
+                style={{ fontFamily: 'monospace', fontSize: 14, fontWeight: 600, cursor: 'not-allowed',
+                  color: numColor(fxQuote?.gbp) }} />
+            </Field>
+            <Field style={{ flex: 1, minWidth: 170 }}>
+              <Label>Equity (NLV, GBP) — auto</Label>
+              <Input value={fxEquity != null ? fmtNum(fxEquity) : ''} disabled placeholder="auto"
+                style={{ fontFamily: 'monospace', fontSize: 14, cursor: 'not-allowed', opacity: 0.85 }} />
+            </Field>
+          </>)}
         </div>
 
+        {/* USD -> GBP rate line */}
+        {fxMode && (
+          <div style={{ marginTop: 10, fontSize: 11, color: C.textSub, lineHeight: 1.6, overflowWrap: 'anywhere' }}>
+            {fxQuote
+              ? <>Rate <span style={{ color: C.textMid, fontFamily: 'monospace' }}>{fxQuote.rate.toFixed(5)}</span> USD per £1 · {fxRateLabel(fxQuote)}
+                  {fxQuote.stale && <span style={{ color: C.warn }}> · ⚠ candle far from entry date</span>}</>
+              : fxError
+                ? <span style={{ color: C.neg }}>⚠ {fxError}</span>
+                : `Enter the closed-trade P/L in ${fxMode ? fxFrom : ''} — converted to GBP at OANDA GBP/USD (today: last 1-min close; past date: that day's close). Recorded as a Trading Day.`}
+          </div>
+        )}
+
+        {!fxMode && (<>
         {/* Either-field hint */}
         <div style={{ marginTop: 10, fontSize: 11, color: C.textSub }}>
           {lockEquity
@@ -874,6 +1057,7 @@ export default function AxiaEquityEntry({
             </div>
           )}
         </Field>
+        </>)}
 
         {/* Prev record hint */}
         {prevRecord && (
@@ -902,7 +1086,10 @@ export default function AxiaEquityEntry({
 
         {/* Actions */}
         <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
-          <Btn variant="confirm" onClick={handleSubmit} disabled={!equityRaw || !selClient || loading || (capitalFlowType && !linkedStrategy)}>
+          <Btn variant="confirm" onClick={fxMode ? handleSubmitFx : handleSubmit}
+            disabled={fxMode
+              ? (!fxQuote || fxLoading || !selClient || !prevRecord || loading)
+              : (!equityRaw || !selClient || loading || (capitalFlowType && !linkedStrategy))}>
             {loading ? 'Saving…' : 'Submit Entry'}
           </Btn>
           <Btn variant="discard" onClick={() => {
@@ -910,13 +1097,13 @@ export default function AxiaEquityEntry({
               variant: 'danger',
               message: 'Discard this entry? All unsaved values will be cleared.',
               onConfirm: () => {
-                setEquityRaw(''); setChgRaw(''); setCapitalFlowType('')
+                setEquityRaw(''); setChgRaw(''); setCapitalFlowType(''); setFxRaw('')
                 setDate(todayISO()); setCurrency('GBP')
                 setError(null); setSuccess(null)
                 setConfirmPopup(null)
               },
             })
-          }} disabled={!equityRaw && !chgRaw}>
+          }} disabled={!equityRaw && !chgRaw && !fxRaw}>
             Discard
           </Btn>
         </div>

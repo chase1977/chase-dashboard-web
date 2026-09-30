@@ -801,6 +801,7 @@ export default function Reports() {
             apiPrefix={`/api/data-feeds/${active.feed.slug}`}
             label={active.feed.name}
             clientLinkField="data_feed_client_id"
+            fxFrom={active.feed.currency === 'USD' ? 'USD' : null}
           />
         </SectionCard>
       )}

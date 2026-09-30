@@ -101,3 +101,92 @@ def get_monthly_close(period_end: date, instrument: str = DEFAULT_PAIR) -> Optio
         }
     except Exception:
         return None
+
+
+# ---------------------------------------------------------------------------
+# Live / per-day conversion rate — USD daily-feed entries (INVESTGTX), 2026-09-30
+# ---------------------------------------------------------------------------
+
+def get_latest_minute_close(instrument: str = DEFAULT_PAIR) -> Optional[dict]:
+    """
+    Close of the most recent COMPLETE 1-minute GBP_USD midpoint candle.
+
+    count=2 because OANDA's newest M1 candle is usually still forming
+    (complete=False) — take the last one flagged complete. Returns
+    {"rate", "rate_at" (ISO UTC, candle open), "instrument"} or None on any
+    failure (caller must block the save, never guess a rate).
+    """
+    params  = {"granularity": "M1", "price": "M", "count": 2}
+    url     = f"{OANDA_API_URL}/instruments/{instrument}/candles"
+    headers = {"Authorization": f"Bearer {OANDA_TOKEN}"}
+    try:
+        resp = requests.get(url, params=params, headers=headers, timeout=10.0)
+        resp.raise_for_status()
+        candles = [c for c in (resp.json().get("candles") or []) if c.get("complete")]
+        if not candles:
+            return None
+        candle = candles[-1]
+        rate_at = candle["time"].split(".")[0] + "+00:00"
+        return {"rate": float(candle["mid"]["c"]), "rate_at": rate_at, "instrument": instrument}
+    except Exception:
+        return None
+
+
+def get_conversion_rate(trade_date: date, instrument: str = DEFAULT_PAIR) -> Optional[dict]:
+    """
+    Rate used to convert a USD daily-feed entry to GBP (Nish, 2026-09-30):
+      trade_date today (or later) -> live: last complete 1-minute candle close
+      trade_date in the past      -> that day's GBP_USD daily close
+
+    Returns {"rate", "source": "minute"|"daily", "rate_at" (ISO UTC or None),
+    "candle_date" (YYYY-MM-DD), "stale": bool} or None on failure.
+    gbp = usd / rate  (rate = USD per 1 GBP).
+    """
+    if trade_date >= datetime.utcnow().date():
+        m = get_latest_minute_close(instrument)
+        if not m:
+            return None
+        return {"rate": m["rate"], "source": "minute", "rate_at": m["rate_at"],
+                "candle_date": m["rate_at"][:10], "stale": False}
+    d = get_daily_close(trade_date, instrument)
+    if not d:
+        return None
+    return {"rate": d["rate"], "source": "daily", "rate_at": None,
+            "candle_date": d["candle_date"], "stale": d["stale"]}
+
+
+def get_daily_close(trade_date: date, instrument: str = DEFAULT_PAIR) -> Optional[dict]:
+    """
+    GBP_USD daily close FOR trade_date itself (or the last trading day before
+    it, for a weekend/holiday date).
+
+    OANDA daily candles run 17:00 New York -> 17:00 New York, so trading day D
+    OPENS at ~21:00/22:00 UTC on D-1. Asking for count=1 with to=D 12:00 UTC
+    returns exactly the candle that opened the evening before and closes on D.
+    (to=D+1 00:00 UTC — what get_monthly_close uses — returns the candle that
+    opened on D's evening, i.e. D+1's close: one day late. Found 2026-09-30:
+    23-09 came back as the 24-09 candle.)
+    """
+    params = {
+        "granularity": "D", "price": "M", "count": 1,
+        "to": f"{trade_date.isoformat()}T12:00:00Z",
+    }
+    url     = f"{OANDA_API_URL}/instruments/{instrument}/candles"
+    headers = {"Authorization": f"Bearer {OANDA_TOKEN}"}
+    try:
+        resp = requests.get(url, params=params, headers=headers, timeout=10.0)
+        resp.raise_for_status()
+        candles = resp.json().get("candles") or []
+        if not candles:
+            return None
+        candle    = candles[-1]
+        opened    = datetime.fromisoformat(candle["time"].split(".")[0] + "+00:00")
+        close_day = (opened + timedelta(hours=6)).date()      # evening-UTC open -> next calendar day
+        return {
+            "rate":        float(candle["mid"]["c"]),
+            "candle_date": close_day.isoformat(),
+            "instrument":  instrument,
+            "stale":       abs((close_day - trade_date).days) > 4,
+        }
+    except Exception:
+        return None
