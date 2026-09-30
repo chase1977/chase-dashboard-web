@@ -40,11 +40,12 @@ const tone = x => (x > 0 ? C.pos : x < 0 ? C.neg : C.text)
 const shortInst = s => (s || '').replace(/\s*\(CFD\)\s*$/i, '')
 
 // Default statement date: today if weekday, else previous Friday
+// Default = previous weekday: statements arrive ~23:00 and are entered the
+// next day (Tue -> Mon, Mon/Sat/Sun -> Fri). Local time, no UTC shift.
 const defaultStmtDate = () => {
   const d = new Date()
-  const wd = d.getDay()
-  if (wd === 0) d.setDate(d.getDate() - 2)
-  if (wd === 6) d.setDate(d.getDate() - 1)
+  d.setDate(d.getDate() - 1)
+  while (d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() - 1)
   const p = n => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
 }
@@ -333,7 +334,14 @@ function ReconLog({ log, statements, onDelete, onViewRaw }) {
               <td style={{ ...td, color: r.swaps ? C.neg : C.dim }}>{fmtUsd(r.swaps)}</td>
               <td style={{ ...td, color: tone(r.gross_closed) }}>{fmtUsd(r.gross_closed, { sign: true })}</td>
               <td style={{ ...td, color: r.cash_flow ? C.accent : C.dim }}>{r.cash_flow ? fmtUsd(r.cash_flow, { sign: true }) : '—'}</td>
-              <td style={td}>{r.implied_rate_pct ? `${fmtNum(r.implied_rate_pct, 4)}%` : '—'}</td>
+              <td style={td}>
+                {r.implied_rate_pct ? `${fmtNum(r.implied_rate_pct, 4)}%` : '—'}
+                {r.rate_inferred && (
+                  <div style={{ fontSize: 10, color: C.warn, whiteSpace: 'nowrap' }} title="Swap rate change inferred from this statement">
+                    ↻ rate {fmtNum(r.model_rate_pct, 5)}%
+                  </div>
+                )}
+              </td>
               <td style={{ ...td, textAlign: 'center' }} title={Object.entries(r.checks).map(([k, v]) => `${k}: ${v ? '✓' : '✗'}`).join('  ')}>
                 <span style={{ color: r.ok ? C.pos : C.neg, fontWeight: 700 }}>{r.ok ? '✓' : '✗'}</span>
               </td>
@@ -439,6 +447,10 @@ function AddStatementModal({ onClose, onSaved }) {
             <Row label="Closed gross today" value={fmtUsd(r.gross_closed, { sign: true })} color={tone(r.gross_closed)} />
             {r.cash_flow !== 0 && <Row label="Cash flow detected" value={fmtUsd(r.cash_flow, { sign: true })} color={C.accent} />}
             {r.implied_rate_pct && <Row label="Implied swap rate" value={`${fmtNum(r.implied_rate_pct, 4)}%`} />}
+            {r.model_rate_pct != null && r.swaps !== 0 && (
+              <Row label={r.rate_inferred ? 'Swap rate used (new — inferred)' : 'Swap rate used'}
+                value={`${fmtNum(r.model_rate_pct, 5)}%`} color={r.rate_inferred ? C.warn : C.text} />
+            )}
           </div>
           {r.warnings.map((w, i) => <div key={i} style={{ fontSize: 11, color: C.warn, marginTop: 6 }}>⚠ {w}</div>)}
           {preview.later_statements.length > 0 && <div style={{ fontSize: 11, color: C.dim, marginTop: 6 }}>Back-fill: {preview.later_statements.length} later statement(s) will be re-reconciled automatically.</div>}
@@ -463,8 +475,8 @@ function AddStatementModal({ onClose, onSaved }) {
 // ─── Settings modal ────────────────────────────────────────────────────────────
 const SETTING_FIELDS = [
   ['fee_per_unit', 'Broker fee per unit (USD)', 'Charged on open and on close'],
-  ['swap_rate_long_pct', 'Swap rate — long (% p.a.)', '|Swap_rate_buy| + |Swap_rate_sell|'],
-  ['swap_rate_short_pct', 'Swap rate — short (% p.a.)', 'Unverified until first short swap'],
+  ['swap_rate_long_pct', 'Base swap rate — long (% p.a.)', 'Before the first dated change below'],
+  ['swap_rate_short_pct', 'Base swap rate — short (% p.a.)', 'Unverified until first short swap'],
   ['day_count', 'Day count', 'Swap denominator'],
   ['swap_cutoff_hour', 'Swap cutoff hour', 'Lot open at this hour → charged'],
   ['friday_multiplier', 'Friday multiplier', 'Weekend swap roll'],
@@ -474,15 +486,24 @@ const SETTING_FIELDS = [
 function SettingsModal({ settings, onClose, onSaved }) {
   const [v, setV] = useState(() => Object.fromEntries(SETTING_FIELDS.map(([k]) => [k, settings[k]])))
   const [verified, setVerified] = useState(!!settings.short_rate_verified)
+  // Dated swap-rate changes: [{ from: 'YYYY-MM-DD', long_pct, short_pct }]
+  const [sched, setSched] = useState(() => (settings.swap_rate_schedule || []).map(e => ({ ...e })))
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
+
+  const setRow = (i, k, x) => setSched(sched.map((e, j) => (j === i ? { ...e, [k]: x } : e)))
 
   const save = async () => {
     setBusy(true); setErr(null)
     try {
       const patch = Object.fromEntries(Object.entries(v).map(([k, x]) => [k, Number(x)]))
       if (Object.values(patch).some(Number.isNaN)) throw new Error('All fields must be numeric')
-      await updateGtxSettings({ ...patch, short_rate_verified: verified })
+      const schedule = sched.map(e => ({ from: e.from, long_pct: Number(e.long_pct), short_pct: Number(e.short_pct) }))
+      if (schedule.some(e => !/^\d{4}-\d{2}-\d{2}$/.test(e.from || '') || Number.isNaN(e.long_pct) || Number.isNaN(e.short_pct)))
+        throw new Error('Each rate change needs a date and numeric long / short rates')
+      if (new Set(schedule.map(e => e.from)).size !== schedule.length) throw new Error('Two rate changes share the same date')
+      schedule.sort((a, b) => a.from.localeCompare(b.from))
+      await updateGtxSettings({ ...patch, short_rate_verified: verified, swap_rate_schedule: schedule })
       onSaved()
     } catch (e) { setErr(errMsg(e)) } finally { setBusy(false) }
   }
@@ -497,6 +518,24 @@ function SettingsModal({ settings, onClose, onSaved }) {
             <div style={{ fontSize: 10, color: C.muted, marginTop: 4 }}>{hint}</div>
           </div>
         ))}
+      </div>
+      <div style={{ marginTop: 18, paddingTop: 14, borderTop: `1px solid ${C.border}` }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: C.dim, marginBottom: 4 }}>Swap rate changes (dated)</div>
+        <div style={{ fontSize: 10, color: C.muted, marginBottom: 10 }}>
+          Each rate applies from its date onward; earlier days keep their old rate. Use this when the broker changes the rate — never edit the base rate for that.
+        </div>
+        {sched.map((e, i) => (
+          <div key={i} style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+            <input type="date" value={e.from || ''} onChange={x => setRow(i, 'from', x.target.value)}
+              style={{ ...inputStyle, width: 'auto', flex: '1 1 140px', colorScheme: 'dark' }} />
+            <input value={e.long_pct ?? ''} onChange={x => setRow(i, 'long_pct', x.target.value)} inputMode="decimal"
+              placeholder="Long %" style={{ ...inputStyle, width: 'auto', flex: '1 1 90px' }} />
+            <input value={e.short_pct ?? ''} onChange={x => setRow(i, 'short_pct', x.target.value)} inputMode="decimal"
+              placeholder="Short %" style={{ ...inputStyle, width: 'auto', flex: '1 1 90px' }} />
+            <button onClick={() => setSched(sched.filter((_, j) => j !== i))} style={{ ...btn(), padding: '8px 12px' }}>✕</button>
+          </div>
+        ))}
+        <button onClick={() => setSched([...sched, { from: '', long_pct: '', short_pct: '' }])} style={btn()}>+ Add rate change</button>
       </div>
       <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 14, fontSize: 12, color: C.dim, cursor: 'pointer' }}>
         <input type="checkbox" checked={verified} onChange={e => setVerified(e.target.checked)} /> Short swap rate verified against a statement
@@ -542,7 +581,8 @@ export default function GlobalGtxTab() {
   const s = data?.summary
   const log = data?.recon_log || []
   const failed = log.filter(x => !x.ok).length
-  const cfgRate = data?.settings?.swap_rate_long_pct
+  // Rate in force on the last statement (dated schedule aware), not the flat base rate.
+  const cfgRate = s?.current_swap_rate_long_pct ?? data?.settings?.swap_rate_long_pct
   const rateDrift = s?.last_implied_rate_pct && cfgRate ? Math.abs(s.last_implied_rate_pct - cfgRate) > 0.05 : false
 
   return (
@@ -582,6 +622,10 @@ export default function GlobalGtxTab() {
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
               <Chip ok={failed === 0}>{failed === 0 ? `✓ All ${log.length} statements reconcile` : `✗ ${failed} of ${log.length} days mismatch`}</Chip>
               {s.last_implied_rate_pct && <Chip ok={!rateDrift}>Implied swap {fmtNum(s.last_implied_rate_pct, 4)}% vs {fmtNum(cfgRate, 5)}%</Chip>}
+              {s.rate_changes?.length > 0 && (() => {
+                const rc = s.rate_changes[s.rate_changes.length - 1]
+                return <Chip ok={null}>Swap rate → {fmtNum(rc.rate_pct, 5)}% from {fmtDate(rc.date)} (inferred)</Chip>
+              })()}
               {!data.settings.short_rate_verified && <Chip ok={null}>Short swap rate unverified</Chip>}
             </div>
 

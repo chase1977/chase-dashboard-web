@@ -22,8 +22,10 @@ React (Vite) frontend, FastAPI backend, Supabase (Postgres) database.
 13. [Roadmap — Completed](#13-roadmap--completed)
 14. [Capital Pipeline: Strategy → Pod → Portfolio](#14-capital-pipeline-strategy--pod--portfolio)
 15. [Data Feeds — Self-Service Tab Builder](#15-data-feeds--self-service-tab-builder)
+    - [15.7 USD P/L → GBP entry (INVESTGTX)](#157-usd-pl--gbp-entry-investgtx-2026-09-30)
 16. [Temporarily Hidden / Paused Metrics — Review Before Re-Enabling](#16-temporarily-hidden--paused-metrics--review-before-re-enabling)
 17. [AXIA Trade Analysis Tool — GBP FX Bridge](#17-axia-trade-analysis-tool--gbp-fx-bridge)
+    - [17.6 GlobalGTX — Statement Reconciliation](#176-globalgtx--statement-reconciliation-2026-09-29)
 18. [Roadmap — Outstanding](#18-roadmap--outstanding)
 19. [Known Limitations](#19-known-limitations)
 20. [Dev Workflow](#20-dev-workflow)
@@ -1020,6 +1022,14 @@ are both correct. Not requested to be fixed further.
   sums straight from `get_strategies_with_kpis_fast()`'s per-strategy
   figures, guaranteeing Portfolio always reconciles exactly against the Pod
   and Strategy cards, per the manager's spec §13.
+- [x] **GlobalGTX tab on the Analysis page** (§17.6, 2026-09-29, commit
+  `57cb437`) — paste the daily Global Trading X statement email; stateless
+  replay engine re-derives fees, swaps, opens/closes and reconciles every
+  day to the cent. 17-09 → 28-09-2026 loaded, all reconcile.
+- [x] **INVESTGTX USD P/L → GBP entry** (§15.7, 2026-09-30, commit
+  `6b3b16f`) — record closed-trade net P/L in USD on the INVESTGTX Data Feed;
+  auto-converted at OANDA GBP/USD (live 1-min close today, daily close for
+  past dates) and saved as a GBP row the Portfolio reads.
 
 ---
 
@@ -1341,6 +1351,10 @@ check too.
 - `AxiaEquityEntry.jsx` — already generic (`apiPrefix`/`label`/
   `clientLinkField` props, added for IG). A daily Data Feed tab reuses it
   unchanged: `<AxiaEquityEntry apiPrefix="/api/data-feeds/{slug}" clientLinkField="data_feed_client_id" />`.
+  Since 2026-09-30 `Reports.jsx` also passes `fxFrom="USD"` when the feed's
+  registry currency is USD (INVESTGTX only today) — enables the USD P/L →
+  GBP entry mode (§15.7). GBP feeds pass `fxFrom=null` and render exactly
+  as before.
 - `Flags12StatementEntry.jsx` — generalized this window with `feedSlug`/
   `dataFeedId` props (legacy `<Flags12StatementEntry />` and the ASLAN
   instance are untouched, both default to `feedSlug=null` → old
@@ -1403,6 +1417,89 @@ mix:
 5. **Darwinex-mirrored strategy**. Set `brokerage_account` on the strategy
    — fully automatic via `internal_transfers`/`pfees`, no manual recording
    at all (§12).
+
+### 15.7 USD P/L → GBP entry (INVESTGTX, 2026-09-30)
+
+**Why.** INVESTGTX trades on Global Trading X in **USD**, but the strategy's
+capital (initial investment, watermark, profit split) is in **GBP**, and the
+Portfolio only reads **GBP** rows from any daily-equity table
+(`_axia_equity_series` / `_axia_flagged_equity_total` filter
+`currency = 'GBP'`). A plain USD row would be silently ignored.
+
+**How it's used.** Only on the days a position is **closed**, record that
+trade's **net realised P/L in USD** (gross − open fee − close fee − swaps —
+the "Net P/L" column of the GlobalGTX Closed Positions table, §17.6).
+Data & Reports → INVESTGTX → Entry mode **USD P/L → GBP** → date → amount →
+Submit. The USD figures never appear on the Portfolio — the GlobalGTX tab
+keeps the USD book.
+
+**What gets saved.** A normal GBP trading-day row:
+
+| Field | Value |
+|---|---|
+| `currency` | `GBP` |
+| `chg_nlv` | `round(USD ÷ rate, 2)` — rate = USD per £1 (GBP_USD) |
+| `equity` | previous GBP row's equity + `chg_nlv` (computed server-side) |
+| `notes` | `+$4,495.70 @ 1.32405 (daily close 23-09-2026)` — shown in the records table |
+| `source_currency` / `source_amount` / `fx_rate` / `fx_rate_at` | USD audit trail (additive columns, `fx_rate_at` null for a daily close) |
+
+The Portfolio, TWR, watermark and profit-split logic then treat it exactly
+like any other GBP daily-equity row — e.g. £5,100.58 total GBP gain × 60%
+profit split = £3,060.35 Total P&L on the INVESTGTX card.
+
+**Which rate** (`oanda_service.get_conversion_rate`, OANDA GBP_USD midpoint):
+
+| Entry date | Rate used |
+|---|---|
+| Today (UTC) or later | Close of the last **complete 1-minute** candle (`get_latest_minute_close`) — live; re-fetched at save |
+| Past date | That day's **daily close** (`get_daily_close`); weekend/holiday → last trading day before |
+
+`get_daily_close` asks OANDA with `to = <date> 12:00 UTC`, which returns
+the candle that *closes* on that date (OANDA daily candles run 17:00 NY →
+17:00 NY, so day D opens ~21:00/22:00 UTC on D−1). The older
+`get_monthly_close` (12-FLAGS, §11.4) uses `to = <date+1> 00:00 UTC`, which
+was found to return the **next** day's candle — see §19; it is left
+untouched here so saved 12-FLAGS figures don't move.
+
+**Backend** (`data_feeds.py`):
+- `GET /api/data-feeds/{slug}/fx-preview?amount=&date=` → `{rate, source
+  ("minute"|"daily"), rate_at, candle_date, stale, amount, gbp}` — drives
+  the live preview in the form. Saves nothing.
+- `POST /api/data-feeds/{slug}/equity` with `source_currency: "USD"` +
+  `source_amount` → USD → GBP path. `equity` is now optional in the model
+  (still required, with the same 400, on the normal GBP path).
+
+**Guards** (all reject with nothing saved):
+- Feed currency must be USD (GBP feeds → 400).
+- Capital-flow flags refused — record Initial/Add-On in **GBP NLV** mode.
+- Needs an earlier GBP row to build on (the GBP initial investment).
+- A USD entry dated **before** an existing GBP row → 409 (record in date
+  order, so the running equity chain can't break).
+- OANDA unreachable → 502.
+
+**Frontend** (`AxiaEquityEntry.jsx`, `fxFrom` prop): Entry mode toggle
+(**USD P/L → GBP** default | **GBP NLV** = the original form, unchanged).
+USD mode shows *Realised change (USD)* → *CHG NLV (GBP)* → *Equity (NLV,
+GBP)* (both auto), the rate line, and a confirm popup. To correct a
+converted row: delete it and re-add it (Edit changes GBP fields only).
+
+**SQL run** (2026-09-30, additive):
+```sql
+alter table public.investgtx_daily_equity
+  add column if not exists source_currency text,
+  add column if not exists source_amount   numeric,
+  add column if not exists fx_rate         numeric,
+  add column if not exists fx_rate_at      timestamptz;
+```
+The Data Feed SQL template (`preview-sql`) now includes these 4 nullable
+columns, so any future USD daily feed gets them from creation.
+
+**Recorded so far:**
+
+| Date | USD (net, closed trade) | Rate | GBP CHG | GBP Equity |
+|---|---|---|---|---|
+| 23-09-2026 | +4,495.70 (AMBARELLA) | 1.32405 | +3,395.42 | 1,003,495.42 |
+| 24-09-2026 | +2,254.02 (QIAGEN) | 1.32188 | +1,705.16 | 1,005,200.58 |
 
 ---
 
@@ -1525,6 +1622,10 @@ still documents the full formula set. Only the display layer is paused.
 ---
 
 ## 17. AXIA Trade Analysis Tool — GBP FX Bridge
+
+> **Analysis page tabs (since 2026-09-29):** **AXIA Analyse** (default — this
+> section) | **GlobalGTX** (§17.6). Both stay mounted; switching tabs never
+> loses AXIA upload state.
 
 Separate feature from the Portfolio/Pods/Strategies dashboard — a standalone
 statement-analysis tool at the **Analysis** tab. Upload an AXIA trade
@@ -1681,10 +1782,189 @@ filtered into `analysisData` — no separate change needed there.
 
 ---
 
+## 17.6 GlobalGTX — Statement Reconciliation (2026-09-29)
+
+**What it is.** Second tab on the **Analysis** page. Tracks the INVESTGTX
+strategy's **Global Trading X** account (`GTX0011-USD`) trade by trade, in
+**USD**, from the broker's daily statement email (arrives ~23:00
+weekdays; the broker's operations CSV is not normally available). Every
+fee, swap, open and close is re-derived and reconciled against what the
+broker says, to the cent.
+
+**How it works.**
+1. **+ Add Statement** → pick the statement date → paste the whole email
+   (or its 3 sections: Account Statement, Open Position, Trades) →
+   **Preview** (parse + dry-run reconciliation, nothing saved) → **Save
+   statement**.
+2. Only the **pasted text + parsed JSON** are stored (`gtx_statements`,
+   one row per date; `gtx_settings`, one row of engine overrides). There is
+   **no positions table** — every page load replays all saved statements in
+   date order (`gtx_engine.replay`), so nothing can drift out of sync.
+3. Paste oldest first. The first statement's balance becomes the starting
+   balance (shown as a cash-flow on that row).
+
+**Broker rules the engine uses** (verified against the operations CSV and
+7 statements, 17-09 → 25-09-2026, exact to the cent):
+
+| Item | Rule |
+|---|---|
+| Broker fee | qty × **0.05** USD, charged on **open** and again on **close** |
+| Swap | qty × price × **rate** ÷ **360**, **×3 on Friday**; charged if the lot is open at **17:00**. Rate = \|Swap_rate_buy\| + base: **8.45145%** to 28-09-2026, **7.9%** (4.0 + base 3.9) from 29-09-2026 — see *Swap rate changes* below |
+| Gross P/L | (close − open) × qty × side |
+| Precision | broker keeps full precision; the statement **displays truncated 2dp** — the engine does the same |
+
+The operations CSV shows each row truncated separately, so summing CSV
+rows can be ±0.01 off a statement's "Today's realized P/L". The statement
+(full precision, then truncated) is the source of truth; balance diff has
+been £0.00 on every day.
+
+### What each box shows
+
+All figures USD, truncated to 2dp. Worked with the 28-09-2026 figures.
+
+**Top KPI row**
+
+| Box | Formula | Meaning | 28-09 |
+|---|---|---|---|
+| **Current Equity** | Current balance + Open P/L | What the account is worth marked-to-market right now (before the fee to close open lots). Sub-line = cash balance. | $1,350,560.70 |
+| **Net P/L (incl. open)** | Current equity − Starting balance | **Everything** the strategy has made or lost since the start: realised trades, every fee paid, every swap paid, **plus** the unrealised P/L on open lots. The truest "how are we doing" number. % = on starting balance. Excludes only the not-yet-charged close fee on open lots. | +$6,633.21 (0.49%) |
+| **Running Realised** | Current balance − Starting balance | Only what has **actually hit cash**: closed-trade profits minus **all** fees and swaps paid so far — including the open fees and swaps already charged on lots that are **still open**. Ignores open-lot price moves. | +$4,007.81 |
+| **Open P/L** | Σ (current price − open price) × qty × side, open lots | Paper gain/loss on open lots at the statement's current price, **gross** — before their open fee, swaps and future close fee. | +$2,625.40 (3 lots) |
+
+How they tie together (28-09):
+
+```
+Net P/L (incl. open)   6,633.21 = Running realised 4,007.81 + Open P/L 2,625.40
+Running realised       4,007.81 = Closed gross 7,734.65 − all fees 3,250.00 − all swaps 476.84
+Net P/L (incl. open)   6,633.21 = Net realised closed 6,749.73 + open lots so far (2,625.40 − 2,500.00 open fees − 241.92 swaps)
+```
+
+**Capital card** — Starting balance (sum of cash-flows, i.e. deposits; 17-09
+= $1,343,927.49 = 114.99 + 672,443.50 + 671,369.00), Current balance (last
+statement), Open P/L, Current equity.
+
+**Trades card** — Total profit (winning closed trades, gross), Total loss
+(losing closed trades, gross), Gross realised P/L, Win rate (closed trades),
+Closed / open lot count.
+
+**Costs card** — Broker fees (split: charged on open — every lot ever opened;
+charged on close — closed lots only), Swaps (split: on closed lots / on
+still-open lots), Total costs = fees + swaps.
+
+**Result card**
+
+| Line | Meaning |
+|---|---|
+| Gross P/L (realised + open) | Closed gross + Open P/L — before any costs |
+| − Broker fees / − Swaps | All costs paid so far |
+| **Net P/L** | = the Net P/L (incl. open) KPI |
+| **Net realised (closed trades)** | Closed trades only, each fully costed: gross − its open fee − its close fee − its swaps. **This is the per-trade figure recorded in USD on the INVESTGTX Data Feed (§15.7)** |
+| Running realised (in balance) | = the Running Realised KPI |
+
+**Status chips** — *All N statements reconcile* (every day passes all
+checks) · *Implied swap x% vs 8.45145%* (rate backed out of the statement;
+wobbles 8.450–8.453% on small days because it's computed from the displayed
+2dp figures — green while within 0.05%) · *Short swap rate unverified* (no
+short trade seen yet; the short rate is assumed = long).
+
+**Open Positions table** — per lot: qty, open date/price, current price,
+Unrealised, Nights (swaps charged), Open fee, Swaps, Est. close fee (qty ×
+0.05), **Net if closed** = Unrealised − open fee − est. close fee + swaps,
+Margin (50% of notional). Tap a row → per-night swap ledger.
+
+**Closed Positions table** — per trade: gross, open fee, close fee, swaps,
+**Net P/L** (fully costed), nights held.
+
+**Daily Reconciliation Log** — per statement: statement vs engine balance
+(Diff), today realised, fees, swaps, closed gross, cash flow (deposits /
+withdrawals detected as balance change not explained by realised P/L),
+implied swap rate, ✓/✗ (balance, realised, open P/L, margin). **Raw** shows
+the pasted text; 🗑 deletes a statement (the rest re-replay automatically).
+
+### Files
+
+| File | Role |
+|---|---|
+| `sql/2026-09-29_gtx_statements.sql` | `gtx_statements` + `gtx_settings` (additive, RLS on, service key bypasses) |
+| `backend/src/services/gtx_parser.py` | Parses the pasted email (whole or 3 sections; tabs or 2+ spaces) |
+| `backend/src/services/gtx_engine.py` | Stateless replay: lots, fees, swaps, closes, reconciliation, summary |
+| `backend/src/services/gtx_service.py` | Supabase I/O, preview, save (409 on existing date unless overwrite), state |
+| `backend/src/routers/gtx.py` | `GET /api/gtx/state`, `POST /api/gtx/preview`, `POST /api/gtx/statements`, `GET /api/gtx/statements/{id}/raw`, `DELETE /api/gtx/statements/{id}`, `GET`/`PATCH /api/gtx/settings` |
+| `backend/tests/test_gtx_replay.py` | Regression: 17-09 → 25-09 must all reconcile (`python tests\test_gtx_replay.py`) |
+| `src/components/GlobalGtxTab.jsx` | Tab UI (desktop + mobile) |
+| `src/pages/Analysis.jsx` | Tab shell: AXIA Analyse (default) \| GlobalGTX |
+| `src/services/api.js` | 7 GTX API functions |
+
+**Settings (⚙)** — fee per unit, base long/short swap %, day count, swap
+cutoff hour, Friday multiplier, margin %. These apply to **every** day on
+replay, so changing one re-prices history — don't change them to "fix" a
+single day.
+
+**Swap rate changes (dated)** (2026-09-30) — ⚙ Settings → *+ Add rate
+change* → date, long %, short %. Stored as `swap_rate_schedule` in
+`gtx_settings.settings` (no SQL); `gtx_engine.swap_rates(s, d)` returns the
+rate in force on each day, so earlier days keep their old rate. The
+*Implied swap vs x%* chip compares against the rate in force on the last
+statement (`summary.current_swap_rate_long_pct`); each log row also carries
+`model_rate_pct`.
+
+**Automatic rate detection — no CSV needed** (2026-09-30). The rate in force
+is carried forward day to day. If a statement doesn't reconcile at the
+carried rate, the engine infers the new rate from that statement alone:
+fees (qty × 0.05) and closed gross are exact, so the swap is the only
+unknown. It estimates the rate from the balance move, then picks the
+**simplest rate (fewest decimals) that reconciles both today's realised
+P/L and the balance to the cent**, and carries it forward. The preview
+shows *⚠ Swap rate changed x% → y% — inferred from this statement* and
+*Swap rate used (new — inferred)*; the log row shows *↻ rate y%*; the header
+shows a *Swap rate → y% from DD-MM-YYYY (inferred)* chip.
+
+Inference only runs when the swap is the sole unknown — it is skipped
+(the day shows ✗ instead) when: it's the first statement; a weekday
+statement is missing before it; a trade couldn't be matched; a swap price
+had to be estimated; long and short lots are charged together; or the
+implied rate is implausible (≤ 0 or > 3× the old rate, e.g. a deposit —
+that is reported as a cash flow instead). A deposit on the *same* day as a
+rate change can't be separated — add a dated entry for that day.
+
+Precision: a statement pins the rate to about ±0.002% (one cent on the
+day's swap), so e.g. a true 8.45145% may be inferred as 8.45 — every figure
+still reconciles to the cent; if it drifts a cent later the engine simply
+re-infers. When the broker confirms an exact rate (email/CSV), add it as a
+**dated entry** — dated entries always take precedence on their date.
+Current dated schedule: `[{"from": "2026-09-29", "long_pct": 7.9,
+"short_pct": 7.9}]` (confirmed by CSV; the engine infers the same 7.9%
+without it). Current schedule: `[{"from": "2026-09-29", "long_pct":
+7.9, "short_pct": 7.9}]` (Ben, GTX, 30-09-2026: "swap = 4 above base; base
+currently 3.9" — the CSV shows Swap_rate_sell −4.0 as a display rounding of
+3.9; `Swap_size` confirms exactly 7.9%).
+
+### Data log
+
+| Date | Note |
+|---|---|
+| 17-09 → 25-09-2026 | Pasted from the broker emails — all reconcile |
+| 28-09-2026 | Broker's email was an unchanged copy of 25-09 (their price feed error). **Reconstructed** from the operations CSV (3 swaps only, −51.64775, price 4.40, no trades) — file `GTX_2026-09-28_reconstructed.txt`. Reconciles; the **Raw** view shows the reconstruction, not the broken email. |
+| 29-09-2026 | Broker cut the swap rate to **7.9%** (operations CSV 30-09: 3 swaps at price 3.97 = −43.55972). Added the dated rate schedule + float fixes below; the real email then reconciles. |
+
+---
+
 ## 18. Roadmap — Outstanding
 
 - [ ] **Pod/portfolio-level watermark adjustment for non-AXIA strategies**
   See [§19](#19-known-limitations) — documented gap, not yet requested.
+- [x] **GlobalGTX 29-09-2026 statement / swap rate change** — resolved
+  2026-09-30 with the dated `swap_rate_schedule` (§17.6).
+- [x] **GlobalGTX engine float-edge fixes** (2026-09-30): `trunc2()` now
+  rounds to 6dp before truncating (−18,874.5999… → −18,874.60, not .59), and
+  a ±0.01 gap from two displayed-2dp figures is treated as rounding, not a
+  cash flow (`|cash| <= tolerance`).
+- [ ] **GlobalGTX missing-weekday swaps** — the engine charges swaps only on
+  days that have a statement. A skipped weekday's swap would show up as a
+  "cash flow" on the next statement. Avoid by reconstructing the missing
+  day (as done for 28-09).
+- [ ] **12-FLAGS month-end FX — possible one-day-late candle** (§19). Check a
+  saved statement against OANDA before changing anything.
 
 ---
 
@@ -1697,6 +1977,16 @@ raw `pfees` rows directly — before per-strategy watermark resolution. This
 path isn't additively isolable per-strategy the way the AXIA path is, so
 watermark adjustment currently only reaches the strategy level for
 non-AXIA strategies. Flagged to Nish; not yet requested to be fixed.
+
+**12-FLAGS monthly FX may use the next day's close.** `get_monthly_close`
+(§11.4) requests daily candles with `to = period_end + 1 day 00:00 UTC`. An
+OANDA daily candle for day D opens ~21:00/22:00 UTC on D−1, so that request
+returns the candle that closes on **D+1**. Found 2026-09-30 while building
+§15.7 (which uses the corrected `get_daily_close`). Not changed — it would
+move already-saved 12-FLAGS GBP figures; verify first.
+
+**GlobalGTX short swap rate unverified.** No short trade seen yet; the engine
+assumes short rate = long rate (8.45145%). Confirm on the first short.
 
 **12-FLAGS capital transfer (Wallet → Strategy) not yet logged.** The
 £485,981.31 Ebury deposit (29-05-2026, Ref 1087948) is recorded in the

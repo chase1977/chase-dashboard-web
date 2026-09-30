@@ -30,14 +30,32 @@ DEFAULT_SETTINGS = {
     "friday_multiplier": 3,
     "margin_pct": 50.0,
     "tolerance": 0.01,
+    # Effective-dated swap rate changes (2026-09-30): broker moved the rate
+    # from 8.45145% to 7.9% (4.0 + base 3.9) on 29-09-2026. Each entry
+    # {"from": "YYYY-MM-DD", "long_pct": x, "short_pct": y} applies from that
+    # date on; dates before the first entry use swap_rate_long/short_pct.
+    # Changing the flat rate instead would re-price all history.
+    "swap_rate_schedule": [],
 }
 
 
 # ── helpers ──────────────────────────────────────────────────────────
 def trunc2(x: float) -> float:
     """Broker display convention: truncate toward zero at 2dp."""
-    d = Decimal(repr(abs(x))).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+    # round(…, 6) first: strips binary-float noise so e.g. -18,874.5999999
+    # truncates to -18,874.60, not -18,874.59 (found on the 29-09 preview).
+    d = Decimal(repr(round(abs(x), 6))).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
     return float(d) if x >= 0 else -float(d)
+
+
+def swap_rates(s: dict, d: date) -> tuple[float, float]:
+    """(long_pct, short_pct) in force on date d — see swap_rate_schedule."""
+    long_, short_ = s["swap_rate_long_pct"], s["swap_rate_short_pct"]
+    for e in sorted(s.get("swap_rate_schedule") or [], key=lambda e: e["from"]):
+        if e["from"] <= d.isoformat():
+            long_  = float(e.get("long_pct", long_))
+            short_ = float(e.get("short_pct", short_))
+    return long_, short_
 
 
 def _d(iso: str) -> datetime:
@@ -91,6 +109,8 @@ def replay(statements: list[dict], settings: dict | None = None) -> dict:
     engine_bal = None
     prev_stmt_bal = None
     prev_date = None
+    cur_long, cur_short = float(s["swap_rate_long_pct"]), float(s["swap_rate_short_pct"])
+    sched = sorted(s.get("swap_rate_schedule") or [], key=lambda e: e["from"])
 
     for st in stmts:
         d = date.fromisoformat(st["date"])
@@ -169,8 +189,18 @@ def replay(statements: list[dict], settings: dict | None = None) -> dict:
             gross_today += gross
 
         # 4. swaps — lots open at cutoff today
+        # Rate in force: carried forward day to day. A dated schedule entry
+        # (Settings) sets it explicitly; otherwise, if today's statement
+        # doesn't reconcile at the carried rate, the new rate is INFERRED
+        # from the statement itself (fees + closed gross are exact, so the
+        # swap is the only unknown) — no operations CSV needed. 2026-09-30.
+        for e in sched:
+            if (prev_date is None or e["from"] > prev_date.isoformat()) and e["from"] <= d.isoformat():
+                cur_long  = float(e.get("long_pct", cur_long))
+                cur_short = float(e.get("short_pct", cur_short))
         cut = _cutoff(d, s["swap_cutoff_hour"])
         mult = s["friday_multiplier"] if d.weekday() == 4 else 1
+        charged = []                                   # (lot, price, estimated)
         for lot in lots.values():
             if _d(lot.open_dt) > cut:
                 continue
@@ -182,24 +212,79 @@ def replay(statements: list[dict], settings: dict | None = None) -> dict:
             est = lot.status != "open"
             if est:
                 warnings.append(f"{lot.instrument} closed after cutoff — swap price estimated from close")
-            rate = s["swap_rate_long_pct"] if lot.side == 1 else s["swap_rate_short_pct"]
-            amt = -lot.qty * px * rate / 100 / s["day_count"] * mult
+            charged.append((lot, px, est))
+            swap_base += lot.qty * px * mult
+
+        def swaps_at(r_long: float, r_short: float) -> list[float]:
+            return [-lot.qty * px * (r_long if lot.side == 1 else r_short) / 100 / s["day_count"] * mult
+                    for lot, px, _ in charged]
+
+        stmt_bal, stmt_real = acct["balance"], acct["today_realised"]
+
+        def reconciles(r_long: float, r_short: float) -> bool:
+            real = fees_today + gross_today + sum(swaps_at(r_long, r_short))
+            if trunc2(real) != stmt_real:
+                return False
+            return prev_stmt_bal is None or trunc2(engine_bal + real) == stmt_bal
+
+        rate_inferred = False
+        # Infer only when the swap is the ONLY unknown: lots charged, not the
+        # first statement, no warnings (missing weekday / unmatched trade /
+        # estimated price would all be absorbed into a wrong rate), one side.
+        if charged and prev_stmt_bal is not None and not warnings \
+                and not reconciles(cur_long, cur_short):
+            sides = {lot.side for lot, _, _ in charged}
+            if len(sides) == 1:
+                side  = sides.pop()
+                carry = cur_long if side == 1 else cur_short
+                # swap magnitude from the balance move (statement truncates, so mid-point −0.005)
+                s_est = engine_bal + fees_today + gross_today - stmt_bal - 0.005
+                r_est = s_est * s["day_count"] * 100 / swap_base if swap_base else 0.0
+                found = None
+                if 0 < r_est < max(3 * carry, 1.0):
+                    # simplest rate (fewest decimals) that reconciles exactly
+                    for k in range(0, 6):
+                        step = 10 ** -k
+                        mid = round(r_est / step) * step
+                        for c in (mid, mid - step, mid + step):
+                            c = round(c, k)
+                            if c <= 0:
+                                continue
+                            rl, rs = (c, cur_short) if side == 1 else (cur_long, c)
+                            if reconciles(rl, rs):
+                                found = c
+                                break
+                        if found is not None:
+                            break
+                if found is not None:
+                    warnings.append(f"Swap rate changed {carry:g}% → {found:g}% "
+                                    f"({'long' if side == 1 else 'short'}) — inferred from this statement")
+                    mirror = not s.get("short_rate_verified")
+                    if side == 1:
+                        cur_long = found
+                        cur_short = found if mirror else cur_short
+                    else:
+                        cur_short = found
+                    rate_inferred = True
+
+        for (lot, px, est), amt in zip(charged, swaps_at(cur_long, cur_short)):
+            rate = cur_long if lot.side == 1 else cur_short
             lot.swaps += amt
             lot.swap_ledger.append({"date": d.isoformat(), "price": px, "mult": mult,
                                     "rate_pct": rate, "amount": amt, "estimated": est})
             swaps_today += amt
-            swap_base += lot.qty * px * mult
 
         # 5. reconciliation
         eng_realised = fees_today + swaps_today + gross_today
-        stmt_bal, stmt_real = acct["balance"], acct["today_realised"]
         cash = 0.0
         if prev_stmt_bal is None:
             cash = stmt_bal - stmt_real                    # opening capital
             engine_bal = 0.0
         else:
             cash = stmt_bal - prev_stmt_bal - stmt_real
-            if abs(cash) < s["tolerance"]:
+            # <= (not <): a ±0.01 gap is the two displayed-2dp figures
+            # (balances vs today's realised) each being truncated.
+            if abs(cash) <= s["tolerance"] + 1e-9:
                 cash = 0.0
         if cash:
             cash_events.append({"date": d.isoformat(), "amount": cash,
@@ -228,6 +313,8 @@ def replay(statements: list[dict], settings: dict | None = None) -> dict:
             "stmt_open_pl": acct["open_pl"], "engine_open_pl": open_pl,
             "stmt_margin": acct["margin_req"], "engine_margin": margin,
             "implied_swap": implied_swap, "implied_rate_pct": implied_rate,
+            "model_rate_pct": cur_long, "model_short_rate_pct": cur_short,
+            "rate_inferred": rate_inferred,
             "checks": checks, "ok": all(checks.values()), "warnings": warnings,
         })
         prev_stmt_bal, prev_date = stmt_bal, d
@@ -284,6 +371,9 @@ def _build_output(lots, log, cash_events, s) -> dict:
         "net_pl_total": balance + open_pl - starting,
         "recon_ok": all(x["ok"] for x in log) if log else None,
         "last_statement": last["date"] if last else None,
+        "current_swap_rate_long_pct": last["model_rate_pct"] if last else s["swap_rate_long_pct"],
+        "rate_changes": [{"date": x["date"], "rate_pct": x["model_rate_pct"]}
+                         for x in log if x.get("rate_inferred")],
         "last_implied_rate_pct": next((x["implied_rate_pct"] for x in reversed(log)
                                        if x["implied_rate_pct"] is not None), None),
     }
