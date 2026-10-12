@@ -1996,8 +1996,8 @@ currently 3.9" — the CSV shows Swap_rate_sell −4.0 as a display rounding of
   days that have a statement. A skipped weekday's swap would show up as a
   "cash flow" on the next statement. Avoid by reconstructing the missing
   day (as done for 28-09).
-- [ ] **12-FLAGS month-end FX — possible one-day-late candle** (§19). Check a
-  saved statement against OANDA before changing anything.
+- [x] **12-FLAGS month-end FX one-day-late candle** — fixed 2026-10-12 (§19);
+  existing rows re-fetched with ↻.
 
 ---
 
@@ -2011,12 +2011,14 @@ path isn't additively isolable per-strategy the way the AXIA path is, so
 watermark adjustment currently only reaches the strategy level for
 non-AXIA strategies. Flagged to Nish; not yet requested to be fixed.
 
-**12-FLAGS monthly FX may use the next day's close.** `get_monthly_close`
-(§11.4) requests daily candles with `to = period_end + 1 day 00:00 UTC`. An
-OANDA daily candle for day D opens ~21:00/22:00 UTC on D−1, so that request
-returns the candle that closes on **D+1**. Found 2026-09-30 while building
-§15.7 (which uses the corrected `get_daily_close`). Not changed — it would
-move already-saved 12-FLAGS GBP figures; verify first.
+**12-FLAGS monthly FX used the next day's close — FIXED 2026-10-12.**
+`get_monthly_close` requested `to = period_end + 1 day 00:00 UTC`; an OANDA
+daily candle for day D opens ~21:00/22:00 UTC on D−1, so a Mon–Thu month
+end got the **next** day's close (31-08 → 01-09 at 1.3516, 30-09 → 01-10 at
+1.3195; 30-06 and 31-07 happened to come back correct). Fund statements
+(create / edit / ↻ re-fetch, `supabase_service.py`) now use
+`oanda_service.get_daily_close` — the candle that closes ON the period end.
+Existing rows are corrected by pressing ↻ on each one.
 
 **GlobalGTX short swap rate unverified.** No short trade seen yet; the engine
 assumes short rate = long rate (8.45145%). Confirm on the first short.

@@ -3316,7 +3316,7 @@ def create_fund_statement(strategy_id: int, period_end_date: str, ending_balance
                            beginning_balance: float, additions: float = 0.0,
                            redemptions: float = 0.0, currency: str = "USD",
                            notes: str = "", table: str = "fund_monthly_statements") -> dict:
-    from src.services.oanda_service import get_monthly_close
+    from src.services.oanda_service import get_daily_close as get_monthly_close  # 2026-10-12: close OF the period-end date (old lookup returned the next day's)
     from datetime import date as _date
 
     computed = _compute_fund_statement_fields(beginning_balance, additions, redemptions, ending_balance)
@@ -3367,7 +3367,7 @@ def update_fund_statement(record_id: int, table: str = "fund_monthly_statements"
         fields.update(computed)
 
     if "period_end_date" in fields or "currency" in fields:
-        from src.services.oanda_service import get_monthly_close
+        from src.services.oanda_service import get_daily_close as get_monthly_close  # 2026-10-12: close OF the period-end date (old lookup returned the next day's)
         from datetime import date as _date
         if merged.get("currency") == "USD":
             fx = get_monthly_close(_date.fromisoformat(merged["period_end_date"]))
@@ -3394,7 +3394,7 @@ def refetch_fund_statement_fx(record_id: int, table: str = "fund_monthly_stateme
     row = rows[0]
     if row.get("currency") != "USD":
         return row
-    from src.services.oanda_service import get_monthly_close
+    from src.services.oanda_service import get_daily_close as get_monthly_close  # 2026-10-12: close OF the period-end date (old lookup returned the next day's)
     from datetime import date as _date
     fx = get_monthly_close(_date.fromisoformat(row["period_end_date"]))
     if not fx:
