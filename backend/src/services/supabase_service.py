@@ -138,7 +138,7 @@ def get_latest_pfees_date() -> Optional[str]:
         res = (
             sb.table("user_pfees_estimation")
             .select('"Date"')
-            .order('"Date"', desc=True)
+            .order("Date", desc=True)
             .limit(1)
             .execute()
         )
@@ -159,7 +159,7 @@ def get_pfees_history_all() -> list[dict]:
         res = (
             sb.table("user_pfees_estimation")
             .select('"Date","AccountId","Darwin","Invested","Current PnL"')
-            .order('"Date"', desc=False)
+            .order("Date", desc=False)
             .execute()
         )
         return res.data or []
@@ -242,7 +242,7 @@ def get_pfees_latest_snapshot() -> list[dict]:
         res = (
             sb.table("user_pfees_estimation")
             .select('"Date","AccountId","Darwin","Invested","Current PnL"')
-            .eq('"Date"', latest_date)
+            .eq("Date", latest_date)
             .execute()
         )
         return res.data or []
@@ -258,7 +258,7 @@ def get_live_aum(snapshot_date: Optional[str] = None) -> float:
     res = (
         sb.table("user_pfees_estimation")
         .select('"Invested"')
-        .eq('"Date"', snapshot_date)
+        .eq("Date", snapshot_date)
         .execute()
     )
     return round(sum(float(r["Invested"] or 0) for r in (res.data or [])), 2)
@@ -272,7 +272,7 @@ def get_live_pnl(snapshot_date: Optional[str] = None) -> float:
     res = (
         sb.table("user_pfees_estimation")
         .select('"Current PnL"')
-        .eq('"Date"', snapshot_date)
+        .eq("Date", snapshot_date)
         .execute()
     )
     return round(sum(float(r["Current PnL"] or 0) for r in (res.data or [])), 2)
@@ -292,7 +292,7 @@ def get_balance_history() -> list[dict]:
         res = (
             sb.table("balance_history")
             .select('"Date","Investor Equity"')
-            .order('"Date"', desc=False)
+            .order("Date", desc=False)
             .execute()
         )
         return [
@@ -2787,7 +2787,7 @@ def get_account_ids() -> list[dict]:
         latest_res = (
             sb.table("user_accounts_equity")
             .select('"Date"')
-            .order('"Date"', desc=True)
+            .order("Date", desc=True)
             .limit(1)
             .execute()
         )
@@ -2797,8 +2797,8 @@ def get_account_ids() -> list[dict]:
         res = (
             sb.table("user_accounts_equity")
             .select('"AccountId","Equity"')
-            .eq('"Date"', latest_date)
-            .order('"AccountId"')
+            .eq("Date", latest_date)
+            .order("AccountId")
             .execute()
         )
         return [
@@ -2824,7 +2824,7 @@ def get_accounts_equity_history() -> list[dict]:
         res = (
             sb.table("user_accounts_equity")
             .select('"Date","AccountId","Equity"')
-            .order('"Date"', desc=False)
+            .order("Date", desc=False)
             .execute()
         )
         return [
@@ -2867,7 +2867,7 @@ def _pfees_equity_by_date() -> dict[str, float]:
         res = (
             sb.table("user_pfees_estimation")
             .select('"Date","Invested"')
-            .order('"Date"', desc=False)
+            .order("Date", desc=False)
             .execute()
         )
         eq: dict[str, float] = {}
