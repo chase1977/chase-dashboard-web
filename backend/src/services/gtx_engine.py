@@ -29,6 +29,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, date
 from decimal import Decimal, ROUND_DOWN, ROUND_CEILING
+from itertools import combinations
 
 DEFAULT_SETTINGS = {
     "fee_per_unit": 0.05,
@@ -58,6 +59,12 @@ DEFAULT_SETTINGS = {
     # Broker re-bookings of closed trades — see module docstring. None = use
     # the book's known corrections (gtx_books.BOOK_CORRECTIONS).
     "trade_corrections": None,
+    # Per-instrument terms that differ from the book (2026-10-16), e.g.
+    # {"ABIVAX (CFD)": {"fee_per_unit": 0.06, "swap_long_pct": 0.0}}. Keys:
+    # fee_mode / fee_per_unit / fee_pct / swap_long_pct / swap_short_pct.
+    # A fixed swap rate is outside the book's dated schedule and inference.
+    # None = the book's known terms (gtx_books.BOOK_INSTRUMENT_TERMS).
+    "instrument_terms": None,
 }
 
 
@@ -80,11 +87,24 @@ def swap_rates(s: dict, d: date) -> tuple[float, float]:
     return long_, short_
 
 
-def fee_for(qty: float, price: float, s: dict) -> float:
+def inst_terms(s: dict, instrument: str) -> dict:
+    """Instrument-specific overrides (instrument_terms), {} if none."""
+    return (s.get("instrument_terms") or {}).get(instrument) or {}
+
+
+def fee_for(qty: float, price: float, s: dict, instrument: str | None = None) -> float:
     """Broker brokerage fee for one fill (open or close), full precision."""
-    if s.get("fee_mode") == "pct_notional":
-        return qty * price * float(s["fee_pct"]) / 100
-    return qty * s["fee_per_unit"]
+    t = {**s, **inst_terms(s, instrument)} if instrument else s
+    if t.get("fee_mode") == "pct_notional":
+        return qty * price * float(t["fee_pct"]) / 100
+    return qty * t["fee_per_unit"]
+
+
+def _fixed_rate(s: dict, lot) -> float | None:
+    """Instrument's own swap rate (% p.a.) for this lot's side, else None."""
+    t = inst_terms(s, lot.instrument)
+    k = "swap_long_pct" if lot.side == 1 else "swap_short_pct"
+    return float(t[k]) if k in t else None
 
 
 def _d(iso: str) -> datetime:
@@ -141,7 +161,7 @@ def _close_fill(lots: dict, lid: str, t: dict, s: dict, splits: list) -> tuple[f
     """
     lot = lots[lid]
     q = t["qty"]
-    fee = fee_for(q, t["price"], s)
+    fee = fee_for(q, t["price"], s, lot.instrument)
     gross = (t["price"] - lot.open_px) * q * lot.side
     if abs(q - lot.qty) < 1e-9:
         lot.status, lot.close_px, lot.close_dt = "closed", t["price"], t["dt"]
@@ -214,7 +234,7 @@ def replay(statements: list[dict], settings: dict | None = None) -> dict:
                 opened = next((t["qty"] for t in st["trades"]
                                if _lot_id(t["instrument"], t["dt"]) == lid and abs(t["profit"]) < 1e-9), None)
                 qty0 = opened if opened and opened > p["qty"] else p["qty"]
-                fee = fee_for(qty0, p["open_px"], s)
+                fee = fee_for(qty0, p["open_px"], s, p["instrument"])
                 lots[lid] = Lot(lid, p["instrument"], p["side"], qty0,
                                 p["open_px"], p["open_dt"], open_fee=fee)
                 if _d(p["open_dt"]).date() == d:
@@ -245,7 +265,7 @@ def replay(statements: list[dict], settings: dict | None = None) -> dict:
             if lid in today_ids:
                 used.add(i)                            # still (partly) held — step 1 has it
             elif lid not in lots:                      # opened and fully closed today
-                fee = fee_for(t["qty"], t["price"], s)
+                fee = fee_for(t["qty"], t["price"], s, t["instrument"])
                 lots[lid] = Lot(lid, t["instrument"], t["side"], t["qty"], t["price"], t["dt"], open_fee=fee)
                 fees_today -= fee
                 used.add(i)
@@ -257,7 +277,31 @@ def replay(statements: list[dict], settings: dict | None = None) -> dict:
                      if nq >= t["qty"] - 1e-9 and lots[lid].instrument == t["instrument"]
                      and lots[lid].side == -t["side"]]
             if not cands:
-                warnings.append(f"Unmatched trade {t['instrument']} {t['qty']:,.0f} {t['dt']}")
+                # ONE closing order across SEVERAL lots (2026-10-16: QIAGEN sell
+                # 10,000 on 15-10 closed the 06-10 and 07-10 lots of 5,000 each).
+                # Pick the set of lots whose remaining qty sums to the order and
+                # whose combined profit reproduces the broker's profit.
+                pool = [lid for lid, nq in need.items() if nq > 1e-9
+                        and lots[lid].instrument == t["instrument"] and lots[lid].side == -t["side"]]
+                best = None
+                for n in range(2, min(len(pool), 6) + 1):
+                    for combo in combinations(sorted(pool, key=lambda k: lots[k].open_dt), n):
+                        if abs(sum(need[k] for k in combo) - t["qty"]) > 1e-9:
+                            continue
+                        err = abs(sum((t["price"] - lots[k].open_px) * need[k] * lots[k].side for k in combo)
+                                  - t["profit"])
+                        if best is None or err < best[0]:
+                            best = (err, combo)
+                if best is None:
+                    warnings.append(f"Unmatched trade {t['instrument']} {t['qty']:,.0f} {t['dt']}")
+                    continue
+                used.add(i)
+                for k in best[1]:
+                    q = need[k]
+                    need[k] = 0.0
+                    g, f = _close_fill(lots, k, {**t, "qty": q}, s, splits)
+                    gross_today += g
+                    fees_today -= f
                 continue
             lid = min(cands, key=lambda k: (abs((t["price"] - lots[k].open_px) * t["qty"] * lots[k].side
                                                 - t["profit"]), lots[k].open_dt))
@@ -317,10 +361,15 @@ def replay(statements: list[dict], settings: dict | None = None) -> dict:
             if est:
                 warnings.append(f"{lot.instrument} closed after cutoff — swap price estimated from close")
             charged.append((lot, px, est))
-            swap_base += lot.qty * px * mult
+            if _fixed_rate(s, lot) is None:            # implied / inferred rate: book-rate lots only
+                swap_base += lot.qty * px * mult
+
+        def lot_rate(lot, r_long: float, r_short: float) -> float:
+            fx = _fixed_rate(s, lot)
+            return fx if fx is not None else (r_long if lot.side == 1 else r_short)
 
         def swaps_at(r_long: float, r_short: float) -> list[float]:
-            return [-lot.qty * px * (r_long if lot.side == 1 else r_short) / 100 / s["day_count"] * mult
+            return [-lot.qty * px * lot_rate(lot, r_long, r_short) / 100 / s["day_count"] * mult
                     for lot, px, _ in charged]
 
         stmt_bal, stmt_real = acct["balance"], acct["today_realised"]
@@ -337,7 +386,7 @@ def replay(statements: list[dict], settings: dict | None = None) -> dict:
         # estimated price would all be absorbed into a wrong rate), one side.
         if charged and prev_stmt_bal is not None and not warnings \
                 and not reconciles(cur_long, cur_short):
-            sides = {lot.side for lot, _, _ in charged}
+            sides = {lot.side for lot, _, _ in charged if _fixed_rate(s, lot) is None}
             if len(sides) == 1:
                 side  = sides.pop()
                 carry = cur_long if side == 1 else cur_short
@@ -372,7 +421,7 @@ def replay(statements: list[dict], settings: dict | None = None) -> dict:
                     rate_inferred = True
 
         for (lot, px, est), amt in zip(charged, swaps_at(cur_long, cur_short)):
-            rate = cur_long if lot.side == 1 else cur_short
+            rate = lot_rate(lot, cur_long, cur_short)
             lot.swaps += amt
             lot.swap_ledger.append({"date": d.isoformat(), "price": px, "mult": mult,
                                     "rate_pct": rate, "amount": amt, "estimated": est})
@@ -408,7 +457,10 @@ def replay(statements: list[dict], settings: dict | None = None) -> dict:
         open_pl = sum(l.unrealised() for l in lots.values())
         margin = sum(l.margin(s["margin_pct"])
                      for l in lots.values() if l.status == "open" and l.current_px)
-        implied_swap = stmt_real - gross_today - fees_today
+        # swap left after fees, gross and fixed-rate instruments → book rate
+        fixed_sw = sum(a for (lot, _, _), a in zip(charged, swaps_at(cur_long, cur_short))
+                       if _fixed_rate(s, lot) is not None)
+        implied_swap = stmt_real - gross_today - fees_today - fixed_sw
         implied_rate = (-implied_swap * s["day_count"] * 100 / swap_base) if swap_base else None
 
         checks = {
@@ -460,7 +512,7 @@ def _build_output(lots, log, cash_events, s) -> dict:
         r["days_held"] = len(l.swap_ledger)
         r["unrealised"] = l.unrealised()
         if l.status == "open":
-            r["est_close_fee"] = fee_for(l.qty, l.current_px or l.open_px, s)
+            r["est_close_fee"] = fee_for(l.qty, l.current_px or l.open_px, s, l.instrument)
             r["net_if_closed"] = r["unrealised"] - l.open_fee - r["est_close_fee"] + l.swaps
             r["margin"] = l.margin(s["margin_pct"])
         else:

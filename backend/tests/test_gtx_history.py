@@ -1,6 +1,6 @@
 # backend/tests/test_gtx_history.py
 """
-Full-history regression (2026-10-14): every emailed statement 17-09 → 13-10-2026
+Full-history regression (2026-10-14): every emailed statement 17-09 → 15-10-2026
 replayed per book, checked day by day AND against the broker's account
 operations CSV (exported 13-10, covers to 12-10 17:00 + the 13-10 transfer).
 
@@ -34,10 +34,13 @@ for ccy, b in books.items():
         ok &= r["ok"] and not r["rate_inferred"]
 
 u, e = books["USD"]["summary"], books["EUR"]["summary"]
+# The CSV ends 13-10: compare the USD log summed to that date.
+ulog = [r for r in books["USD"]["recon_log"] if r["date"] <= "2026-10-13"]
+sm = lambda k: sum(r[k] for r in ulog)
 csv_checks = {
-    "USD fees = CSV":            abs(u["fees_total"] - 6500.0) < 1e-6,
-    "USD swaps = CSV + 13-10":   abs(u["swaps_total"] - (2376.431638 + 150.9010)) < 0.001,
-    "USD gross = CSV trading":   abs(u["gross_realised"] - 23772.645) < 1e-6,
+    "USD fees = CSV":            abs(-sm("fees") - 6500.0) < 1e-6,
+    "USD swaps = CSV + 13-10":   abs(-sm("swaps") - (2376.431638 + 150.9010)) < 0.001,
+    "USD gross = CSV trading":   abs(sm("gross_closed") + sm("correction") - 23772.645) < 1e-6,
     "USD capital = deposits − transfer": abs(u["starting_balance"] - (1343927.49 - 25000.0)) < 1e-6,
     "USD correction CHIPOTLE":   abs(u["corrections_total"] + 4999.975) < 1e-6,
     "EUR fees = CSV":            abs(e["fees_total"] - 564.8365) < 1e-6,
@@ -45,6 +48,16 @@ csv_checks = {
 }
 chip = next(c for c in books["USD"]["closed_positions"] if c["instrument"].startswith("CHIPOLTE"))
 csv_checks["CHIPOTLE gross 3,842.50"] = abs(chip["gross"] - 3842.5) < 1e-6
+# 14-10 / 15-10 (statements only, 16-10-2026): ABIVAX $300 each way, no swap;
+# QIAGEN sell 10,000 closes both 5,000 lots (06-10 + 07-10) in one order.
+closed = books["USD"]["closed_positions"]
+abv = next(c for c in closed if c["instrument"].startswith("ABIVAX"))
+q15 = [c for c in closed if c["instrument"].startswith("QIAGEN") and c["close_dt"].startswith("2026-10-15")]
+csv_checks["ABIVAX net 19,550.00 (gross 20,150 − 600 costs)"] = abs(abv["net"] - 19550.0) < 1e-6
+csv_checks["QIAGEN 15-10 closes 2 lots, gross 10,704.85"] = len(q15) == 2 and abs(sum(c["gross"] for c in q15) - 10704.85) < 1e-6
+csv_checks["EUR 14-10 / 15-10 at 6.429%"] = all(r["model_rate_pct"] == 6.429 for r in books["EUR"]["recon_log"][-2:])
+print("\n  15-10 closes (USD net): " + ", ".join(f"{c['instrument'][:8]} {c['open_dt'][:10]} {c['net']:,.4f}"
+                                              for c in closed if c["close_dt"].startswith("2026-10-15")))
 print()
 for k, v in csv_checks.items():
     print(f"  {'✓' if v else '✗'} {k}")

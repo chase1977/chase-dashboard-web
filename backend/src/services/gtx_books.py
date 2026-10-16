@@ -68,6 +68,18 @@ BOOK_CORRECTIONS = {
 }
 
 
+# Instruments whose broker terms differ from their book (engine
+# "instrument_terms"). ABIVAX (USD book, 14→15-10-2026): its open and its
+# close each cost exactly $300.00 on top of every other reconciled item
+# (14-10 −447.70 = −147.71 book swaps −300.00; 15-10 close −300.00) — i.e.
+# $0.06/unit fee and no overnight swap. Split fee vs swap to be confirmed
+# with the broker; the total (and every balance) is exact either way.
+BOOK_INSTRUMENT_TERMS = {
+    "USD": {"ABIVAX (CFD)": {"fee_per_unit": 0.06, "swap_long_pct": 0.0,
+                             "note": "Pending broker confirmation (16-10-2026)"}},
+}
+
+
 def book_settings(settings: dict, ccy: str) -> dict:
     """Effective engine settings for one currency book."""
     if ccy == "USD":
@@ -75,9 +87,12 @@ def book_settings(settings: dict, ccy: str) -> dict:
     else:
         override = (settings.get("books") or {}).get(ccy) or {}
         out = {**settings, "swap_rate_schedule": [], "short_rate_verified": False, "trade_corrections": None,
+               "instrument_terms": None,
                **BOOK_DEFAULTS.get(ccy, {}), **override}
     if out.get("trade_corrections") is None:
         out["trade_corrections"] = [dict(c) for c in BOOK_CORRECTIONS.get(ccy, [])]
+    if out.get("instrument_terms") is None:
+        out["instrument_terms"] = {k: dict(v) for k, v in BOOK_INSTRUMENT_TERMS.get(ccy, {}).items()}
     return out
 
 

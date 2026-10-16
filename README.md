@@ -1985,9 +1985,23 @@ INVESTGTX 08-10 row corrected to $3,240.97 (= £2,449.75 @ 1.32298).
 | Engine | On `booked`, the closed lot is re-priced (gross += Δ); Δ moves the balance only — not today's realised, never a cash flow |
 | UI | Closed table **CORRECTED** tag (hover: original price/gross); recon log `corr −$4,999.98` + ✎ note; summary *incl. broker corrections* |
 
-Full-history regression: `python tests\test_gtx_history.py` — all 19
-statements 17-09 → 13-10 (`fixtures/gtx_history_2026-09-17_to_10-09.txt` +
-12-10 / 13-10) reconcile per book, and totals equal the operations CSV:
+**Per-instrument terms** (2026-10-16) — `instrument_terms` per book
+({instrument: {fee_mode, fee_per_unit, fee_pct, swap_long_pct,
+swap_short_pct}}); a fixed swap rate sits outside the dated schedule and
+rate inference. Default `gtx_books.BOOK_INSTRUMENT_TERMS`: **ABIVAX (CFD)**
+(USD) — open 14-10 and close 15-10 each cost exactly **$300.00** beyond every
+other reconciled item → $0.06/unit fee, no swap (split pending broker; total
+exact either way). Without it the engine "inferred" a false USD rate of
+6.3948% on 14-10.
+
+**One order closing several lots** (2026-10-16) — QIAGEN sell 10,000 @
+46.412 on 15-10 closed the 06-10 (45.50) and 07-10 (45.18303) 5,000 lots;
+the engine picks the set of lots whose qty sums to the order and whose
+profit reproduces the broker's (4,560.00 + 6,144.85 = 10,704.85).
+
+Full-history regression: `python tests\test_gtx_history.py` — all 21
+statements 17-09 → 15-10 (`fixtures/gtx_history_2026-09-17_to_10-09.txt` +
+12-10 … 15-10) reconcile per book, and totals equal the operations CSV:
 USD fees $6,500.00 · swaps $2,527.33 · gross $23,772.65 · capital
 $1,343,927.49 − $25,000 transfer · EUR fee €564.84.
 

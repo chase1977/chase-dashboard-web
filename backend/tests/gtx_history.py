@@ -1,5 +1,5 @@
 # backend/tests/gtx_history.py
-"""Builds the real emailed statements 17-09 → 13-10-2026 (fixtures) as raw text."""
+"""Builds the real emailed statements 17-09 → 15-10-2026 (fixtures) as raw text."""
 import os
 FIX = os.path.join(os.path.dirname(__file__), "fixtures")
 ACC_HDR = "Account name\tBalance\tOpen gross P/L\tProjected balance\tAvailable funds\tInitial margin req\tMargin available\tToday's realized P/L\tAccount currency\tStop out value\tCredit value\tAccount ID\tBlocked for fixed income\tFixed income value\tFixed income orders req"
@@ -34,6 +34,6 @@ def statements() -> list[dict]:
         elif k == "T":
             cur["t"].append(v)
     res = [{"date": d["date"], "text": _email(d["a"], d["p"], d["t"])} for d in out]
-    for d in ("2026-10-12", "2026-10-13"):
+    for d in ("2026-10-12", "2026-10-13", "2026-10-14", "2026-10-15"):
         res.append({"date": d, "text": open(os.path.join(FIX, f"gtx_{d}.txt"), encoding="utf-8").read()})
     return res
