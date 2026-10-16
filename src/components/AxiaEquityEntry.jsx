@@ -30,6 +30,9 @@
  *   day's daily close), saves a normal GBP row (equity = prev GBP equity +
  *   converted change) and writes "+$x @ rate (source)" into Notes. Every
  *   other feed/instance (fxFrom null) renders and behaves exactly as before.
+ *   Multi-currency (2026-10-13): a P/L currency picker (USD / EUR / GBP —
+ *   one per broker sub-account). USD → OANDA GBP/USD (÷), EUR → EUR/GBP (×),
+ *   GBP → no conversion. Same-day entries merge into one GBP row.
  * - Confirm / Discard with popup
  * - Records table with inline edit + delete
  */
@@ -262,6 +265,7 @@ export default function AxiaEquityEntry({
 
   // USD -> GBP entry mode (fxFrom set only for USD feeds) — see file header.
   const [fxMode,    setFxMode]    = useState(Boolean(fxFrom))
+  const [fxCcy,     setFxCcy]     = useState(fxFrom || 'USD')   // P/L currency: USD | EUR | GBP
   const [fxRaw,     setFxRaw]     = useState('')        // formatted USD string
   const [fxQuote,   setFxQuote]   = useState(null)      // { rate, source, rate_at, candle_date, stale, gbp }
   const [fxLoading, setFxLoading] = useState(false)
@@ -455,7 +459,7 @@ export default function AxiaEquityEntry({
     const t = setTimeout(async () => {
       setFxLoading(true)
       try {
-        const res  = await fetch(`${BASE}${apiPrefix}/fx-preview?amount=${amt}&date=${date}`)
+        const res  = await fetch(`${BASE}${apiPrefix}/fx-preview?amount=${amt}&date=${date}&ccy=${fxCcy}`)
         const data = await res.json()
         if (!res.ok) throw new Error(data.detail || 'Rate fetch failed')
         if (!cancelled) setFxQuote(data)
@@ -464,7 +468,7 @@ export default function AxiaEquityEntry({
     }, 450)
     return () => { cancelled = true; clearTimeout(t); setFxLoading(false) }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fxMode, fxRaw, date])
+  }, [fxMode, fxRaw, date, fxCcy])
 
   const onFxChange = (e) => {
     const raw = e.target.value.replace(/,/g, '')
@@ -474,31 +478,36 @@ export default function AxiaEquityEntry({
   }
 
   const fmtSigned = (v) => (v == null ? '—' : `${v > 0 ? '+' : ''}${fmtNum(v)}`)
-  const fxRateLabel = (q) => q.source === 'minute'
+  const FX_SYM = { USD: '$', EUR: '€', GBP: '£' }
+  const fxSym = FX_SYM[fxCcy] || ''
+  // Human rate line per pair: GBP_USD = USD per £1, EUR_GBP = £ per €1.
+  const fxRateText = (q) => !q.pair ? 'No conversion — GBP sub-account'
+    : q.pair === 'GBP_USD' ? `${q.rate.toFixed(5)} USD per £1` : `${q.rate.toFixed(5)} GBP per €1`
+  const fxRateLabel = (q) => !q.pair ? '' : q.source === 'minute'
     ? `OANDA 1-min close ${q.rate_at.slice(11, 16)} UTC (live — re-fetched on save)`
     : `OANDA daily close ${fmtDate(q.candle_date)}`
   const fxEquity = fxQuote && prevRecord?.equity != null ? +(prevRecord.equity + fxQuote.gbp).toFixed(2) : null
 
   const handleSubmitFx = () => {
     const amt = parseNum(fxRaw)
-    if (amt == null)  { setError(`Enter the realised change in ${fxFrom}.`); return }
+    if (amt == null)  { setError(`Enter the realised change in ${fxCcy}.`); return }
     if (!selClient)   { setError('Select a client/account.'); return }
     if (!prevRecord)  { setError('No earlier GBP record — record the GBP initial investment first.'); return }
-    if (!fxQuote)     { setError('Waiting for the GBP/USD rate — try again in a moment.'); return }
+    if (!fxQuote)     { setError('Waiting for the FX rate — try again in a moment.'); return }
     setConfirmPopup({
       variant: 'confirm',
       message: (
         <>
-          <strong style={{ color: C.accent }}>Confirm entry ({fxFrom} → GBP)</strong>
+          <strong style={{ color: C.accent }}>Confirm entry ({fxCcy}{fxCcy === 'GBP' ? '' : ' → GBP'})</strong>
           <br /><br />
           <span style={{ color: C.textMid }}>Client:</span>{' '}
           <strong>{selClient.client} / {selClient.account}</strong><br />
           <span style={{ color: C.textMid }}>Date:</span>{' '}
           <strong>{fmtDate(date)}</strong><br />
           <span style={{ color: C.textMid }}>Realised change:</span>{' '}
-          <strong style={{ color: numColor(amt) }}>{amt < 0 ? '-' : '+'}${fmtNum(Math.abs(amt))}</strong><br />
+          <strong style={{ color: numColor(amt) }}>{amt < 0 ? '-' : '+'}{fxSym}{fmtNum(Math.abs(amt))}</strong><br />
           <span style={{ color: C.textMid }}>Rate:</span>{' '}
-          <strong>{fxQuote.rate.toFixed(5)}</strong>{' '}
+          <strong>{fxRateText(fxQuote)}</strong>{' '}
           <span style={{ color: C.textSub, fontSize: 12 }}>{fxRateLabel(fxQuote)}</span><br />
           <span style={{ color: C.textMid }}>CHG NLV (GBP):</span>{' '}
           <strong style={{ color: numColor(fxQuote.gbp) }}>{fmtSigned(fxQuote.gbp)}</strong><br />
@@ -527,7 +536,7 @@ export default function AxiaEquityEntry({
           account:         selClient.account,
           trade_date:      date,
           currency:        'GBP',
-          source_currency: fxFrom,
+          source_currency: fxCcy,
           source_amount:   amt,
         }),
       })
@@ -901,7 +910,7 @@ export default function AxiaEquityEntry({
             <Field>
               <Label>Entry mode</Label>
               <div style={{ display: 'flex', borderRadius: 6, border: `1px solid ${C.border}`, overflow: 'hidden', width: 'fit-content' }}>
-                {[[true, `${fxFrom} P/L → GBP`], [false, 'GBP NLV']].map(([v, l]) => (
+                {[[true, 'Broker P/L → GBP'], [false, 'GBP NLV']].map(([v, l]) => (
                   <button key={l} onClick={() => setFxMode(v)} style={{
                     padding: '9px 14px', border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 600,
                     whiteSpace: 'nowrap', borderLeft: v ? 'none' : `1px solid ${C.border}`,
@@ -973,8 +982,21 @@ export default function AxiaEquityEntry({
 
           {/* USD -> GBP fields (fx mode) */}
           {fxMode && (<>
+            <Field>
+              <Label>P/L currency</Label>
+              <div style={{ display: 'flex', borderRadius: 6, border: `1px solid ${C.border}`, overflow: 'hidden', width: 'fit-content' }}>
+                {['USD', 'EUR', 'GBP'].map((c, i) => (
+                  <button key={c} onClick={() => setFxCcy(c)} style={{
+                    padding: '9px 12px', border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 600,
+                    whiteSpace: 'nowrap', borderLeft: i ? `1px solid ${C.border}` : 'none',
+                    background: fxCcy === c ? C.accentDim : 'transparent',
+                    color: fxCcy === c ? C.accent : C.textMid,
+                  }}>{FX_SYM[c]} {c}</button>
+                ))}
+              </div>
+            </Field>
             <Field style={{ flex: 1, minWidth: 170 }}>
-              <Label>Realised change ({fxFrom})</Label>
+              <Label>Realised change ({fxSym} {fxCcy})</Label>
               <Input
                 value={fxRaw}
                 onChange={onFxChange}
@@ -1007,11 +1029,11 @@ export default function AxiaEquityEntry({
         {fxMode && (
           <div style={{ marginTop: 10, fontSize: 11, color: C.textSub, lineHeight: 1.6, overflowWrap: 'anywhere' }}>
             {fxQuote
-              ? <>Rate <span style={{ color: C.textMid, fontFamily: 'monospace' }}>{fxQuote.rate.toFixed(5)}</span> USD per £1 · {fxRateLabel(fxQuote)}
+              ? <>{fxQuote.pair ? 'Rate ' : ''}<span style={{ color: C.textMid, fontFamily: 'monospace' }}>{fxRateText(fxQuote)}</span>{fxQuote.pair ? ` · ${fxRateLabel(fxQuote)}` : ''}
                   {fxQuote.stale && <span style={{ color: C.warn }}> · ⚠ candle far from entry date</span>}</>
               : fxError
                 ? <span style={{ color: C.neg }}>⚠ {fxError}</span>
-                : `Enter the closed-trade P/L in ${fxMode ? fxFrom : ''} — converted to GBP at OANDA GBP/USD (today: last 1-min close; past date: that day's close). Recorded as a Trading Day.`}
+                : fxCcy === 'GBP' ? 'Enter the closed-trade P/L from the GBP sub-account — recorded as-is (no conversion). Recorded as a Trading Day.' : `Enter the closed-trade P/L in ${fxCcy} — converted to GBP at OANDA ${fxCcy === 'USD' ? 'GBP/USD' : 'EUR/GBP'} (today: last 1-min close; past date: that day's close). Recorded as a Trading Day. Same-day entries merge into one row.`}
           </div>
         )}
 

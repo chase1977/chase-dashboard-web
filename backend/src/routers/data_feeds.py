@@ -427,31 +427,49 @@ def prev_equity(
 # USD -> GBP conversion for USD-currency daily feeds (2026-09-30)
 # ---------------------------------------------------------------------------
 
-def _require_fx_feed(feed: dict, source_currency: str) -> None:
+# Sub-account currency -> (OANDA pair, how to get GBP). GTX holds USD, EUR
+# and GBP sub-accounts (2026-10-13); GBP needs no conversion.
+FX_PAIRS = {"USD": ("GBP_USD", "div"), "EUR": ("EUR_GBP", "mul"), "GBP": (None, None)}
+FX_SYMBOL = {"USD": "$", "EUR": "€", "GBP": "£"}
+
+
+def _require_fx_feed(feed: dict, source_currency: str) -> str:
     feed_ccy = (feed.get("currency") or "GBP").upper()
-    if source_currency.upper() != "USD" or feed_ccy != "USD":
+    ccy = (source_currency or "").upper()
+    if feed_ccy != "USD":
         raise HTTPException(
             status_code=400,
-            detail=f"USD -> GBP entry is only available on USD feeds (feed '{feed['slug']}' is {feed_ccy}).",
+            detail=f"Foreign-currency P/L entry is only available on the GTX (USD) feed (feed '{feed['slug']}' is {feed_ccy}).",
         )
+    if ccy not in FX_PAIRS:
+        raise HTTPException(status_code=400, detail=f"Currency must be one of {', '.join(FX_PAIRS)}.")
+    return ccy
 
 
-def _quote(trade_date: str, amount: float) -> dict:
+def _quote(trade_date: str, amount: float, ccy: str = "USD") -> dict:
     try:
         d = _date.fromisoformat(trade_date)
     except ValueError:
         raise HTTPException(status_code=400, detail="trade_date must be YYYY-MM-DD.")
-    fx = get_conversion_rate(d)
+    pair, how = FX_PAIRS[ccy]
+    if pair is None:                                   # GBP sub-account: no conversion
+        return {"rate": 1.0, "source": "none", "rate_at": None, "candle_date": trade_date,
+                "stale": False, "pair": None, "ccy": ccy, "amount": amount, "gbp": round(amount, 2)}
+    fx = get_conversion_rate(d, pair)
     if not fx or not fx.get("rate"):
-        raise HTTPException(status_code=502, detail="Could not fetch GBP/USD rate from OANDA — nothing saved. Try again.")
-    return {**fx, "amount": amount, "gbp": round(amount / fx["rate"], 2)}
+        raise HTTPException(status_code=502, detail=f"Could not fetch {pair.replace('_', '/')} rate from OANDA — nothing saved. Try again.")
+    gbp = amount / fx["rate"] if how == "div" else amount * fx["rate"]
+    return {**fx, "pair": pair, "ccy": ccy, "amount": amount, "gbp": round(gbp, 2)}
 
 
 def _fx_note(q: dict) -> str:
     sign = "-" if q["amount"] < 0 else "+"
+    sym = FX_SYMBOL.get(q.get("ccy", "USD"), "")
+    if q.get("pair") is None:
+        return f"{sign}{sym}{abs(q['amount']):,.2f} (GBP sub-account)"
     when = (f"1-min close {q['rate_at'][11:16]} UTC" if q["source"] == "minute"
             else f"daily close {q['candle_date'][8:10]}-{q['candle_date'][5:7]}-{q['candle_date'][:4]}")
-    return f"{sign}${abs(q['amount']):,.2f} @ {q['rate']:.5f} ({when})"
+    return f"{sign}{sym}{abs(q['amount']):,.2f} @ {q['rate']:.5f} {q['pair'].replace('_', '/')} ({when})"
 
 
 def _prev_gbp(sb, table: str, client: str, account: str, trade_date: str) -> Optional[dict]:
@@ -465,11 +483,10 @@ def _prev_gbp(sb, table: str, client: str, account: str, trade_date: str) -> Opt
 
 
 @router.get("/{slug}/fx-preview")
-def fx_preview(slug: str, amount: float = Query(...), date: str = Query(...)):
+def fx_preview(slug: str, amount: float = Query(...), date: str = Query(...), ccy: str = Query("USD")):
     feed = _require_feed(slug)
     _require_cadence(feed, "daily")
-    _require_fx_feed(feed, "USD")
-    return _quote(date, amount)
+    return _quote(date, amount, _require_fx_feed(feed, ccy))
 
 
 @router.post("/{slug}/equity", status_code=201)
@@ -484,11 +501,11 @@ def create_equity(slug: str, body: EquityCreate):
     if body.source_currency:
         # USD -> GBP path. Trading-day P/L only; strictly in date order so the
         # running GBP equity chain can't be broken by a back-dated insert.
-        _require_fx_feed(feed, body.source_currency)
+        ccy = _require_fx_feed(feed, body.source_currency)
         if body.capital_flow_type:
             raise HTTPException(status_code=400, detail="USD -> GBP entry is for trading-day P/L only — record capital flows in GBP.")
         if body.source_amount is None:
-            raise HTTPException(status_code=400, detail="Enter the realised change in USD.")
+            raise HTTPException(status_code=400, detail=f"Enter the realised change in {ccy}.")
         prev = _prev_gbp(sb, feed["equity_table"], body.client, body.account, body.trade_date)
         if not prev:
             raise HTTPException(status_code=400, detail="No earlier GBP record to build on — record the GBP initial investment first.")
@@ -498,14 +515,38 @@ def create_equity(slug: str, body: EquityCreate):
             .gt("trade_date", body.trade_date).limit(1).execute().data or []
         )
         if later:
-            raise HTTPException(status_code=409, detail=f"A later GBP record exists ({later[0]['trade_date']}). Record USD entries in date order.")
-        q = _quote(body.trade_date, body.source_amount)
+            raise HTTPException(status_code=409, detail=f"A later GBP record exists ({later[0]['trade_date']}). Record entries in date order.")
+        q = _quote(body.trade_date, body.source_amount, ccy)
+        # Same-day entry already made through this path (e.g. a USD close and an
+        # EUR close on one day): add to that row instead of a duplicate (2026-10-13).
+        same = (
+            sb.table(feed["equity_table"]).select("*")
+            .eq("client", body.client).eq("account", body.account).eq("currency", "GBP")
+            .eq("trade_date", body.trade_date).limit(1).execute().data or []
+        )
+        if same:
+            row0 = same[0]
+            if not row0.get("source_currency") or row0.get("capital_flow_type"):
+                raise HTTPException(status_code=409, detail=f"A GBP record already exists for {body.trade_date}. Edit it instead.")
+            upd = {
+                "chg_nlv": round(float(row0.get("chg_nlv") or 0) + q["gbp"], 2),
+                "equity":  round(float(row0["equity"]) + q["gbp"], 2),
+                "notes":   f"{row0.get('notes') or ''} · {_fx_note(q)}".strip(" ·"),
+                "source_currency": row0["source_currency"] if row0["source_currency"] == ccy else "MIXED",
+                "source_amount":   (float(row0.get("source_amount") or 0) + body.source_amount)
+                                   if row0["source_currency"] == ccy else None,
+                "fx_rate":         q["rate"] if row0["source_currency"] == ccy else None,
+                "fx_rate_at":      q["rate_at"],
+            }
+            saved = sb.table(feed["equity_table"]).update(upd).eq("id", row0["id"]).execute().data[0]
+            invalidate_all_cache()
+            return saved
         body.currency = "GBP"
         body.chg_nlv  = q["gbp"]
         body.equity   = round(float(prev["equity"]) + q["gbp"], 2)
         body.notes    = _fx_note(q) + (f" · {body.notes}" if body.notes else "")
         fx_fields = {
-            "source_currency": "USD",
+            "source_currency": ccy,
             "source_amount":   body.source_amount,
             "fx_rate":         q["rate"],
             "fx_rate_at":      q["rate_at"],      # None for a daily close (date is in notes)

@@ -13,6 +13,8 @@ from typing import Optional
 from src.services.supabase_service import get_client
 from src.services.gtx_parser import parse_statement
 from src.services.gtx_engine import replay, DEFAULT_SETTINGS
+from src.services.gtx_books import replay_books, book_settings
+from src.services.gtx_parser import parse_statement_books
 
 T_STMT = "gtx_statements"
 T_SETTINGS = "gtx_settings"
@@ -40,7 +42,7 @@ def save_settings(patch: dict) -> dict:
 # ── statements ───────────────────────────────────────────────────────
 def list_statements(account: str = DEFAULT_ACCOUNT) -> list[dict]:
     res = (get_client().table(T_STMT)
-           .select("id, account, stmt_date, parsed, notes, created_at, updated_at")
+           .select("id, account, stmt_date, parsed, raw_text, notes, created_at, updated_at")
            .eq("account", account).order("stmt_date").execute())
     return res.data or []
 
@@ -60,17 +62,35 @@ def parse_text(text: str) -> dict:
     return {"account": parsed["account"]["account"] or DEFAULT_ACCOUNT, "parsed": parsed}
 
 
+def _book_inputs(rows: list[dict]) -> list[dict]:
+    return [{"date": r["stmt_date"], "text": r["raw_text"]} for r in rows]
+
+
 def preview(stmt_date: str, text: str) -> dict:
-    """Replay existing statements + this candidate; return its recon row."""
+    """
+    Replay existing statements + this candidate, per currency book
+    (2026-10-13); return the candidate's recon row for every book.
+    "recon" stays the USD row for backward compatibility.
+    """
     p = parse_text(text)
-    rows = [r for r in list_statements(p["account"]) if r["stmt_date"] != stmt_date]
-    exists = any(r["stmt_date"] == stmt_date for r in list_statements(p["account"]))
-    engine_in = _to_engine(rows) + [{"date": stmt_date, **p["parsed"]}]
-    out = replay(engine_in, get_settings())
-    row = next(x for x in out["recon_log"] if x["date"] == stmt_date)
+    all_rows = list_statements(p["account"])
+    rows = [r for r in all_rows if r["stmt_date"] != stmt_date]
+    exists = len(rows) != len(all_rows)
+    out = replay_books(_book_inputs(rows) + [{"date": stmt_date, "text": text}], get_settings())
+    parsed_books = parse_statement_books(text)
+    books = []
+    for b in out["books"]:
+        row = next((x for x in b["recon_log"] if x["date"] == stmt_date), None)
+        if row is not None:
+            pb = parsed_books.get(b["ccy"]) or {}
+            books.append({"ccy": b["ccy"], "symbol": b["symbol"], "verified": b["verified"], "recon": row,
+                          "account": (pb.get("account") or {}).get("account") or "",
+                          "n_open": len(pb.get("open_positions") or []), "n_trades": len(pb.get("trades") or [])})
     later = [r["stmt_date"] for r in rows if r["stmt_date"] > stmt_date]
     return {
-        "account": p["account"], "parsed": p["parsed"], "recon": row,
+        "account": p["account"], "parsed": p["parsed"],
+        "recon": next(b["recon"] for b in books if b["ccy"] == "USD"),
+        "books": books, "ok": all(b["recon"]["ok"] for b in books),
         "exists": exists, "later_statements": later,
     }
 
@@ -99,8 +119,20 @@ def delete_statement(stmt_id: int) -> None:
 
 # ── full state ───────────────────────────────────────────────────────
 def get_state(account: str = DEFAULT_ACCOUNT) -> dict:
+    """
+    Per-currency books (2026-10-13). Top-level keys stay the USD book so
+    existing callers keep working; "books" holds every active book (USD
+    first, then EUR, GBP) and "recon_ok" covers all of them.
+    """
     rows = list_statements(account)
-    out = replay(_to_engine(rows), get_settings())
+    settings = get_settings()
+    res = replay_books(_book_inputs(rows), settings)
+    usd = next(b for b in res["books"] if b["ccy"] == "USD")
+    out = {k: v for k, v in usd.items() if k not in ("ccy", "symbol", "verified")}
+    out["books"] = res["books"]
+    out["recon_ok"] = res["recon_ok"]
+    # Effective settings for every book (incl. hidden GBP) — Settings modal form values.
+    out["book_settings"] = {c: book_settings(settings, c) for c in ("USD", "EUR", "GBP")}
     out["account"] = account
     out["statements"] = [{"id": r["id"], "date": r["stmt_date"], "notes": r.get("notes")} for r in rows]
     return out

@@ -6,10 +6,13 @@
  * Backend replays every saved statement in date order (gtx_engine.py), so
  * everything shown here — lots, fees, swaps, closes, recon — is derived.
  *
- * Money shown truncated to 2dp (broker display convention), USD.
+ * Money shown truncated to 2dp (broker display convention), in each book's
+ * own currency. Multi-currency (2026-10-13): one stacked section per
+ * sub-account book (USD → EUR → GBP), each with its own summary, positions
+ * and recon log. Book symbol flows through SymCtx → useFmt().
  */
 
-import { Fragment, useState, useEffect, useCallback } from 'react'
+import { Fragment, createContext, useContext, useState, useEffect, useCallback } from 'react'
 import useIsMobile from '../hooks/useIsMobile.js'
 import {
   fetchGtxState, previewGtxStatement, saveGtxStatement,
@@ -24,13 +27,25 @@ const C = {
 
 // ─── Formatters ────────────────────────────────────────────────────────────────
 const trunc2 = x => (x < 0 ? -Math.floor(-x * 100 + 1e-7) : Math.floor(x * 100 + 1e-7)) / 100
-const fmtUsd = (x, { sign = false } = {}) => {
+const fmtMoney = (x, { sign = false, sym = '$' } = {}) => {
   if (x === null || x === undefined || Number.isNaN(x)) return '—'
   const v = trunc2(x)
   const s = Math.abs(v).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
   const pre = v < 0 ? '−' : sign && v > 0 ? '+' : ''
-  return `${pre}$${s}`
+  return `${pre}${sym}${s}`
 }
+// Book currency symbol ($ / € / £) — set once per book section, read by every table.
+const SymCtx = createContext('$')
+const useFmt = () => {
+  const sym = useContext(SymCtx)
+  return (x, o = {}) => fmtMoney(x, { ...o, sym })
+}
+const BOOK_META = { USD: { sym: '$', name: 'US Dollar' }, EUR: { sym: '€', name: 'Euro' }, GBP: { sym: '£', name: 'Pound Sterling' } }
+const ALL_BOOKS = ['USD', 'EUR', 'GBP']
+// Mirrors backend gtx_books.book_settings: non-USD books start with no dated
+// schedule and an unverified short rate, then take settings.books[CCY].
+const bookSettings = (settings, ccy) => ccy === 'USD' ? settings
+  : { ...settings, swap_rate_schedule: [], short_rate_verified: false, verified: false, ...((settings.books || {})[ccy] || {}) }
 const fmtNum = (x, dp = 0) => x === null || x === undefined ? '—'
   : Number(x).toLocaleString('en-GB', { minimumFractionDigits: dp, maximumFractionDigits: dp })
 const fmtPx = x => x === null || x === undefined ? '—' : String(x)
@@ -127,6 +142,7 @@ function Row({ label, value, color, bold, indent, border }) {
 }
 
 function Summary({ s }) {
+  const fmtUsd = useFmt()
   const grossPl = s.gross_realised + s.open_pl
   return (
     <>
@@ -150,6 +166,7 @@ function Summary({ s }) {
           <Row label="Total profit (winners)" value={fmtUsd(s.total_profit, { sign: true })} color={C.pos} />
           <Row label="Total loss (losers)" value={fmtUsd(s.total_loss)} color={s.total_loss < 0 ? C.neg : C.text} />
           <Row label="Gross realised P/L" value={fmtUsd(s.gross_realised, { sign: true })} color={tone(s.gross_realised)} bold border />
+          {!!s.corrections_total && <Row label="incl. broker corrections" value={fmtUsd(s.corrections_total, { sign: true })} color={C.warn} indent />}
           <Row label="Win rate" value={s.win_rate === null ? '—' : `${fmtNum(s.win_rate, 1)}%`} />
           <Row label="Closed / open lots" value={`${s.n_closed} / ${s.n_open}`} />
         </Card>
@@ -197,6 +214,7 @@ function SideTag({ side }) {
 }
 
 function SwapLedger({ ledger, colSpan }) {
+  const fmtUsd = useFmt()
   return (
     <tr>
       <td colSpan={colSpan} style={{ padding: '10px 14px 14px', background: C.bg, borderBottom: `1px solid ${C.border}` }}>
@@ -217,6 +235,7 @@ function SwapLedger({ ledger, colSpan }) {
 }
 
 function OpenTable({ rows }) {
+  const fmtUsd = useFmt()
   const [open, setOpen] = useState(null)
   if (!rows.length) return <div style={{ fontSize: 13, color: C.dim, padding: '8px 0' }}>No open positions.</div>
   const tot = k => rows.reduce((a, r) => a + (r[k] || 0), 0)
@@ -266,6 +285,7 @@ function OpenTable({ rows }) {
 }
 
 function ClosedTable({ rows }) {
+  const fmtUsd = useFmt()
   const [open, setOpen] = useState(null)
   if (!rows.length) return <div style={{ fontSize: 13, color: C.dim, padding: '8px 0' }}>No closed positions yet.</div>
   const tot = k => rows.reduce((a, r) => a + (r[k] || 0), 0)
@@ -293,7 +313,13 @@ function ClosedTable({ rows }) {
               <td style={tdL}>{fmtDt(r.open_dt)}</td>
               <td style={td}>{fmtPx(r.open_px)}</td>
               <td style={tdL}>{fmtDt(r.close_dt)}</td>
-              <td style={td}>{fmtPx(r.close_px)}</td>
+              <td style={td}>
+                {r.correction && (
+                  <span title={`Broker re-booked ${fmtDate(r.correction.booked)}: was ${r.correction.original_close_px} (${fmtUsd(r.correction.original_gross, { sign: true })}). ${r.correction.note || ''}`}
+                    style={{ marginRight: 6, padding: '1px 5px', borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: '0.4px', color: C.accent, border: `1px solid ${C.accent}55` }}>CORRECTED</span>
+                )}
+                {fmtPx(r.close_px)}
+              </td>
               <td style={{ ...td, color: tone(r.gross) }}>{fmtUsd(r.gross, { sign: true })}</td>
               <td style={{ ...td, color: C.neg }}>{fmtUsd(-r.open_fee)}</td>
               <td style={{ ...td, color: C.neg }}>{fmtUsd(-r.close_fee)}</td>
@@ -319,6 +345,7 @@ function ClosedTable({ rows }) {
 }
 
 function ReconLog({ log, statements, onDelete, onViewRaw }) {
+  const fmtUsd = useFmt()
   const idByDate = Object.fromEntries(statements.map(s => [s.date, s.id]))
   const rows = [...log].reverse()
   return (
@@ -351,7 +378,10 @@ function ReconLog({ log, statements, onDelete, onViewRaw }) {
               <td style={{ ...td, color: r.fees ? C.neg : C.dim }}>{fmtUsd(r.fees)}</td>
               <td style={{ ...td, color: r.swaps ? C.neg : C.dim }}>{fmtUsd(r.swaps)}</td>
               <td style={{ ...td, color: tone(r.gross_closed) }}>{fmtUsd(r.gross_closed, { sign: true })}</td>
-              <td style={{ ...td, color: r.cash_flow ? C.accent : C.dim }}>{r.cash_flow ? fmtUsd(r.cash_flow, { sign: true }) : '—'}</td>
+              <td style={{ ...td, color: r.cash_flow ? C.accent : C.dim }}>
+                {r.cash_flow ? fmtUsd(r.cash_flow, { sign: true }) : (r.correction ? '' : '—')}
+                {!!r.correction && <span title="Broker re-booked a closed trade — balance only, not today's realised" style={{ marginLeft: r.cash_flow ? 6 : 0, fontSize: 10, color: C.warn, fontWeight: 700 }}>corr {fmtUsd(r.correction, { sign: true })}</span>}
+              </td>
               <td style={td}>
                 {r.implied_rate_pct ? `${fmtNum(r.implied_rate_pct, 4)}%` : '—'}
                 {r.rate_inferred && (
@@ -371,16 +401,69 @@ function ReconLog({ log, statements, onDelete, onViewRaw }) {
                 </div>
               </td>
             </tr>
-            {(!r.ok || r.warnings.length > 0) && (
+            {(!r.ok || r.warnings.length > 0 || r.corrections?.length > 0) && (
               <tr><td colSpan={11} style={{ padding: '6px 12px', fontSize: 11, color: r.ok ? C.warn : C.neg, background: C.bg, borderBottom: `1px solid ${C.border}`, whiteSpace: 'normal' }}>
                 {!r.ok && <div>Failed: {Object.entries(r.checks).filter(([, v]) => !v).map(([k]) => k).join(', ')} — stmt open P/L {fmtUsd(r.stmt_open_pl)} vs engine {fmtUsd(r.engine_open_pl)}; stmt realised {fmtUsd(r.stmt_realised)} vs engine {fmtUsd(r.engine_realised)}</div>}
                 {r.warnings.map((w, i) => <div key={i}>⚠ {w}</div>)}
+                {(r.corrections || []).map((w, i) => <div key={`c${i}`} style={{ color: C.accent }}>✎ {w}</div>)}
               </td></tr>
             )}
           </Fragment>
         ))}
       </tbody>
     </TableWrap>
+  )
+}
+
+// ─── Book header (one per currency sub-account) ───────────────────────────────
+function BookHeader({ ccy, account, verified, right }) {
+  const meta = BOOK_META[ccy] || { sym: ccy, name: ccy }
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+        <span style={{ width: 30, height: 30, borderRadius: 8, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+          background: `${C.accent}1A`, border: `1px solid ${C.accent}55`, color: C.accent, fontWeight: 700, fontSize: 15 }}>{meta.sym}</span>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: C.text }}>{ccy} book <span style={{ fontWeight: 400, color: C.muted, fontSize: 12 }}>· {meta.name}</span></div>
+          <div style={{ fontSize: 11, color: C.muted }}>{account}</div>
+        </div>
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+        {!verified && <Chip ok={null}>Fee / swap rules unconfirmed</Chip>}
+        {right}
+      </div>
+    </div>
+  )
+}
+
+// ─── Per-book preview block (Add Statement) ───────────────────────────────────
+function BookPreview({ b }) {
+  const fmtUsd = useFmt()
+  const r = b.recon
+  return (
+    <div style={{ padding: 14, borderRadius: 10, background: C.surface, border: `1px solid ${r.ok ? C.pos : C.neg}55` }}>
+      <BookHeader ccy={b.ccy} account={b.account || ''} verified={b.verified} right={<Chip ok={r.ok}>{r.ok ? '✓ Reconciles' : '✗ Mismatch'}</Chip>} />
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, margin: '10px 0' }}>
+        {Object.entries(r.checks).map(([k, v]) => <Chip key={k} ok={v}>{v ? '✓' : '✗'} {k.replace('_', ' ')}</Chip>)}
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', columnGap: 20 }}>
+        {b.n_open != null && <Row label="Open lots / trades parsed" value={`${b.n_open} / ${b.n_trades}`} />}
+        <Row label="Statement balance" value={fmtUsd(r.stmt_balance)} />
+        <Row label="Engine balance" value={fmtUsd(r.engine_balance)} color={r.checks.balance ? C.text : C.neg} />
+        <Row label="Today realised" value={fmtUsd(r.stmt_realised, { sign: true })} color={tone(r.stmt_realised)} />
+        <Row label="Fees today" value={fmtUsd(r.fees)} color={r.fees ? C.neg : C.text} />
+        <Row label="Swaps today" value={fmtUsd(r.swaps)} color={r.swaps ? C.neg : C.text} />
+        <Row label="Closed gross today" value={fmtUsd(r.gross_closed, { sign: true })} color={tone(r.gross_closed)} />
+        {r.cash_flow !== 0 && <Row label="Cash flow detected" value={fmtUsd(r.cash_flow, { sign: true })} color={C.accent} />}
+        {!!r.correction && <Row label="Broker correction" value={fmtUsd(r.correction, { sign: true })} color={C.warn} />}
+        {r.implied_rate_pct && <Row label="Implied swap rate" value={`${fmtNum(r.implied_rate_pct, 4)}%`} />}
+        {r.model_rate_pct != null && r.swaps !== 0 && (
+          <Row label={r.rate_inferred ? 'Swap rate used (new — inferred)' : 'Swap rate used'}
+            value={`${fmtNum(r.model_rate_pct, 5)}%`} color={r.rate_inferred ? C.warn : C.text} />
+        )}
+      </div>
+      {r.warnings.map((w, i) => <div key={i} style={{ fontSize: 11, color: C.warn, marginTop: 6 }}>⚠ {w}</div>)}
+    </div>
   )
 }
 
@@ -421,8 +504,9 @@ function AddStatementModal({ onClose, onSaved }) {
     </div>
   )
 
-  const r = preview?.recon
   const p = preview?.parsed
+  // Older backend: no books → treat the single recon row as the USD book.
+  const books = preview ? (preview.books || [{ ccy: 'USD', symbol: '$', verified: true, recon: preview.recon, account: preview.account }]) : []
   return (
     <Modal title="Add Daily Statement" onClose={onClose}>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'flex-end', marginBottom: 14 }}>
@@ -443,7 +527,7 @@ function AddStatementModal({ onClose, onSaved }) {
           style={{ ...inputStyle, fontFamily: 'ui-monospace, monospace', fontSize: 11, resize: 'vertical' }} />
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10 }}>
-          {secBox('account', 'Account Statement Report', 'Header row + GTX0011-USD row')}
+          {secBox('account', 'Account Statement Report', 'Header row + every GTX0011-USD / -EUR / -GBP row')}
           {secBox('open', 'Open Position Report', 'Header row + position rows')}
           {secBox('trades', 'Trades Report', 'Header row + trade rows')}
         </div>
@@ -452,31 +536,19 @@ function AddStatementModal({ onClose, onSaved }) {
       {err && <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 8, background: `${C.neg}14`, border: `1px solid ${C.neg}40`, color: C.neg, fontSize: 12 }}>{err}</div>}
 
       {preview && (
-        <div style={{ marginTop: 14, padding: 14, borderRadius: 10, background: C.surface, border: `1px solid ${r.ok ? C.pos : C.neg}55` }}>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
-            <Chip ok={r.ok}>{r.ok ? '✓ Reconciles' : '✗ Mismatch'}</Chip>
-            {Object.entries(r.checks).map(([k, v]) => <Chip key={k} ok={v}>{v ? '✓' : '✗'} {k.replace('_', ' ')}</Chip>)}
+        <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            <Chip ok={preview.ok}>{preview.ok ? `✓ All ${books.length} book${books.length === 1 ? '' : 's'} reconcile` : '✗ Mismatch in at least one book'}</Chip>
+            <Chip ok={null}>{p.open_positions.length} open lots · {p.trades.length} trades parsed</Chip>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', columnGap: 20 }}>
-            <Row label="Account" value={preview.account} />
-            <Row label="Open lots / trades parsed" value={`${p.open_positions.length} / ${p.trades.length}`} />
-            <Row label="Statement balance" value={fmtUsd(r.stmt_balance)} />
-            <Row label="Engine balance" value={fmtUsd(r.engine_balance)} color={r.checks.balance ? C.text : C.neg} />
-            <Row label="Today realised" value={fmtUsd(r.stmt_realised, { sign: true })} color={tone(r.stmt_realised)} />
-            <Row label="Fees today" value={fmtUsd(r.fees)} color={r.fees ? C.neg : C.text} />
-            <Row label="Swaps today" value={fmtUsd(r.swaps)} color={r.swaps ? C.neg : C.text} />
-            <Row label="Closed gross today" value={fmtUsd(r.gross_closed, { sign: true })} color={tone(r.gross_closed)} />
-            {r.cash_flow !== 0 && <Row label="Cash flow detected" value={fmtUsd(r.cash_flow, { sign: true })} color={C.accent} />}
-            {r.implied_rate_pct && <Row label="Implied swap rate" value={`${fmtNum(r.implied_rate_pct, 4)}%`} />}
-            {r.model_rate_pct != null && r.swaps !== 0 && (
-              <Row label={r.rate_inferred ? 'Swap rate used (new — inferred)' : 'Swap rate used'}
-                value={`${fmtNum(r.model_rate_pct, 5)}%`} color={r.rate_inferred ? C.warn : C.text} />
-            )}
-          </div>
-          {r.warnings.map((w, i) => <div key={i} style={{ fontSize: 11, color: C.warn, marginTop: 6 }}>⚠ {w}</div>)}
-          {preview.later_statements.length > 0 && <div style={{ fontSize: 11, color: C.dim, marginTop: 6 }}>Back-fill: {preview.later_statements.length} later statement(s) will be re-reconciled automatically.</div>}
+          {books.map(b => (
+            <SymCtx.Provider key={b.ccy} value={b.symbol}>
+              <BookPreview b={b} />
+            </SymCtx.Provider>
+          ))}
+          {preview.later_statements.length > 0 && <div style={{ fontSize: 11, color: C.dim }}>Back-fill: {preview.later_statements.length} later statement(s) will be re-reconciled automatically.</div>}
           {preview.exists && (
-            <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10, fontSize: 12, color: C.warn, cursor: 'pointer' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: C.warn, cursor: 'pointer' }}>
               <input type="checkbox" checked={overwrite} onChange={e => setOverwrite(e.target.checked)} />
               Statement for {fmtDate(date)} already saved — overwrite
             </label>
@@ -494,21 +566,51 @@ function AddStatementModal({ onClose, onSaved }) {
 }
 
 // ─── Settings modal ────────────────────────────────────────────────────────────
+const FEE_MODES = [['per_unit', 'Per unit'], ['pct_notional', '% of notional']]
+const SWAP_MARKUP_PCT = 4   // broker: long = reference + 4%, short = 4% − reference (Ben, 14-10-2026)
 const SETTING_FIELDS = [
-  ['fee_per_unit', 'Broker fee per unit (USD)', 'Charged on open and on close'],
+  ['fee_per_unit', 'Broker fee per unit', 'qty × fee — charged on open and on close'],
+  ['fee_pct', 'Broker fee (% of notional)', 'qty × fill price × % — each way (0.25 = 25bps)'],
   ['swap_rate_long_pct', 'Base swap rate — long (% p.a.)', 'Before the first dated change below'],
   ['swap_rate_short_pct', 'Base swap rate — short (% p.a.)', 'Unverified until first short swap'],
   ['day_count', 'Day count', 'Swap denominator'],
   ['swap_cutoff_hour', 'Swap cutoff hour', 'Lot open at this hour → charged'],
   ['friday_multiplier', 'Friday multiplier', 'Weekend swap roll'],
-  ['margin_pct', 'Margin (%)', 'Of current notional'],
+  ['margin_pct', 'Margin (%)', 'Default — statement Margin column wins per position'],
 ]
 
-function SettingsModal({ settings, onClose, onSaved }) {
-  const [v, setV] = useState(() => Object.fromEntries(SETTING_FIELDS.map(([k]) => [k, settings[k]])))
-  const [verified, setVerified] = useState(!!settings.short_rate_verified)
+function SettingsModal({ settings, effective, onClose, onSaved }) {
+  const [ccy, setCcy] = useState('USD')
+  return (
+    <Modal title="Engine Settings" onClose={onClose} maxWidth={620}>
+      <div style={{ display: 'flex', border: `1px solid ${C.border}`, borderRadius: 8, overflow: 'hidden', marginBottom: 14, width: 'fit-content', maxWidth: '100%' }}>
+        {ALL_BOOKS.map(c => (
+          <button key={c} onClick={() => setCcy(c)} style={{ padding: '8px 16px', fontSize: 12, fontWeight: 600, border: 'none', cursor: 'pointer',
+            background: ccy === c ? C.accent : 'transparent', color: ccy === c ? '#04111F' : C.dim }}>{BOOK_META[c].sym} {c}</button>
+        ))}
+      </div>
+      <div style={{ fontSize: 11, color: C.muted, marginBottom: 12 }}>
+        {ccy === 'USD' ? 'USD book — main account settings.' : `${ccy} book — own fee and swap rules. Starts from the USD values until set here.`}
+      </div>
+      <BookSettingsForm key={ccy} ccy={ccy} settings={settings} effective={effective?.[ccy]} onClose={onClose} onSaved={onSaved} />
+    </Modal>
+  )
+}
+
+function BookSettingsForm({ ccy, settings, effective, onClose, onSaved }) {
+  // Backend's effective book settings (incl. broker-confirmed code defaults) win.
+  const base = effective || bookSettings(settings, ccy)
+  const sym = BOOK_META[ccy].sym
+  const [v, setV] = useState(() => Object.fromEntries(SETTING_FIELDS.map(([k]) => [k, base[k] ?? ''])))
+  const [feeMode, setFeeMode] = useState(base.fee_mode || 'per_unit')
+  const [ref, setRef] = useState({ from: '', pct: '' })   // reference-rate helper
+  // Broker re-bookings of closed trades: [{ instrument, open_dt, close_px, booked, note }]
+  const [corr, setCorr] = useState(() => (base.trade_corrections || []).map(e => ({ ...e })))
+  const setCorrRow = (i, k, x) => setCorr(corr.map((e, j) => (j === i ? { ...e, [k]: x } : e)))
+  const [verified, setVerified] = useState(!!base.short_rate_verified)
+  const [rulesOk, setRulesOk] = useState(!!base.verified)
   // Dated swap-rate changes: [{ from: 'YYYY-MM-DD', long_pct, short_pct }]
-  const [sched, setSched] = useState(() => (settings.swap_rate_schedule || []).map(e => ({ ...e })))
+  const [sched, setSched] = useState(() => (base.swap_rate_schedule || []).map(e => ({ ...e })))
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
 
@@ -524,17 +626,30 @@ function SettingsModal({ settings, onClose, onSaved }) {
         throw new Error('Each rate change needs a date and numeric long / short rates')
       if (new Set(schedule.map(e => e.from)).size !== schedule.length) throw new Error('Two rate changes share the same date')
       schedule.sort((a, b) => a.from.localeCompare(b.from))
-      await updateGtxSettings({ ...patch, short_rate_verified: verified, swap_rate_schedule: schedule })
+      const corrections = corr.map(e => ({ instrument: (e.instrument || '').trim(), open_dt: (e.open_dt || '').trim().replace(' ', 'T'),
+        close_px: Number(e.close_px), booked: e.booked, note: e.note || '' }))
+      if (corrections.some(e => !e.instrument || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(e.open_dt) || Number.isNaN(e.close_px) || !/^\d{4}-\d{2}-\d{2}$/.test(e.booked || '')))
+        throw new Error('Each correction needs instrument, open date-time (YYYY-MM-DD HH:MM), corrected close price and booked date')
+      const book = { ...patch, fee_mode: feeMode, short_rate_verified: verified, swap_rate_schedule: schedule, trade_corrections: corrections }
+      await updateGtxSettings(ccy === 'USD' ? book
+        : { books: { ...(settings.books || {}), [ccy]: { ...book, verified: rulesOk } } })
       onSaved()
     } catch (e) { setErr(errMsg(e)) } finally { setBusy(false) }
   }
 
   return (
-    <Modal title="Engine Settings" onClose={onClose} maxWidth={620}>
+    <>
+      <div style={{ fontSize: 11, fontWeight: 600, color: C.dim, marginBottom: 5 }}>Broker fee model</div>
+      <div style={{ display: 'flex', border: `1px solid ${C.border}`, borderRadius: 8, overflow: 'hidden', marginBottom: 14, width: 'fit-content', maxWidth: '100%' }}>
+        {FEE_MODES.map(([k, l]) => (
+          <button key={k} onClick={() => setFeeMode(k)} style={{ padding: '7px 14px', fontSize: 12, fontWeight: 600, border: 'none', cursor: 'pointer',
+            background: feeMode === k ? C.accent : 'transparent', color: feeMode === k ? '#04111F' : C.dim }}>{l}</button>
+        ))}
+      </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 12 }}>
-        {SETTING_FIELDS.map(([k, label, hint]) => (
+        {SETTING_FIELDS.filter(([k]) => !(k === 'fee_per_unit' && feeMode !== 'per_unit') && !(k === 'fee_pct' && feeMode !== 'pct_notional')).map(([k, label, hint]) => (
           <div key={k} style={{ minWidth: 0 }}>
-            <div style={{ fontSize: 11, fontWeight: 600, color: C.dim, marginBottom: 5 }}>{label}</div>
+            <div style={{ fontSize: 11, fontWeight: 600, color: C.dim, marginBottom: 5 }}>{k === 'fee_per_unit' ? `${label} (${sym})` : label}</div>
             <input value={v[k]} onChange={e => setV({ ...v, [k]: e.target.value })} inputMode="decimal" style={inputStyle} />
             <div style={{ fontSize: 10, color: C.muted, marginTop: 4 }}>{hint}</div>
           </div>
@@ -556,17 +671,107 @@ function SettingsModal({ settings, onClose, onSaved }) {
             <button onClick={() => setSched(sched.filter((_, j) => j !== i))} style={{ ...btn(), padding: '8px 12px' }}>✕</button>
           </div>
         ))}
-        <button onClick={() => setSched([...sched, { from: '', long_pct: '', short_pct: '' }])} style={btn()}>+ Add rate change</button>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+          <button onClick={() => setSched([...sched, { from: '', long_pct: '', short_pct: '' }])} style={btn()}>+ Add rate change</button>
+        </div>
+        {/* Broker quotes a reference rate: long = ref + 4%, short = 4% − ref (negative = credit). */}
+        <div style={{ marginTop: 12, padding: 10, borderRadius: 8, border: `1px dashed ${C.border}` }}>
+          <div style={{ fontSize: 10, color: C.muted, marginBottom: 8 }}>
+            From a reference rate — long = ref + {SWAP_MARKUP_PCT}%, short = {SWAP_MARKUP_PCT}% − ref (negative = credit)
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+            <input type="date" value={ref.from} onChange={x => setRef({ ...ref, from: x.target.value })}
+              style={{ ...inputStyle, width: 'auto', flex: '1 1 140px', colorScheme: 'dark' }} />
+            <input value={ref.pct} onChange={x => setRef({ ...ref, pct: x.target.value })} inputMode="decimal"
+              placeholder="Reference %" style={{ ...inputStyle, width: 'auto', flex: '1 1 110px' }} />
+            <button disabled={!ref.from || ref.pct === '' || Number.isNaN(Number(ref.pct))} onClick={() => {
+              const r = Number(ref.pct)
+              setSched([...sched.filter(e => e.from !== ref.from),
+                { from: ref.from, long_pct: +(r + SWAP_MARKUP_PCT).toFixed(5), short_pct: +(SWAP_MARKUP_PCT - r).toFixed(5) }])
+              setRef({ from: '', pct: '' })
+            }} style={{ ...btn(), padding: '8px 12px' }}>Add</button>
+          </div>
+        </div>
+      </div>
+      <div style={{ marginTop: 18, paddingTop: 14, borderTop: `1px solid ${C.border}` }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: C.dim, marginBottom: 4 }}>Broker trade corrections</div>
+        <div style={{ fontSize: 10, color: C.muted, marginBottom: 10 }}>
+          When the broker re-books a closed trade after the statement showed it (check the operations CSV). The lot is re-priced on the booked date; the difference is a correction, never a withdrawal.
+        </div>
+        {corr.map((e, i) => (
+          <div key={i} style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginBottom: 8, paddingBottom: 8, borderBottom: `1px dashed ${C.border}` }}>
+            <input value={e.instrument || ''} onChange={x => setCorrRow(i, 'instrument', x.target.value)} placeholder="Instrument (as on statement)"
+              style={{ ...inputStyle, width: 'auto', flex: '2 1 200px' }} />
+            <input value={(e.open_dt || '').replace('T', ' ').slice(0, 16)} onChange={x => setCorrRow(i, 'open_dt', x.target.value)} placeholder="Opened YYYY-MM-DD HH:MM"
+              style={{ ...inputStyle, width: 'auto', flex: '1 1 150px' }} />
+            <input value={e.close_px ?? ''} onChange={x => setCorrRow(i, 'close_px', x.target.value)} inputMode="decimal" placeholder="Corrected close px"
+              style={{ ...inputStyle, width: 'auto', flex: '1 1 110px' }} />
+            <input type="date" value={e.booked || ''} onChange={x => setCorrRow(i, 'booked', x.target.value)} title="Statement date the balance moved"
+              style={{ ...inputStyle, width: 'auto', flex: '1 1 140px', colorScheme: 'dark' }} />
+            <button onClick={() => setCorr(corr.filter((_, j) => j !== i))} style={{ ...btn(), padding: '8px 12px' }}>✕</button>
+          </div>
+        ))}
+        <button onClick={() => setCorr([...corr, { instrument: '', open_dt: '', close_px: '', booked: '', note: '' }])} style={btn()}>+ Add correction</button>
       </div>
       <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 14, fontSize: 12, color: C.dim, cursor: 'pointer' }}>
         <input type="checkbox" checked={verified} onChange={e => setVerified(e.target.checked)} /> Short swap rate verified against a statement
       </label>
+      {ccy !== 'USD' && (
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10, fontSize: 12, color: C.dim, cursor: 'pointer' }}>
+          <input type="checkbox" checked={rulesOk} onChange={e => setRulesOk(e.target.checked)} /> {ccy} fee &amp; swap rules confirmed (broker CSV) — stops rate inference
+        </label>
+      )}
       {err && <div style={{ marginTop: 10, color: C.neg, fontSize: 12 }}>{err}</div>}
       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 18 }}>
         <button onClick={onClose} style={btn()}>Cancel</button>
-        <button onClick={save} disabled={busy} style={btn(true)}>{busy ? 'Saving…' : 'Save'}</button>
+        <button onClick={save} disabled={busy} style={btn(true)}>{busy ? 'Saving…' : `Save ${ccy}`}</button>
       </div>
-    </Modal>
+    </>
+  )
+}
+
+// ─── One book section: chips, summary, open, closed, recon log ───────────────
+function BookSection({ book, account, statements, onDelete, onViewRaw }) {
+  const [showRecon, setShowRecon] = useState(false)
+  const s = book.summary
+  const log = book.recon_log || []
+  const failed = log.filter(x => !x.ok).length
+  // Rate in force on the last statement (dated schedule aware), not the flat base rate.
+  const cfgRate = s?.current_swap_rate_long_pct ?? book.settings?.swap_rate_long_pct
+  const rateDrift = s?.last_implied_rate_pct && cfgRate ? Math.abs(s.last_implied_rate_pct - cfgRate) > 0.05 : false
+  return (
+    <SymCtx.Provider value={book.symbol || BOOK_META[book.ccy]?.sym || '$'}>
+      <section style={{ display: 'flex', flexDirection: 'column', gap: 12, paddingTop: 16, borderTop: `1px solid ${C.border}` }}>
+        <BookHeader ccy={book.ccy} account={account} verified={book.verified !== false}
+          right={<Chip ok={failed === 0}>{failed === 0 ? `✓ ${log.length} statements reconcile` : `✗ ${failed} of ${log.length} days mismatch`}</Chip>} />
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+          {s.last_statement && <Chip ok={null}>Last statement {fmtDate(s.last_statement)}</Chip>}
+          {s.last_implied_rate_pct && <Chip ok={!rateDrift}>Implied swap {fmtNum(s.last_implied_rate_pct, 4)}% vs {fmtNum(cfgRate, 5)}%</Chip>}
+          {s.rate_changes?.length > 0 && (() => {
+            const rc = s.rate_changes[s.rate_changes.length - 1]
+            return <Chip ok={null}>Swap rate → {fmtNum(rc.rate_pct, 5)}% from {fmtDate(rc.date)} (inferred)</Chip>
+          })()}
+          {!book.settings?.short_rate_verified && <Chip ok={null}>Short swap rate unverified</Chip>}
+        </div>
+
+        <Summary s={s} />
+
+        <Card title={`${book.ccy} · Open Positions (${book.open_positions.length})`} right={<span style={{ fontSize: 10, color: C.muted }}>tap row → swap ledger</span>}>
+          <OpenTable rows={book.open_positions} />
+        </Card>
+
+        <Card title={`${book.ccy} · Closed Positions (${book.closed_positions.length})`}>
+          <ClosedTable rows={book.closed_positions} />
+        </Card>
+
+        <Card title={`${book.ccy} · Daily Reconciliation Log`}
+              right={<button onClick={() => setShowRecon(!showRecon)} style={{ ...btn(), padding: '4px 10px', fontSize: 11 }}>{showRecon ? 'Hide' : `Show (${log.length})`}</button>}>
+          {showRecon
+            ? <ReconLog log={log} statements={statements} onDelete={onDelete} onViewRaw={onViewRaw} />
+            : <div style={{ fontSize: 12, color: C.dim }}>Engine vs statement, per day — balance, realised, open P/L, margin.</div>}
+        </Card>
+      </section>
+    </SymCtx.Provider>
   )
 }
 
@@ -578,7 +783,6 @@ export default function GlobalGtxTab() {
   const [error, setError] = useState(null)
   const [adding, setAdding] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [showRecon, setShowRecon] = useState(false)
   const [raw, setRaw] = useState(null)
 
   const load = useCallback(async () => {
@@ -601,10 +805,10 @@ export default function GlobalGtxTab() {
 
   const s = data?.summary
   const log = data?.recon_log || []
-  const failed = log.filter(x => !x.ok).length
-  // Rate in force on the last statement (dated schedule aware), not the flat base rate.
-  const cfgRate = s?.current_swap_rate_long_pct ?? data?.settings?.swap_rate_long_pct
-  const rateDrift = s?.last_implied_rate_pct && cfgRate ? Math.abs(s.last_implied_rate_pct - cfgRate) > 0.05 : false
+  // Older backend (no books) → single USD book from top-level fields.
+  const books = data ? (data.books || [{ ccy: 'USD', symbol: '$', verified: true, ...data }]) : []
+  const baseAcct = (data?.account || 'GTX0011-USD').replace(/-[A-Z]{3}$/, '')
+  const allOk = data ? (data.recon_ok ?? books.every(b => (b.recon_log || []).every(x => x.ok))) : false
 
   return (
     <div style={{ background: C.bg, minHeight: 'calc(100vh - 110px)', padding: isMobile ? '14px 12px 40px' : '24px 32px 48px' }}>
@@ -615,7 +819,7 @@ export default function GlobalGtxTab() {
           <div style={{ minWidth: 0 }}>
             <div style={{ fontSize: 'clamp(18px, 2.4vw, 22px)', fontWeight: 700, color: C.text }}>GlobalGTX — Statement Reconciliation</div>
             <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>
-              {data?.account || 'GTX0011-USD'} · USD · {s?.last_statement ? `last statement ${fmtDate(s.last_statement)}` : 'no statements yet'}
+              {books.map(b => `${baseAcct}-${b.ccy}`).join(' · ') || 'GTX0011-USD'} · {s?.last_statement ? `last statement ${fmtDate(s.last_statement)}` : 'no statements yet'}
             </div>
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -639,39 +843,20 @@ export default function GlobalGtxTab() {
 
         {s && log.length > 0 && (
           <>
-            {/* Status chips */}
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-              <Chip ok={failed === 0}>{failed === 0 ? `✓ All ${log.length} statements reconcile` : `✗ ${failed} of ${log.length} days mismatch`}</Chip>
-              {s.last_implied_rate_pct && <Chip ok={!rateDrift}>Implied swap {fmtNum(s.last_implied_rate_pct, 4)}% vs {fmtNum(cfgRate, 5)}%</Chip>}
-              {s.rate_changes?.length > 0 && (() => {
-                const rc = s.rate_changes[s.rate_changes.length - 1]
-                return <Chip ok={null}>Swap rate → {fmtNum(rc.rate_pct, 5)}% from {fmtDate(rc.date)} (inferred)</Chip>
-              })()}
-              {!data.settings.short_rate_verified && <Chip ok={null}>Short swap rate unverified</Chip>}
+              <Chip ok={allOk}>{allOk ? `✓ All ${books.length} book${books.length === 1 ? '' : 's'} reconcile` : '✗ A book has a mismatch — see below'}</Chip>
+              {books.map(b => <Chip key={b.ccy} ok={b.verified === false ? null : true}>{BOOK_META[b.ccy]?.sym || ''} {b.ccy}{b.verified === false ? ' · rules unconfirmed' : ''}</Chip>)}
             </div>
-
-            <Summary s={s} />
-
-            <Card title={`Open Positions (${data.open_positions.length})`} right={<span style={{ fontSize: 10, color: C.muted }}>tap row → swap ledger</span>}>
-              <OpenTable rows={data.open_positions} />
-            </Card>
-
-            <Card title={`Closed Positions (${data.closed_positions.length})`}>
-              <ClosedTable rows={data.closed_positions} />
-            </Card>
-
-            <Card title="Daily Reconciliation Log"
-                  right={<button onClick={() => setShowRecon(!showRecon)} style={{ ...btn(), padding: '4px 10px', fontSize: 11 }}>{showRecon ? 'Hide' : `Show (${log.length})`}</button>}>
-              {showRecon
-                ? <ReconLog log={log} statements={data.statements} onDelete={handleDelete} onViewRaw={handleViewRaw} />
-                : <div style={{ fontSize: 12, color: C.dim }}>Engine vs statement, per day — balance, realised, open P/L, margin.</div>}
-            </Card>
+            {books.map(b => (
+              <BookSection key={b.ccy} book={b} account={`${baseAcct}-${b.ccy}`} statements={data.statements}
+                onDelete={handleDelete} onViewRaw={handleViewRaw} />
+            ))}
           </>
         )}
       </div>
 
       {adding && <AddStatementModal onClose={() => setAdding(false)} onSaved={() => { setAdding(false); load() }} />}
-      {settingsOpen && data && <SettingsModal settings={data.settings} onClose={() => setSettingsOpen(false)} onSaved={() => { setSettingsOpen(false); load() }} />}
+      {settingsOpen && data && <SettingsModal settings={data.settings} effective={data.book_settings} onClose={() => setSettingsOpen(false)} onSaved={() => { setSettingsOpen(false); load() }} />}
       {raw && (
         <Modal title={`Raw statement — ${fmtDate(raw.stmt_date)}`} onClose={() => setRaw(null)}>
           <pre style={{ margin: 0, padding: 12, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, color: C.dim, fontSize: 11, overflowX: 'auto', maxHeight: '60vh', whiteSpace: 'pre' }}>{raw.raw_text}</pre>

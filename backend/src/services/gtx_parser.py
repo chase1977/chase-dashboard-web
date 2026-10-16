@@ -136,3 +136,51 @@ def parse_statement(text: str, currency: str = "USD") -> dict:
         "open_positions": parse_open_positions(text),
         "trades": parse_trades(text),
     }
+
+
+# ── multi-currency books (2026-10-13) ────────────────────────────────
+# A GTX login holds one sub-account per currency (GTX0011-USD / -EUR /
+# -GBP), each with its own balance, realised P/L and margin. Positions and
+# trades carry their sub-account in the Account column, so each currency is
+# split into its own book and replayed independently by gtx_engine.
+BOOK_ORDER = ("USD", "EUR", "GBP")
+
+
+def _ccy_of(account: str) -> str:
+    return account.rsplit("-", 1)[-1].upper() if "-" in account else "USD"
+
+
+def parse_accounts(text: str) -> dict[str, dict]:
+    """Every sub-account row in the Account Statement Report, by currency."""
+    lines = text.splitlines()
+    h = _find_header(lines, ACCOUNT_HDR)
+    if h is None:
+        return {}
+    hdr = [x.lower() for x in _cells(lines[h])]
+    out = {}
+    for r in _rows_after(lines, h, len(hdr)):
+        ccy = r[hdr.index("account currency")].upper()
+        acct = parse_account(text, ccy)
+        if acct:
+            out[ccy] = acct
+    return out
+
+
+def parse_statement_books(text: str) -> dict[str, dict]:
+    """
+    { "USD": {account, open_positions, trades}, "EUR": {...}, ... } — one entry
+    per sub-account row, each holding only that currency's positions/trades.
+    A currency with positions/trades but no account row gets a zero row.
+    """
+    accts = parse_accounts(text)
+    pos, trd = parse_open_positions(text), parse_trades(text)
+    ccys = set(accts) | {_ccy_of(p["account"]) for p in pos} | {_ccy_of(t["account"]) for t in trd}
+    books = {}
+    for c in ccys:
+        a = accts.get(c) or {"account": f"GTX0011-{c}", "balance": 0.0, "open_pl": 0.0,
+                              "projected_balance": 0.0, "available_funds": 0.0,
+                              "margin_req": 0.0, "today_realised": 0.0, "currency": c}
+        books[c] = {"account": a,
+                    "open_positions": [p for p in pos if _ccy_of(p["account"]) == c],
+                    "trades": [t for t in trd if _ccy_of(t["account"]) == c]}
+    return books

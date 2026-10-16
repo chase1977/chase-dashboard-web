@@ -1454,6 +1454,20 @@ keeps the USD book.
 | `notes` | `+$4,495.70 @ 1.32405 (daily close 23-09-2026)` — shown in the records table |
 | `source_currency` / `source_amount` / `fx_rate` / `fx_rate_at` | USD audit trail (additive columns, `fx_rate_at` null for a daily close) |
 
+**Multi-currency (2026-10-13).** Entry mode **Broker P/L → GBP** has a
+**P/L currency** picker, one per broker sub-account:
+
+| Currency | Pair (`FX_PAIRS`) | GBP amount | Notes example |
+|---|---|---|---|
+| USD | GBP_USD | USD ÷ rate | `+$4,495.70 @ 1.32405 GBP/USD (daily close 23-09-2026)` |
+| EUR | EUR_GBP | EUR × rate | `+€1,000.00 @ 0.87000 EUR/GBP (daily close 05-10-2026)` |
+| GBP | — | as-is | `-£200.00 (GBP sub-account)` |
+
+`GET …/fx-preview?amount=&date=&ccy=` (default USD); POST `/equity` takes
+`source_currency`. Two closes on the same day in different currencies
+**merge** into that day's one GBP row (chg_nlv/equity added, notes joined,
+`source_currency = MIXED`); a same-day manual GBP row → 409.
+
 The Portfolio, TWR, watermark and profit-split logic then treat it exactly
 like any other GBP daily-equity row — e.g. £5,100.58 total GBP gain × 60%
 profit split = £3,060.35 Total P&L on the INVESTGTX card.
@@ -1901,6 +1915,81 @@ statement's own Margin column; the ⚙ Margin % setting is only the fallback.
 
 Regression: `python tests\test_gtx_partials.py` (real 05-10 statement in
 `tests/fixtures/gtx_2026-10-05.txt` + 3 synthetic partial scenarios).
+
+**Multi-currency books** (2026-10-13) — the account has three sub-accounts:
+`GTX0011-USD`, `GTX0011-EUR`, `GTX0011-GBP` (first EUR trade: Corbion CFD,
+12-10-2026). One email covers all three. Each statement is split per
+currency (`gtx_parser.parse_statement_books`) and the **unchanged engine is
+replayed once per book** (`gtx_books.replay_books`). Nothing new is stored —
+the raw text of each saved statement is re-parsed.
+
+| Piece | Detail |
+|---|---|
+| Book order | USD → EUR → GBP. USD always shown; EUR/GBP shown once they have ever had a balance, position or trade |
+| Settings | Top-level `gtx_settings` = USD book. EUR/GBP = USD values with no dated schedule and short rate unverified, overridden by `settings.books.EUR` / `.GBP` (⚙ Settings → book picker) |
+| `verified` | Per non-USD book: "fee & swap rules confirmed (broker CSV)". Until set, the book shows **Fee / swap rules unconfirmed** and swap-rate changes are inferred from the statement |
+| API | `GET /gtx/state` top-level keys = USD book (back-compatible) + `books[]` + `recon_ok`. `POST /gtx/preview` adds `books[]` (recon row, account, lots/trades parsed per book) + `ok` |
+| UI | No tabs — one stacked section per book (header with currency symbol, chips, summary, open, closed, recon log), all amounts in the book's own currency (`SymCtx` → `useFmt`) |
+
+**Broker terms per book** (confirmed by Ben, InvestGTX, 14-10-2026; code
+defaults in `gtx_books.BOOK_DEFAULTS`, overridable in ⚙ Settings → book):
+
+| Book | Fee (each way) | Swap long = ref + 4% | Swap short = 4% − ref |
+|---|---|---|---|
+| USD | qty × $0.05 ("Order per lot") | 3.9 + 4 = **7.9%** (8.45145% before 29-09) | 0.1% |
+| EUR | **0.25% of notional** ("Order volume %") = qty × fill price × 0.0025 | 2.429 + 4 = **6.429%** from 14-10 | 1.571% |
+| GBP | 0.25% of notional | 3.733 + 4 = **7.733%** | 0.267% |
+
+Swap = qty × price × rate% ÷ 360, ×3 Friday, lots open at 17:00. Short rate
+is a charge; it becomes a credit only if the reference rate exceeds 4%
+(negative rate in Settings). Short rates stay *unverified* until a first short.
+
+EUR rate history actually charged (operations CSV + statements): 12-10
+**7.875%** (€49.31), 13-10 **4.858%** (€30.63 — broker mis-set, Ben 14-10:
+"nets off" the 12-10 overcharge), 6.429% from 14-10. These are in the EUR
+dated schedule so the book reconciles to the cent; any future broker error is
+caught by rate inference (warning chip).
+
+Fee model setting (`fee_mode`): `per_unit` (qty × `fee_per_unit`) or
+`pct_notional` (qty × fill price × `fee_pct`%). Open fee uses the open
+price, close fee the close price, *est. close fee* the current price.
+
+Inter-book transfers (e.g. 13-10: −$25,000 USD → +€22,347.37 EUR at
+1.1187) show as a cash flow in each book, never as P/L. Cash amounts are
+snapped to the exact 2dp amount that reconciles the full-precision balance
+(two truncated displays can otherwise be a cent out).
+
+Settings → *From a reference rate* adds a dated schedule row: long =
+ref + 4%, short = 4% − ref.
+
+Regression: `python tests\test_gtx_books.py` (real 12-10 + 13-10 emails in
+`tests/fixtures/`: USD + EUR to the cent, transfer, empty GBP hidden).
+
+**Broker trade corrections** (2026-10-14) — the broker can re-book a closed
+trade after the statement showed it. CHIPOTLE (5,000, opened 05-10 13:43):
+the 08-10 statement closed it at 32.521965 (+$8,842.47); the operations CSV
+books it at **31.52197 (+$3,842.50)**; the 08-10 → 09-10 balance fell
+$4,999.98 more than 09-10's *Today's realized P/L*. Before this fix the
+engine showed that as a **−$4,999.98 withdrawal** and kept the +$8,842.47
+trade — net P/L and capital both off by ~$5,000.
+Confirmed by Ben (InvestGTX, 15-10-2026): "fat fingered" at 32.52197,
+caught on the next morning's rec and re-booked at 31.52197 — correct P/L
+$3,842. Broker will flag future re-bookings. All statement / CSV times are
+**ET** (swap cutoff 17:00 ET = the times on the statement, so no shift).
+INVESTGTX 08-10 row corrected to $3,240.97 (= £2,449.75 @ 1.32298).
+
+| Piece | Detail |
+|---|---|
+| Setting | `trade_corrections: [{instrument, open_dt, close_px, booked, note}]` per book (⚙ Settings → *Broker trade corrections*) |
+| Default | `gtx_books.BOOK_CORRECTIONS` (USD: CHIPOTLE, booked 09-10) — used until a book's settings hold their own list |
+| Engine | On `booked`, the closed lot is re-priced (gross += Δ); Δ moves the balance only — not today's realised, never a cash flow |
+| UI | Closed table **CORRECTED** tag (hover: original price/gross); recon log `corr −$4,999.98` + ✎ note; summary *incl. broker corrections* |
+
+Full-history regression: `python tests\test_gtx_history.py` — all 19
+statements 17-09 → 13-10 (`fixtures/gtx_history_2026-09-17_to_10-09.txt` +
+12-10 / 13-10) reconcile per book, and totals equal the operations CSV:
+USD fees $6,500.00 · swaps $2,527.33 · gross $23,772.65 · capital
+$1,343,927.49 − $25,000 transfer · EUR fee €564.84.
 
 **Closed Positions table** — per trade: gross, open fee, close fee, swaps,
 **Net P/L** (fully costed), nights held.
