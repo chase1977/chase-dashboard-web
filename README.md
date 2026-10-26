@@ -1994,6 +1994,26 @@ other reconciled item → $0.06/unit fee, no swap (split pending broker; total
 exact either way). Without it the engine "inferred" a false USD rate of
 6.3948% on 14-10.
 
+**Daily Booked P/L** (2026-10-26) — card per book (above the recon log)
+plus a *Booked net* column in the log. One row per close day: trades, gross,
+fees, swaps and **Net booked** = Σ net of every lot / partial piece closed
+that day at full precision, shown truncated to 2dp (broker convention). This
+is the figure to record in Data & Reports → INVESTGTX → Broker P/L → GBP
+(book currency) — **Copy** puts it on the clipboard. Adding the per-trade
+rows by hand drifts by a cent (each row is truncated on its own: 15-10 and
+20-10 were recorded $0.01 low). *Daily feed* column reads
+`investgtx_daily_equity` (read-only) and shows ✓ Recorded / ✗ amount (Δ) /
+Not recorded / Mixed-currency row; feed entries on days with no close are
+flagged below the table. Engine: `booked[]` + `booked_net` / `booked_n` on
+each log row; service: `gtx_service._attach_feed`.
+
+Reconciliation 26-10-2026 (27 statements 17-09 → 23-10 vs operations CSV
+to 21-10 08:19): both books ✓ every day; USD fees $9,600.00, swaps
+$3,250.92, gross $83,074.16, EUR fees €2,386.11, swaps €456.93, gross
+€36,268.54 — all equal to the CSV. Booked (USD): 23-09 4,495.70 · 24-09
+2,254.02 · 05-10 10,712.60 · 08-10 3,240.97 · 15-10 28,410.87 · 16-10
+4,053.09 · 20-10 22,099.12 · 22-10 1,380.26; (EUR) 21-10 33,425.50.
+
 **One order closing several lots** (2026-10-16) — QIAGEN sell 10,000 @
 46.412 on 15-10 closed the 06-10 (45.50) and 07-10 (45.18303) 5,000 lots;
 the engine picks the set of lots whose qty sums to the order and whose

@@ -72,11 +72,11 @@ BOOK_CORRECTIONS = {
 # "instrument_terms"). ABIVAX (USD book, 14→15-10-2026): its open and its
 # close each cost exactly $300.00 on top of every other reconciled item
 # (14-10 −447.70 = −147.71 book swaps −300.00; 15-10 close −300.00) — i.e.
-# $0.06/unit fee and no overnight swap. Split fee vs swap to be confirmed
-# with the broker; the total (and every balance) is exact either way.
+# $0.06/unit fee and no overnight swap — confirmed by the operations CSV
+# (21-10-2026: "Fee per unit=0.06", no ABIVAX swap rows).
 BOOK_INSTRUMENT_TERMS = {
     "USD": {"ABIVAX (CFD)": {"fee_per_unit": 0.06, "swap_long_pct": 0.0,
-                             "note": "Pending broker confirmation (16-10-2026)"}},
+                             "note": "Confirmed by operations CSV 21-10-2026: Fee per unit=0.06, no swap rows"}},
 }
 
 

@@ -56,6 +56,14 @@ q15 = [c for c in closed if c["instrument"].startswith("QIAGEN") and c["close_dt
 csv_checks["ABIVAX net 19,550.00 (gross 20,150 − 600 costs)"] = abs(abv["net"] - 19550.0) < 1e-6
 csv_checks["QIAGEN 15-10 closes 2 lots, gross 10,704.85"] = len(q15) == 2 and abs(sum(c["gross"] for c in q15) - 10704.85) < 1e-6
 csv_checks["EUR 14-10 / 15-10 at 6.429%"] = all(r["model_rate_pct"] == 6.429 for r in books["EUR"]["recon_log"][-2:])
+# Booked P/L per close day — the figure recorded in INVESTGTX (2dp, truncated).
+want = {"2026-09-23": 4495.70, "2026-09-24": 2254.02, "2026-10-05": 10712.60,
+        "2026-10-08": 3240.97, "2026-10-15": 28410.87}
+got = {b["date"]: b["net_display"] for b in books["USD"]["booked"]}
+csv_checks["Booked per day = INVESTGTX figures"] = got == want
+csv_checks["EUR: nothing booked yet"] = books["EUR"]["booked"] == []
+csv_checks["Log rows carry booked net"] = abs(next(r for r in books["USD"]["recon_log"] if r["date"] == "2026-10-15")["booked_net"] - 28410.8776) < 1e-4
+print("\n  Booked per day:", {k: f"{v:,.2f}" for k, v in got.items()})
 print("\n  15-10 closes (USD net): " + ", ".join(f"{c['instrument'][:8]} {c['open_dt'][:10]} {c['net']:,.4f}"
                                               for c in closed if c["close_dt"].startswith("2026-10-15")))
 print()

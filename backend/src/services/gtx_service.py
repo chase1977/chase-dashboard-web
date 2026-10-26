@@ -19,6 +19,10 @@ from src.services.gtx_parser import parse_statement_books
 T_STMT = "gtx_statements"
 T_SETTINGS = "gtx_settings"
 DEFAULT_ACCOUNT = "GTX0011-USD"
+# Daily-equity feed where closed-trade P/L is recorded in GBP (Data & Reports
+# → INVESTGTX, §15.7). Read-only here: GlobalGTX shows, per close day, whether
+# the booked net was recorded and at what amount. 2026-10-26.
+FEED_TABLE = "investgtx_daily_equity"
 
 
 # ── settings ─────────────────────────────────────────────────────────
@@ -117,6 +121,46 @@ def delete_statement(stmt_id: int) -> None:
     get_client().table(T_STMT).delete().eq("id", stmt_id).execute()
 
 
+# ── booked P/L vs the daily feed ─────────────────────────────────────
+def _feed_rows() -> list[dict]:
+    """Rows recorded via Broker P/L → GBP (source_currency set). Never raises."""
+    try:
+        res = (get_client().table(FEED_TABLE)
+               .select("trade_date, source_currency, source_amount, chg_nlv, fx_rate, notes")
+               .not_.is_("source_currency", "null").order("trade_date").execute())
+        return res.data or []
+    except Exception:                                  # feed missing / RLS — GTX page must still load
+        return []
+
+
+def _attach_feed(books: list[dict]) -> None:
+    """
+    Per book, mark each booked day: recorded amount in the feed (same currency)
+    and status match / diff / missing; feed rows on a day with nothing booked
+    are listed as "unmatched". A MIXED row (two currencies merged on one day)
+    is reported as such — compare by hand. Tolerance 0.005 (2dp figures).
+    """
+    feed = _feed_rows()
+    for b in books:
+        ccy = b["ccy"]
+        mine = {r["trade_date"]: r for r in feed if r.get("source_currency") in (ccy, "MIXED")}
+        booked_days = set()
+        for d in b.get("booked", []):
+            booked_days.add(d["date"])
+            r = mine.get(d["date"])
+            if r is None:
+                d.update(feed_amount=None, feed_status="missing")
+            elif r["source_currency"] == "MIXED":
+                d.update(feed_amount=None, feed_status="mixed", feed_note=r.get("notes"))
+            else:
+                amt = float(r["source_amount"])
+                d.update(feed_amount=amt, feed_gbp=float(r["chg_nlv"]), feed_rate=r.get("fx_rate"),
+                         feed_status="match" if abs(amt - d["net_display"]) < 0.005 else "diff")
+        b["feed_unmatched"] = [{"date": k, "amount": float(r["source_amount"] or 0), "notes": r.get("notes")}
+                               for k, r in sorted(mine.items())
+                               if k not in booked_days and r["source_currency"] == ccy]
+
+
 # ── full state ───────────────────────────────────────────────────────
 def get_state(account: str = DEFAULT_ACCOUNT) -> dict:
     """
@@ -129,6 +173,7 @@ def get_state(account: str = DEFAULT_ACCOUNT) -> dict:
     res = replay_books(_book_inputs(rows), settings)
     usd = next(b for b in res["books"] if b["ccy"] == "USD")
     out = {k: v for k, v in usd.items() if k not in ("ccy", "symbol", "verified")}
+    _attach_feed(res["books"])
     out["books"] = res["books"]
     out["recon_ok"] = res["recon_ok"]
     # Effective settings for every book (incl. hidden GBP) — Settings modal form values.

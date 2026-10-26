@@ -88,7 +88,7 @@ function Card({ title, right, children, style }) {
   return (
     <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 12, padding: 'clamp(14px, 3vw, 20px)', minWidth: 0, ...style }}>
       {title && (
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 14, paddingBottom: 8, borderBottom: `1px solid ${C.border}` }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 14, paddingBottom: 8, borderBottom: `1px solid ${C.border}` }}>
           <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, letterSpacing: '1.2px', textTransform: 'uppercase' }}>{title}</div>
           {right}
         </div>
@@ -349,12 +349,12 @@ function ReconLog({ log, statements, onDelete, onViewRaw }) {
   const idByDate = Object.fromEntries(statements.map(s => [s.date, s.id]))
   const rows = [...log].reverse()
   return (
-    <TableWrap minWidth={1020}>
+    <TableWrap minWidth={1120}>
       <thead><tr>
         {/* Balance = statement balance, with engine diff underneath (was 3 columns: stmt / engine / diff) */}
         <th style={thL}>Date</th><th style={th} title="Statement balance · Δ = engine − statement (hover a row for the engine figure)">Balance · Δ</th>
         <th style={th} title="Open gross P/L on the statement date (unrealised, before fees/swaps)">Open P/L</th>
-        <th style={th}>Today realised</th><th style={th}>Fees</th><th style={th}>Swaps</th><th style={th}>Closed gross</th>
+        <th style={th}>Today realised</th><th style={th}>Fees</th><th style={th}>Swaps</th><th style={th}>Closed gross</th><th style={th} title="Net P/L of every trade closed this day (gross − fees − swaps) — the figure for the daily feed">Booked net</th>
         <th style={th}>Cash flow</th><th style={th}>Implied rate</th><th style={{ ...th, textAlign: 'center' }}>Check</th><th style={th} />
       </tr></thead>
       <tbody>
@@ -378,6 +378,10 @@ function ReconLog({ log, statements, onDelete, onViewRaw }) {
               <td style={{ ...td, color: r.fees ? C.neg : C.dim }}>{fmtUsd(r.fees)}</td>
               <td style={{ ...td, color: r.swaps ? C.neg : C.dim }}>{fmtUsd(r.swaps)}</td>
               <td style={{ ...td, color: tone(r.gross_closed) }}>{fmtUsd(r.gross_closed, { sign: true })}</td>
+              <td style={{ ...td, fontWeight: r.booked_n ? 700 : 400, color: r.booked_n ? tone(r.booked_net) : C.dim }}>
+                {r.booked_n ? fmtUsd(r.booked_net, { sign: true }) : '—'}
+                {r.booked_n > 1 && <span style={{ marginLeft: 4, fontSize: 10, color: C.muted, fontWeight: 400 }}>×{r.booked_n}</span>}
+              </td>
               <td style={{ ...td, color: r.cash_flow ? C.accent : C.dim }}>
                 {r.cash_flow ? fmtUsd(r.cash_flow, { sign: true }) : (r.correction ? '' : '—')}
                 {!!r.correction && <span title="Broker re-booked a closed trade — balance only, not today's realised" style={{ marginLeft: r.cash_flow ? 6 : 0, fontSize: 10, color: C.warn, fontWeight: 700 }}>corr {fmtUsd(r.correction, { sign: true })}</span>}
@@ -402,7 +406,7 @@ function ReconLog({ log, statements, onDelete, onViewRaw }) {
               </td>
             </tr>
             {(!r.ok || r.warnings.length > 0 || r.corrections?.length > 0) && (
-              <tr><td colSpan={11} style={{ padding: '6px 12px', fontSize: 11, color: r.ok ? C.warn : C.neg, background: C.bg, borderBottom: `1px solid ${C.border}`, whiteSpace: 'normal' }}>
+              <tr><td colSpan={12} style={{ padding: '6px 12px', fontSize: 11, color: r.ok ? C.warn : C.neg, background: C.bg, borderBottom: `1px solid ${C.border}`, whiteSpace: 'normal' }}>
                 {!r.ok && <div>Failed: {Object.entries(r.checks).filter(([, v]) => !v).map(([k]) => k).join(', ')} — stmt open P/L {fmtUsd(r.stmt_open_pl)} vs engine {fmtUsd(r.engine_open_pl)}; stmt realised {fmtUsd(r.stmt_realised)} vs engine {fmtUsd(r.engine_realised)}</div>}
                 {r.warnings.map((w, i) => <div key={i}>⚠ {w}</div>)}
                 {(r.corrections || []).map((w, i) => <div key={`c${i}`} style={{ color: C.accent }}>✎ {w}</div>)}
@@ -412,6 +416,97 @@ function ReconLog({ log, statements, onDelete, onViewRaw }) {
         ))}
       </tbody>
     </TableWrap>
+  )
+}
+
+// ─── Daily booked P/L (the figure to record in the daily feed) ────────────────
+const copyText = async txt => {
+  try { await navigator.clipboard.writeText(txt); return true } catch {
+    try {                                              // fallback: non-secure context / older browsers
+      const ta = document.createElement('textarea'); ta.value = txt; document.body.appendChild(ta)
+      ta.select(); const ok = document.execCommand('copy'); document.body.removeChild(ta); return ok
+    } catch { return false }
+  }
+}
+
+function FeedStatus({ d }) {
+  const fmtUsd = useFmt()
+  const st = d.feed_status
+  if (!st) return <span style={{ color: C.dim }}>—</span>
+  if (st === 'match') return <Chip ok={true}>✓ Recorded</Chip>
+  if (st === 'missing') return <Chip ok={null}>Not recorded</Chip>
+  if (st === 'mixed') return <Chip ok={null}>Mixed-currency row — check</Chip>
+  return <span title={`Feed has ${fmtUsd(d.feed_amount)}; booked ${fmtUsd(d.net_display)}`}><Chip ok={false}>✗ {fmtUsd(d.feed_amount)} (Δ {fmtUsd(d.feed_amount - d.net_display, { sign: true })})</Chip></span>
+}
+
+function BookedTable({ days, unmatched, ccy }) {
+  const fmtUsd = useFmt()
+  const [open, setOpen] = useState(null)
+  const [copied, setCopied] = useState(null)
+  if (!days.length) return <div style={{ fontSize: 13, color: C.dim, padding: '8px 0' }}>No trades closed yet in this book.</div>
+  const rows = [...days].reverse()
+  const tot = k => days.reduce((a, d) => a + (d[k] || 0), 0)
+  const copy = async d => { if (await copyText(d.net_display.toFixed(2))) { setCopied(d.date); setTimeout(() => setCopied(null), 1500) } }
+  return (
+    <>
+      <TableWrap minWidth={900}>
+        <thead><tr>
+          <th style={thL}>Close date</th><th style={th}>Trades</th><th style={th}>Gross P/L</th><th style={th}>Fees</th>
+          <th style={th}>Swaps</th><th style={th}>Net booked</th><th style={thL}>Daily feed</th><th style={th} />
+        </tr></thead>
+        <tbody>
+          {rows.map(d => (
+            <Fragment key={d.date}>
+              <tr onClick={() => setOpen(open === d.date ? null : d.date)} style={{ cursor: 'pointer' }}>
+                <td style={{ ...tdL, fontWeight: 600 }}>{open === d.date ? '▾' : '▸'} {fmtDate(d.date)}</td>
+                <td style={td}>{d.n}</td>
+                <td style={{ ...td, color: tone(d.gross) }}>{fmtUsd(d.gross, { sign: true })}</td>
+                <td style={{ ...td, color: C.neg }}>{fmtUsd(-d.fees)}</td>
+                <td style={{ ...td, color: d.swaps ? C.neg : C.dim }}>{fmtUsd(d.swaps)}</td>
+                <td style={{ ...td, fontWeight: 700, fontSize: 13, color: tone(d.net) }}>{fmtUsd(d.net_display, { sign: true })}</td>
+                <td style={tdL}><FeedStatus d={d} /></td>
+                <td style={td} onClick={e => e.stopPropagation()}>
+                  <button onClick={() => copy(d)} title={`Copy ${d.net_display.toFixed(2)} for Data & Reports → Broker P/L → GBP (${ccy})`}
+                    style={{ ...btn(), padding: '3px 10px', fontSize: 11, color: copied === d.date ? C.pos : C.text }}>{copied === d.date ? '✓ Copied' : 'Copy'}</button>
+                </td>
+              </tr>
+              {open === d.date && (
+                <tr><td colSpan={8} style={{ padding: '8px 14px 12px', background: C.bg, borderBottom: `1px solid ${C.border}` }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    {d.trades.map(t => (
+                      <div key={t.lot_id} style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', gap: 8, fontSize: 12, padding: '6px 10px', background: C.card, border: `1px solid ${C.border}`, borderRadius: 6 }}>
+                        <span style={{ color: C.text, fontWeight: 600 }}>
+                          {shortInst(t.instrument)} <span style={{ color: C.dim, fontWeight: 400 }}>{fmtNum(t.qty)} · {fmtPx(t.open_px)} → {fmtPx(t.close_px)} · opened {fmtDate(t.open_dt)}</span>
+                          {t.corrected && <span style={{ marginLeft: 6, fontSize: 9, fontWeight: 700, color: C.accent }}>CORRECTED</span>}
+                        </span>
+                        <span style={{ fontVariantNumeric: 'tabular-nums', color: C.dim }}>
+                          gross {fmtUsd(t.gross, { sign: true })} · fees {fmtUsd(-t.fees)} · swaps {fmtUsd(t.swaps)} · <strong style={{ color: tone(t.net) }}>net {fmtUsd(t.net, { sign: true })}</strong>
+                        </span>
+                      </div>
+                    ))}
+                    <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>Net booked = Σ trades at full precision, shown truncated to 2dp (broker convention) — record this figure, not the sum of the rows above.</div>
+                  </div>
+                </td></tr>
+              )}
+            </Fragment>
+          ))}
+          <tr style={{ background: C.surface }}>
+            <td style={{ ...tdL, fontWeight: 700 }}>Total ({days.length} days)</td>
+            <td style={{ ...td, fontWeight: 700 }}>{tot('n')}</td>
+            <td style={{ ...td, fontWeight: 700, color: tone(tot('gross')) }}>{fmtUsd(tot('gross'), { sign: true })}</td>
+            <td style={{ ...td, fontWeight: 700, color: C.neg }}>{fmtUsd(-tot('fees'))}</td>
+            <td style={{ ...td, fontWeight: 700, color: C.neg }}>{fmtUsd(tot('swaps'))}</td>
+            <td style={{ ...td, fontWeight: 700, color: tone(tot('net')) }}>{fmtUsd(tot('net'), { sign: true })}</td>
+            <td style={td} colSpan={2} />
+          </tr>
+        </tbody>
+      </TableWrap>
+      {unmatched?.length > 0 && (
+        <div style={{ marginTop: 10, padding: '8px 12px', borderRadius: 8, background: `${C.warn}14`, border: `1px solid ${C.warn}40`, fontSize: 11, color: C.warn }}>
+          {unmatched.map(u => <div key={u.date}>⚠ Daily feed has {fmtUsd(u.amount, { sign: true })} on {fmtDate(u.date)} but no trade closed that day in this book.</div>)}
+        </div>
+      )}
+    </>
   )
 }
 
@@ -762,6 +857,11 @@ function BookSection({ book, account, statements, onDelete, onViewRaw }) {
 
         <Card title={`${book.ccy} · Closed Positions (${book.closed_positions.length})`}>
           <ClosedTable rows={book.closed_positions} />
+        </Card>
+
+        <Card title={`${book.ccy} · Daily Booked P/L`}
+              right={<span style={{ fontSize: 10, color: C.muted }}>record “Net booked” in Data & Reports → Broker P/L → GBP ({book.ccy})</span>}>
+          <BookedTable days={book.booked || []} unmatched={book.feed_unmatched} ccy={book.ccy} />
         </Card>
 
         <Card title={`${book.ccy} · Daily Reconciliation Log`}

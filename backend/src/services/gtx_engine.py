@@ -544,8 +544,41 @@ def _build_output(lots, log, cash_events, s) -> dict:
         "last_implied_rate_pct": next((x["implied_rate_pct"] for x in reversed(log)
                                        if x["implied_rate_pct"] is not None), None),
     }
+    # Booked P/L per close day (2026-10-26) — every lot (or partial piece)
+    # closed that statement day, fully costed: gross − open fee − close fee
+    # + swaps (− = paid). "net" is full precision; "net_display" is the
+    # broker-convention 2dp (truncated) figure to record in the daily feed
+    # (INVESTGTX). A broker re-booking (trade_corrections) is reflected in
+    # the day the trade CLOSED, so the booked figure is the corrected one.
+    by_day: dict[str, dict] = {}
+    for l in sorted(closed, key=lambda l: l.close_dt):
+        d = l.close_dt[:10]
+        b = by_day.setdefault(d, {"date": d, "n": 0, "gross": 0.0, "fees": 0.0, "swaps": 0.0, "net": 0.0, "trades": []})
+        net = l.gross - l.open_fee - l.close_fee + l.swaps
+        b["n"] += 1
+        b["gross"] += l.gross
+        b["fees"] += l.open_fee + l.close_fee
+        b["swaps"] += l.swaps
+        b["net"] += net
+        b["trades"].append({"lot_id": l.lot_id, "instrument": l.instrument, "side": l.side, "qty": l.qty,
+                            "open_dt": l.open_dt, "open_px": l.open_px, "close_dt": l.close_dt,
+                            "close_px": l.close_px, "gross": l.gross, "fees": l.open_fee + l.close_fee,
+                            "swaps": l.swaps, "net": net, "corrected": l.correction is not None})
+    booked = []
+    for d in sorted(by_day):
+        b = by_day[d]
+        b["net_display"] = trunc2(b["net"])
+        booked.append(b)
+    for r in log:
+        b = by_day.get(r["date"])
+        r["booked_net"] = b["net"] if b else 0.0
+        r["booked_n"] = b["n"] if b else 0
+    summary["booked_days"] = len(booked)
+    summary["booked_net_total"] = sum(b["net"] for b in booked)
+
     return {
         "summary": summary,
+        "booked": booked,
         "open_positions": sorted((lot_row(l) for l in open_l), key=lambda r: r["open_dt"]),
         "closed_positions": sorted((lot_row(l) for l in closed), key=lambda r: r["close_dt"], reverse=True),
         "recon_log": log,
