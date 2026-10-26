@@ -1,14 +1,19 @@
 # backend/requirements.txt
-fastapi
-uvicorn[standard]
-pandas
-numpy
-openpyxl
-reportlab
-python-multipart
-python-dotenv
-pydantic
-supabase
-pdfplumber
-requests
-tzdata
+# Pinned 26-10-2026 to the versions tested locally. Unpinned installs let a
+# Railway rebuild pull new releases (postgrest 2.33 broke Portfolio on 16-10).
+# To upgrade: bump one package, run backend/tests/*.py + the app locally, push.
+fastapi==0.135.2
+starlette==1.0.0
+uvicorn[standard]==0.42.0
+pandas==2.3.3
+numpy==2.2.6
+openpyxl==3.1.5
+reportlab==4.4.10
+python-multipart==0.0.22
+python-dotenv==1.2.2
+pydantic==2.12.5
+supabase==2.28.3
+postgrest==2.28.3
+pdfplumber==0.11.10
+requests==2.33.0
+tzdata==2025.2
