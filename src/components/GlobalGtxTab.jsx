@@ -296,7 +296,7 @@ function ClosedTable({ rows }) {
       <thead><tr>
         <th style={thL}>Instrument</th><th style={thL}>Side</th><th style={th}>Qty</th><th style={thL}>Opened</th><th style={th}>Open px</th>
         <th style={thL}>Closed</th><th style={th}>Close px</th><th style={th}>Gross P/L</th><th style={th}>Open fee</th>
-        <th style={th}>Close fee</th><th style={th}>Swaps</th><th style={th}>Net P/L</th><th style={th}>Nights</th>
+        <th style={th}>Close fee</th><th style={th}>Swaps</th><th style={th}>Net P/L</th><th style={{ ...th, paddingRight: 14 }}>Nights</th>
       </tr></thead>
       <tbody>
         {rows.map(r => (
@@ -316,7 +316,8 @@ function ClosedTable({ rows }) {
               <td style={td}>
                 {r.correction && (
                   <span title={`Broker re-booked ${fmtDate(r.correction.booked)}: was ${r.correction.original_close_px} (${fmtUsd(r.correction.original_gross, { sign: true })}). ${r.correction.note || ''}`}
-                    style={{ marginRight: 6, padding: '1px 5px', borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: '0.4px', color: C.accent, border: `1px solid ${C.accent}55` }}>CORRECTED</span>
+                    style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 14, height: 14, marginRight: 5, verticalAlign: '1px',
+                      borderRadius: '50%', fontSize: 8, fontWeight: 800, lineHeight: 1, color: C.accent, background: `${C.accent}1A`, border: `1px solid ${C.accent}66`, cursor: 'help' }}>C</span>
                 )}
                 {fmtPx(r.close_px)}
               </td>
@@ -325,7 +326,7 @@ function ClosedTable({ rows }) {
               <td style={{ ...td, color: C.neg }}>{fmtUsd(-r.close_fee)}</td>
               <td style={{ ...td, color: C.neg }}>{fmtUsd(r.swaps)}</td>
               <td style={{ ...td, fontWeight: 700, color: tone(r.net) }}>{fmtUsd(r.net, { sign: true })}</td>
-              <td style={td}>{r.days_held}</td>
+              <td style={{ ...td, paddingRight: 14 }}>{r.days_held}</td>
             </tr>
             {open === r.lot_id && <SwapLedger ledger={r.swap_ledger} colSpan={13} />}
           </Fragment>
