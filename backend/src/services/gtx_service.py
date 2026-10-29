@@ -7,6 +7,7 @@ Tables: see sql/2026-09-29_gtx_statements.sql
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -133,32 +134,61 @@ def _feed_rows() -> list[dict]:
         return []
 
 
+_FEED_SYM = {"$": "USD", "€": "EUR", "£": "GBP"}
+_FEED_SEG = re.compile(r"^\s*([+-])([$€£])([\d,]+\.\d{2})")
+
+
+def _feed_amounts(row: dict) -> dict[str, float]:
+    """
+    {ccy: amount} recorded in one feed row. Single-currency rows use
+    source_amount. A MIXED row (2026-10-28: USD + EUR closes merged into the
+    one GBP day row) keeps no per-currency amount, so it is read back from the
+    notes the entry endpoint writes — one " · "-separated segment per entry,
+    each starting "+$701.85 @ …" / "+€695.52 @ …" (data_feeds._fx_note).
+    Only a segment's LEADING amount counts (later text like "(was +$8,240.94)"
+    is ignored).
+    """
+    ccy = row.get("source_currency")
+    if ccy and ccy != "MIXED":
+        return {ccy: float(row.get("source_amount") or 0)}
+    out: dict[str, float] = {}
+    for seg in (row.get("notes") or "").split(" · "):
+        m = _FEED_SEG.match(seg)
+        if m:
+            amt = float(m.group(3).replace(",", "")) * (-1 if m.group(1) == "-" else 1)
+            out[_FEED_SYM[m.group(2)]] = round(out.get(_FEED_SYM[m.group(2)], 0.0) + amt, 2)
+    return out
+
+
 def _attach_feed(books: list[dict]) -> None:
     """
-    Per book, mark each booked day: recorded amount in the feed (same currency)
-    and status match / diff / missing; feed rows on a day with nothing booked
-    are listed as "unmatched". A MIXED row (two currencies merged on one day)
-    is reported as such — compare by hand. Tolerance 0.005 (2dp figures).
+    Per book, mark each booked day with the amount recorded in the feed for
+    that book's currency and status match / diff / missing; feed amounts on a
+    day with nothing booked are listed as "unmatched". MIXED rows (two
+    currencies merged on one day) are split per currency from their notes
+    (_feed_amounts) and flagged feed_mixed. Tolerance 0.005 (2dp figures).
     """
     feed = _feed_rows()
     for b in books:
         ccy = b["ccy"]
-        mine = {r["trade_date"]: r for r in feed if r.get("source_currency") in (ccy, "MIXED")}
+        mine = {}                                         # date -> (amount, row)
+        for r in feed:
+            a = _feed_amounts(r)
+            if ccy in a:
+                mine[r["trade_date"]] = (a[ccy], r)
         booked_days = set()
         for d in b.get("booked", []):
             booked_days.add(d["date"])
-            r = mine.get(d["date"])
-            if r is None:
+            hit = mine.get(d["date"])
+            if hit is None:
                 d.update(feed_amount=None, feed_status="missing")
-            elif r["source_currency"] == "MIXED":
-                d.update(feed_amount=None, feed_status="mixed", feed_note=r.get("notes"))
-            else:
-                amt = float(r["source_amount"])
-                d.update(feed_amount=amt, feed_gbp=float(r["chg_nlv"]), feed_rate=r.get("fx_rate"),
-                         feed_status="match" if abs(amt - d["net_display"]) < 0.005 else "diff")
-        b["feed_unmatched"] = [{"date": k, "amount": float(r["source_amount"] or 0), "notes": r.get("notes")}
-                               for k, r in sorted(mine.items())
-                               if k not in booked_days and r["source_currency"] == ccy]
+                continue
+            amt, r = hit
+            d.update(feed_amount=amt, feed_mixed=r["source_currency"] == "MIXED",
+                     feed_gbp=float(r["chg_nlv"]), feed_rate=r.get("fx_rate"),
+                     feed_status="match" if abs(amt - d["net_display"]) < 0.005 else "diff")
+        b["feed_unmatched"] = [{"date": k, "amount": amt, "notes": r.get("notes")}
+                               for k, (amt, r) in sorted(mine.items()) if k not in booked_days]
 
 
 # ── full state ───────────────────────────────────────────────────────

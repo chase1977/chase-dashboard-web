@@ -2003,8 +2003,11 @@ is the figure to record in Data & Reports → INVESTGTX → Broker P/L → GBP
 rows by hand drifts by a cent (each row is truncated on its own: 15-10 and
 20-10 were recorded $0.01 low). *Daily feed* column reads
 `investgtx_daily_equity` (read-only) and shows ✓ Recorded / ✗ amount (Δ) /
-Not recorded / Mixed-currency row; feed entries on days with no close are
-flagged below the table. Engine: `booked[]` + `booked_net` / `booked_n` on
+Not recorded; feed entries on days with no close are flagged below the
+table. A same-day USD + EUR entry merges into one GBP row (`source_currency =
+MIXED`, no per-currency amount) — its amounts are read back from the notes
+segments (`+$701.85 @ … · +€695.52 @ …`, `gtx_service._feed_amounts`) and
+shown as *✓ Recorded · combined day* (2026-10-29, first case 28-10). Engine: `booked[]` + `booked_net` / `booked_n` on
 each log row; service: `gtx_service._attach_feed`.
 
 Reconciliation 26-10-2026 (27 statements 17-09 → 23-10 vs operations CSV

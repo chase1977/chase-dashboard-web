@@ -434,7 +434,9 @@ function FeedStatus({ d }) {
   const fmtUsd = useFmt()
   const st = d.feed_status
   if (!st) return <span style={{ color: C.dim }}>—</span>
-  if (st === 'match') return <Chip ok={true}>✓ Recorded</Chip>
+  if (st === 'match') return d.feed_mixed
+    ? <span title="Recorded in a same-day row shared with another book (USD + EUR merged into one GBP row)"><Chip ok={true}>✓ Recorded · combined day</Chip></span>
+    : <Chip ok={true}>✓ Recorded</Chip>
   if (st === 'missing') return <Chip ok={null}>Not recorded</Chip>
   if (st === 'mixed') return <Chip ok={null}>Mixed-currency row — check</Chip>
   return <span title={`Feed has ${fmtUsd(d.feed_amount)}; booked ${fmtUsd(d.net_display)}`}><Chip ok={false}>✗ {fmtUsd(d.feed_amount)} (Δ {fmtUsd(d.feed_amount - d.net_display, { sign: true })})</Chip></span>
