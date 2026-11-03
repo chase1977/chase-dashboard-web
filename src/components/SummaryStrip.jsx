@@ -174,6 +174,37 @@ function Modal({ title, subtitle, onClose, children, wide = false }) {
 // ---------------------------------------------------------------------------
 
 function todayISO() { return new Date().toISOString().slice(0, 10) }
+
+// Display order for every ledger tab: newest date first, regardless of insert
+// order. Tie-break (same date): created_at desc, then id desc. Copy — never
+// mutates the cached query data.
+function newestFirst(list, dateKey) {
+  const cmpId = (a, b) => {
+    const na = Number(a), nb = Number(b)
+    if (Number.isFinite(na) && Number.isFinite(nb)) return nb - na
+    return String(b ?? '').localeCompare(String(a ?? ''))
+  }
+  return [...(list ?? [])].sort((a, b) =>
+    String(b?.[dateKey] ?? '').localeCompare(String(a?.[dateKey] ?? ''))
+    || String(b?.created_at ?? '').localeCompare(String(a?.created_at ?? ''))
+    || cmpId(a?.id ?? a?.event_id, b?.id ?? b?.event_id))
+}
+
+// ISO date + N months, day clamped to month end (31-01 + 1 → 28/29-02).
+function addMonthsISO(iso, n = 1) {
+  const [y, m, d] = iso.split('-').map(Number)
+  const t = new Date(Date.UTC(y, m - 1 + n, 1))
+  const last = new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth() + 1, 0)).getUTCDate()
+  t.setUTCDate(Math.min(d, last))
+  return t.toISOString().slice(0, 10)
+}
+
+// Recurring series key — same name = same series (case/space-insensitive).
+function recurKey(name) { return String(name ?? '').trim().toLowerCase().replace(/\s+/g, ' ') }
+
+// Recurring expense colour (amber) — readable on dark slate, distinct from one-time sky.
+const RECUR_CLR = { text: '#fbbf24', bg: 'rgba(245,158,11,0.08)', border: 'rgba(245,158,11,0.28)',
+  chip: 'rgba(245,158,11,0.22)', btn: 'rgba(245,158,11,0.28)' }
 function isoToDDMMYYYY(iso) { return iso ? iso.split('-').reverse().join('-') : '' }
 
 // Shared input / button styles used across all 3 sub-forms
@@ -514,7 +545,7 @@ function CapitalEventsTab({ data, queryClient }) {
       {events.length === 0
         ? <p style={{ fontSize: 12, color: '#475569', textAlign: 'center', padding: '20px 0' }}>No events recorded</p>
         : <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {events.map(ev => {
+            {newestFirst(events, 'date').map(ev => {
               const isD = ev.event_type === 'deposit'
               const isW = ev.event_type === 'withdrawal'
               return (
@@ -951,7 +982,7 @@ function InternalTransfersTab({ queryClient, capitalData }) {
         : transfers.length === 0
           ? <p style={{ fontSize: 12, color: '#475569', textAlign: 'center', padding: '20px 0' }}>No transfers recorded</p>
           : <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {transfers.map(t => (
+              {newestFirst(transfers, 'transfer_date').map(t => (
                 <div key={t.id} style={{
                   background: 'rgba(14,165,233,0.06)', border: '1px solid rgba(14,165,233,0.18)',
                   borderRadius: 10, padding: '9px 12px',
@@ -1416,7 +1447,7 @@ function CapitalTransfersTab({ queryClient }) {
         : transfers.length === 0
           ? <p style={{ fontSize: 12, color: '#475569', textAlign: 'center', padding: '20px 0' }}>No capital transfers recorded</p>
           : <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {transfers.map(t => (
+              {newestFirst(transfers, 'transfer_date').map(t => (
                 <div key={t.id} style={{
                   background: 'rgba(167,139,250,0.06)', border: '1px solid rgba(167,139,250,0.16)',
                   borderRadius: 10, padding: '9px 12px',
@@ -1661,7 +1692,7 @@ function MiscellaneousTab({ queryClient }) {
         : miscList.length === 0
           ? <p style={{ fontSize: 12, color: '#475569', textAlign: 'center', padding: '20px 0' }}>No misc events recorded</p>
           : <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {miscList.map(m => {
+              {newestFirst(miscList, 'event_date').map(m => {
                 const isCredit = m.direction === 'credit'
                 return (
                   <div key={m.id} style={{
@@ -1756,6 +1787,14 @@ function ExpensesTab({ queryClient }) {
     setFormRef(''); setFormRecur('one_time'); setFormError(null); setShowForm(true)
   }
 
+  // Pre-fill "Record Expense" from a recurring series' latest entry.
+  // Date = last date + 1 month (editable for ±1 day drift). Nothing saved until Save.
+  function openRecordNext(item) {
+    setEditRec(null); setFormDate(item.nextDue); setFormDesc(item.description)
+    setFormAmount(String(item.amount)); setFormRef(''); setFormRecur('recurring')
+    setFormError(null); setShowForm(true)
+  }
+
   function openEdit(r) {
     setShowForm(false); setEditRec(r); setEditDate(r.expense_date); setEditDesc(r.description)
     setEditAmount(String(r.amount)); setEditRef(r.reference ?? ''); setEditRecur(r.recurrence ?? 'one_time')
@@ -1842,8 +1881,10 @@ function ExpensesTab({ queryClient }) {
                 <button key={o.id} type="button" onClick={() => setRec(o.id)} style={{
                   flex: 1, padding: '7px 0', borderRadius: 7, border: 'none', fontSize: 11,
                   fontWeight: 600, cursor: 'pointer',
-                  background: recur===o.id ? 'rgba(56,189,248,0.3)' : 'rgba(71,85,105,0.3)',
-                  color: recur===o.id ? '#38bdf8' : '#64748B',
+                  background: recur===o.id
+                    ? (o.id === 'recurring' ? RECUR_CLR.btn : 'rgba(56,189,248,0.3)')
+                    : 'rgba(71,85,105,0.3)',
+                  color: recur===o.id ? (o.id === 'recurring' ? RECUR_CLR.text : '#38bdf8') : '#64748B',
                 }}>{o.label}</button>
               ))}
             </div>
@@ -1875,7 +1916,26 @@ function ExpensesTab({ queryClient }) {
   }
 
   const totalExpenses = expenseList.reduce((s, x) => s + x.amount, 0)
-  const recurringCount = expenseList.filter(x => x.recurrence === 'recurring').length
+  // Recurring series — grouped by expense name; latest entry drives next due date.
+  // Status per series: 'recorded' (next due > today + 3d), 'due' (within ±3d), 'overdue'.
+  const today = todayISO()
+  const recurringSeries = Object.values(
+    expenseList.filter(x => x.recurrence === 'recurring' && x.expense_date).reduce((acc, x) => {
+      const k = recurKey(x.description)
+      ;(acc[k] ??= []).push(x)
+      return acc
+    }, {})
+  ).map(entries => {
+    const latest  = newestFirst(entries, 'expense_date')[0]
+    const nextDue = addMonthsISO(latest.expense_date, 1)
+    const days    = Math.round((new Date(nextDue + 'T00:00:00Z') - new Date(today + 'T00:00:00Z')) / 86_400_000)
+    const status  = days > 3 ? 'recorded' : days >= -3 ? 'due' : 'overdue'
+    return { key: recurKey(latest.description), description: latest.description, amount: latest.amount,
+      lastDate: latest.expense_date, nextDue, days, status, count: entries.length }
+  }).sort((a, b) => a.nextDue.localeCompare(b.nextDue))
+  const recurringCount   = recurringSeries.length
+  const recurringEntries = expenseList.filter(x => x.recurrence === 'recurring').length
+  const dueCount         = recurringSeries.filter(r => r.status !== 'recorded').length
 
   return (
     <>
@@ -1894,7 +1954,7 @@ function ExpensesTab({ queryClient }) {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10, marginBottom: 14 }}>
         {[
           { label: 'Total Expenses', value: formatCurrencyAbs(totalExpenses), color: '#38bdf8' },
-          { label: 'Recurring Items', value: String(recurringCount), color: '#94a3b8' },
+          { label: 'Recurring Items', value: `${recurringCount}  ·  ${recurringEntries} entries`, color: RECUR_CLR.text },
         ].map(s => (
           <div key={s.label} style={{ background: 'rgba(30,41,59,0.4)', border: '1px solid rgba(51,65,85,0.3)',
             borderRadius: 10, padding: '10px 14px' }}>
@@ -1918,6 +1978,53 @@ function ExpensesTab({ queryClient }) {
       {showForm && !editRec && renderExpenseForm(false)}
       {editRec && renderExpenseForm(true)}
 
+      {/* Recurring schedule — one row per series, one-click pre-filled record */}
+      {recurringSeries.length > 0 && (
+        <div style={{ background: RECUR_CLR.bg, border: `1px solid ${RECUR_CLR.border}`,
+          borderRadius: 10, padding: '10px 12px', marginBottom: 14 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+            gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase',
+              letterSpacing: '0.7px', color: RECUR_CLR.text }}>Recurring Schedule</span>
+            <span style={{ fontSize: 10, color: '#94a3b8' }}>
+              {dueCount > 0 ? `${dueCount} due` : 'All recorded'} · next = last + 1 month
+            </span>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {recurringSeries.map(r => {
+              const st = r.status === 'recorded'
+                ? { label: `Recorded · next ${fmtDate(r.nextDue)}`, color: '#34d399' }
+                : r.status === 'due'
+                  ? { label: `Due ${fmtDate(r.nextDue)}`, color: RECUR_CLR.text }
+                  : { label: `Overdue · ${fmtDate(r.nextDue)}`, color: '#f87171' }
+              return (
+                <div key={r.key} style={{ display: 'flex', alignItems: 'center', gap: 10,
+                  flexWrap: 'wrap', justifyContent: 'space-between',
+                  background: 'rgba(15,23,42,0.45)', borderRadius: 8, padding: '7px 10px' }}>
+                  <div style={{ minWidth: 0, flex: '1 1 160px' }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: '#E2E8F0' }}>{r.description}</div>
+                    <div style={{ fontSize: 10, color: '#64748B', marginTop: 2 }}>
+                      Last {fmtDate(r.lastDate)} · {formatCurrencyAbs(r.amount)} · {r.count}×
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                    <span style={{ fontSize: 10, fontWeight: 600, color: st.color }}>{st.label}</span>
+                    <button type="button" onClick={() => openRecordNext(r)} disabled={!!editRec} style={{
+                      display: 'flex', alignItems: 'center', gap: 4, padding: '5px 10px', borderRadius: 7,
+                      fontSize: 11, fontWeight: 600, cursor: editRec ? 'not-allowed' : 'pointer',
+                      background: RECUR_CLR.btn, color: RECUR_CLR.text, border: `1px solid ${RECUR_CLR.border}`,
+                      opacity: editRec ? 0.5 : 1,
+                    }}>
+                      <Plus size={11} /> Record next
+                    </button>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
       {/* List */}
       <p style={{ fontSize: 10, fontWeight: 600, color: '#475569', textTransform: 'uppercase',
         letterSpacing: '0.8px', marginBottom: 8 }}>Expense Log</p>
@@ -1926,11 +2033,12 @@ function ExpensesTab({ queryClient }) {
         : expenseList.length === 0
           ? <p style={{ fontSize: 12, color: '#475569', textAlign: 'center', padding: '20px 0' }}>No expenses recorded</p>
           : <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {expenseList.map(x => {
+              {newestFirst(expenseList, 'expense_date').map(x => {
                 const isRecurring = x.recurrence === 'recurring'
                 return (
                   <div key={x.id} style={{
-                    background: 'rgba(56,189,248,0.06)', border: '1px solid rgba(56,189,248,0.18)',
+                    background: isRecurring ? RECUR_CLR.bg : 'rgba(56,189,248,0.06)',
+                    border: `1px solid ${isRecurring ? RECUR_CLR.border : 'rgba(56,189,248,0.18)'}`,
                     borderRadius: 10, padding: '9px 12px',
                   }}>
                     <EventRow onEdit={() => openEdit(x)} onDelete={() => setDeletingId(x.id)}>
@@ -1938,13 +2046,14 @@ function ExpensesTab({ queryClient }) {
                         {/* Left: icon + title + notes/ref */}
                         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, minWidth: 0, flex: 1 }}>
                           <div style={{ width: 24, height: 24, borderRadius: 6, display: 'flex', alignItems: 'center',
-                            justifyContent: 'center', flexShrink: 0, background: 'rgba(56,189,248,0.2)' }}>
-                            <span style={{ fontSize: 11, fontWeight: 800, color: '#38bdf8' }}>-</span>
+                            justifyContent: 'center', flexShrink: 0, background: isRecurring ? RECUR_CLR.chip : 'rgba(56,189,248,0.2)' }}>
+                            <span style={{ fontSize: 11, fontWeight: 800, color: isRecurring ? RECUR_CLR.text : '#38bdf8' }}>-</span>
                           </div>
                           <div style={{ minWidth: 0 }}>
                             <span style={{ fontSize: 12, fontWeight: 600, color: '#E2E8F0' }}>{x.description}</span>
                             <div style={{ marginTop: 3, display: 'flex', flexDirection: 'column', gap: 1 }}>
-                              <span style={{ fontSize: 10, color: '#64748B' }}>
+                              <span style={{ fontSize: 10, color: isRecurring ? RECUR_CLR.text : '#64748B',
+                                fontWeight: isRecurring ? 600 : 400 }}>
                                 {isRecurring ? 'Recurring' : 'One-time'}
                               </span>
                               {x.reference && (
@@ -1957,7 +2066,7 @@ function ExpensesTab({ queryClient }) {
                         <div style={{ flexShrink: 0, textAlign: 'right' }}>
                           <div style={{ fontSize: 11, fontWeight: 700, color: '#CBD5E1' }}>{fmtDate(x.expense_date)}</div>
                           <div style={{ fontSize: 12, fontWeight: 700, fontVariantNumeric: 'tabular-nums',
-                            color: '#38bdf8', marginTop: 3 }}>
+                            color: isRecurring ? RECUR_CLR.text : '#38bdf8', marginTop: 3 }}>
                             -{formatCurrencyAbs(x.amount)}
                           </div>
                         </div>
@@ -2190,7 +2299,7 @@ function WagesTab({ queryClient }) {
         : wageList.length === 0
           ? <p style={{ fontSize: 12, color: '#475569', textAlign: 'center', padding: '20px 0' }}>No wages/invoices recorded</p>
           : <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {wageList.map(w => {
+              {newestFirst(wageList, 'wage_date').map(w => {
                 const isRecurring = w.recurrence === 'recurring'
                 return (
                   <div key={w.id} style={{

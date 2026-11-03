@@ -279,6 +279,21 @@ future profit withdrawals:
 
 All tabs use consistent formatting (§8).
 
+**Display order:** every ledger tab lists newest → oldest by its record date
+(`newestFirst()` in `SummaryStrip.jsx`; tie-break `created_at` desc, then id
+desc), independent of insert order. Display only — cached data untouched.
+
+**Expenses — recurring:**
+- Recurring entries render amber (`RECUR_CLR`: text `#fbbf24` on amber tint);
+  one-time stays sky. Same colour on the form's Recurring toggle.
+- *Recurring Items* card = unique series (grouped by expense name,
+  case/space-insensitive) · total recurring entries.
+- *Recurring Schedule* panel: one row per series — last date, last amount,
+  entry count, next due (= last date + 1 month, month-end clamped) and status
+  (Recorded > 3 days ahead · Due within ±3 days · Overdue). **Record next**
+  opens the New Expense form pre-filled (name, amount, recurring, next-due
+  date); adjust date for ±1 day drift, then Save. Nothing saved automatically.
+
 ---
 
 ## 8. UI/UX Conventions
