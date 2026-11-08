@@ -201,8 +201,15 @@ def _close_fill(lots: dict, lid: str, t: dict, s: dict, splits: list) -> tuple[f
     return gross, fee
 
 
-def _lot_id(instrument: str, open_dt: str) -> str:
-    return f"{instrument}|{open_dt}"
+def _lot_id(instrument: str, open_dt: str, open_px: float) -> str:
+    """
+    Lot identity = instrument + open time + open price (2026-11-09). One order
+    can fill as several lots at the SAME timestamp and different prices
+    (06-11: ABIVAX 1,000 @ 86.50 + 1,000 @ 85.753, both 17:02:54.400) —
+    keyed on time alone they collapsed into one lot (one fee, wrong open P/L
+    and margin, and a false "rate change" to 10.15%).
+    """
+    return f"{instrument}|{open_dt}|{float(open_px):.10g}"
 
 
 def _same_open(a: str, b: str) -> bool:
@@ -245,13 +252,13 @@ def replay(statements: list[dict], settings: dict | None = None) -> dict:
         # 1. opens — lots in Open Position Report not yet known
         today_ids = set()
         for p in st["open_positions"]:
-            lid = _lot_id(p["instrument"], p["open_dt"])
+            lid = _lot_id(p["instrument"], p["open_dt"], p["open_px"])
             today_ids.add(lid)
             if lid not in lots:
                 # opened today and partly closed today: open at the traded qty, the
                 # partial close is matched in step 2
                 opened = next((t["qty"] for t in st["trades"]
-                               if _lot_id(t["instrument"], t["dt"]) == lid and abs(t["profit"]) < 1e-9), None)
+                               if _lot_id(t["instrument"], t["dt"], t["price"]) == lid and abs(t["profit"]) < 1e-9), None)
                 qty0 = opened if opened and opened > p["qty"] else p["qty"]
                 fee = fee_for(qty0, p["open_px"], s, p["instrument"])
                 lots[lid] = Lot(lid, p["instrument"], p["side"], qty0,
@@ -275,12 +282,12 @@ def replay(statements: list[dict], settings: dict | None = None) -> dict:
         used = set()
         today_qty: dict[str, float] = {}
         for p in st["open_positions"]:
-            lid = _lot_id(p["instrument"], p["open_dt"])
+            lid = _lot_id(p["instrument"], p["open_dt"], p["open_px"])
             today_qty[lid] = today_qty.get(lid, 0.0) + p["qty"]
         for i, t in enumerate(trades):                 # today's opens (profit 0)
             if abs(t["profit"]) >= 1e-9:
                 continue
-            lid = _lot_id(t["instrument"], t["dt"])
+            lid = _lot_id(t["instrument"], t["dt"], t["price"])
             if lid in today_ids:
                 used.add(i)                            # still (partly) held — step 1 has it
             elif lid not in lots:                      # opened and fully closed today

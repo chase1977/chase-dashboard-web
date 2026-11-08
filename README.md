@@ -2042,6 +2042,12 @@ $3,250.92, gross $83,074.16, EUR fees €2,386.11, swaps €456.93, gross
 2,254.02 · 05-10 10,712.60 · 08-10 3,240.97 · 15-10 28,410.87 · 16-10
 4,053.09 · 20-10 22,099.12 · 22-10 1,380.26; (EUR) 21-10 33,425.50.
 
+**Lot identity = instrument + open time + open price** (2026-11-09) — one
+order can fill as several lots at the same timestamp and different prices
+(06-11: ABIVAX 1,000 @ 86.50 + 1,000 @ 85.753, both 17:02:54.400). Keyed on
+time alone they merged into one lot (one $60 fee, open P/L / margin ✗, false
+10.15% rate). Regression: `tests\test_gtx_lots.py`.
+
 **One order closing several lots** (2026-10-16) — QIAGEN sell 10,000 @
 46.412 on 15-10 closed the 06-10 (45.50) and 07-10 (45.18303) 5,000 lots;
 the engine picks the set of lots whose qty sums to the order and whose
