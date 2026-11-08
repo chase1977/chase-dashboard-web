@@ -665,14 +665,16 @@ function AddStatementModal({ onClose, onSaved }) {
 
 // ─── Settings modal ────────────────────────────────────────────────────────────
 const FEE_MODES = [['per_unit', 'Per unit'], ['pct_notional', '% of notional']]
-const SWAP_MARKUP_PCT = 4   // broker: long = reference + 4%, short = 4% − reference (Ben, 14-10-2026)
+// Broker (Ben 14-10 / 06-11-2026): long = reference + 4%; short charge = min(0, 4% − reference) —
+// a short is credited only when the reference is above 4%, otherwise no charge and no credit.
+const SWAP_MARKUP_PCT = 4
 const SETTING_FIELDS = [
   ['fee_per_unit', 'Broker fee per unit', 'qty × fee — charged on open and on close'],
   ['fee_pct', 'Broker fee (% of notional)', 'qty × fill price × % — each way (0.25 = 25bps)'],
   ['swap_rate_long_pct', 'Base swap rate — long (% p.a.)', 'Before the first dated change below'],
   ['swap_rate_short_pct', 'Base swap rate — short (% p.a.)', 'Unverified until first short swap'],
   ['day_count', 'Day count', 'Swap denominator'],
-  ['swap_cutoff_hour', 'Swap cutoff hour', 'Lot open at this hour → charged'],
+  ['swap_cutoff_hour', 'Swap cutoff hour (fallback)', 'Unused: swap run = 22:00 London → 17:00 (BST) / 18:00 (GMT) on statement clock'],
   ['friday_multiplier', 'Friday multiplier', 'Weekend swap roll'],
   ['margin_pct', 'Margin (%)', 'Default — statement Margin column wins per position'],
 ]
@@ -772,10 +774,10 @@ function BookSettingsForm({ ccy, settings, effective, onClose, onSaved }) {
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
           <button onClick={() => setSched([...sched, { from: '', long_pct: '', short_pct: '' }])} style={btn()}>+ Add rate change</button>
         </div>
-        {/* Broker quotes a reference rate: long = ref + 4%, short = 4% − ref (negative = credit). */}
+        {/* Broker quotes a reference rate: long = ref + 4%, short = min(0, 4% − ref) (negative = credit). */}
         <div style={{ marginTop: 12, padding: 10, borderRadius: 8, border: `1px dashed ${C.border}` }}>
           <div style={{ fontSize: 10, color: C.muted, marginBottom: 8 }}>
-            From a reference rate — long = ref + {SWAP_MARKUP_PCT}%, short = {SWAP_MARKUP_PCT}% − ref (negative = credit)
+            From a reference rate — long = ref + {SWAP_MARKUP_PCT}%, short = 0, or a credit of (ref − {SWAP_MARKUP_PCT}%) when ref is above {SWAP_MARKUP_PCT}%
           </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
             <input type="date" value={ref.from} onChange={x => setRef({ ...ref, from: x.target.value })}
@@ -785,7 +787,7 @@ function BookSettingsForm({ ccy, settings, effective, onClose, onSaved }) {
             <button disabled={!ref.from || ref.pct === '' || Number.isNaN(Number(ref.pct))} onClick={() => {
               const r = Number(ref.pct)
               setSched([...sched.filter(e => e.from !== ref.from),
-                { from: ref.from, long_pct: +(r + SWAP_MARKUP_PCT).toFixed(5), short_pct: +(SWAP_MARKUP_PCT - r).toFixed(5) }])
+                { from: ref.from, long_pct: +(r + SWAP_MARKUP_PCT).toFixed(5), short_pct: +Math.min(0, SWAP_MARKUP_PCT - r).toFixed(5) }])
               setRef({ from: '', pct: '' })
             }} style={{ ...btn(), padding: '8px 12px' }}>Add</button>
           </div>

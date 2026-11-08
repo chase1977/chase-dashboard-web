@@ -27,7 +27,8 @@ delta is booked as a correction (balance only) — never as a withdrawal.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, asdict
-from datetime import datetime, date
+from datetime import datetime, date, timedelta, timezone
+from zoneinfo import ZoneInfo
 from decimal import Decimal, ROUND_DOWN, ROUND_CEILING
 from itertools import combinations
 
@@ -42,7 +43,14 @@ DEFAULT_SETTINGS = {
     "swap_rate_short_pct": 8.45145,      # UNVERIFIED — no short data yet
     "short_rate_verified": False,
     "day_count": 360,
-    "swap_cutoff_hour": 17,
+    "swap_cutoff_hour": 17,              # fallback only when swap_cutoff_tz is None
+    # Swap run (Ben, 06-11-2026): 18:00 AST = 22:00 London "at this time of
+    # year". Statement / CSV times are a fixed UTC−4 clock, so the run shows
+    # as 17:00 while the UK is on BST and 18:00 on GMT (CSV swap rows: 17:00
+    # to 23-10, 18:00 from 26-10-2026). Lots open at the run are charged.
+    "swap_cutoff_tz": "Europe/London",
+    "swap_cutoff_local": "22:00",
+    "statement_utc_offset_h": -4,
     "friday_multiplier": 3,
     "margin_pct": 50.0,
     "tolerance": 0.01,
@@ -109,6 +117,17 @@ def _fixed_rate(s: dict, lot) -> float | None:
 
 def _d(iso: str) -> datetime:
     return datetime.fromisoformat(iso)
+
+
+def _cutoff_for(d: date, s: dict) -> datetime:
+    """Swap-run instant on statement day d, on the statement's own clock."""
+    tz = s.get("swap_cutoff_tz")
+    if not tz:
+        return _cutoff(d, s["swap_cutoff_hour"])
+    hh, mm = (int(x) for x in str(s.get("swap_cutoff_local", "22:00")).split(":"))
+    local = datetime(d.year, d.month, d.day, hh, mm, tzinfo=ZoneInfo(tz))
+    clock = local.astimezone(timezone(timedelta(hours=float(s.get("statement_utc_offset_h", -4)))))
+    return clock.replace(tzinfo=None)
 
 
 def _cutoff(d: date, hour: int) -> datetime:
@@ -346,7 +365,7 @@ def replay(statements: list[dict], settings: dict | None = None) -> dict:
             if (prev_date is None or e["from"] > prev_date.isoformat()) and e["from"] <= d.isoformat():
                 cur_long  = float(e.get("long_pct", cur_long))
                 cur_short = float(e.get("short_pct", cur_short))
-        cut = _cutoff(d, s["swap_cutoff_hour"])
+        cut = _cutoff_for(d, s)
         mult = s["friday_multiplier"] if d.weekday() == 4 else 1
         charged = []                                   # (lot, price, estimated)
         for lot in lots.values():

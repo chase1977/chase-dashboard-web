@@ -29,8 +29,11 @@ SYMBOL = {"USD": "$", "EUR": "€", "GBP": "£"}
 
 # Broker-confirmed terms (Ben, InvestGTX, 14-10-2026) — code defaults for the
 # non-USD books; anything saved in Settings → EUR / GBP overrides them.
-#   Swap  : long = reference + 4% markup; short = 4% − reference (cost; a
-#           credit only if reference > 4%). Charge rates, % p.a. / 360.
+#   Swap  : long = reference + 4% markup. Short (Ben, 06-11-2026): if the
+#           reference rate is ABOVE the 4% charge rate the short is credited
+#           the difference; if below, no charge and no credit → short charge
+#           rate = min(0, 4 − ref) = 0 at today's USD/EUR/GBP references
+#           (confirmed: Flutter short 03→04-11 charged nothing). % p.a. / 360.
 #           USD ref 3.9 → 7.9% · EUR ref 2.429 → 6.429% · GBP ref 3.733 → 7.733%
 #   Fee   : 0.25% of notional each way (50bps round trip).
 #   EUR history (from the operations CSV + statements): 12-10 charged 7.875%;
@@ -41,14 +44,14 @@ BOOK_DEFAULTS = {
         "fee_mode": "pct_notional", "fee_pct": 0.25,
         "swap_rate_long_pct": 7.875, "swap_rate_short_pct": 0.0,
         "swap_rate_schedule": [
-            {"from": "2026-10-13", "long_pct": 4.858, "short_pct": 1.571},
-            {"from": "2026-10-14", "long_pct": 6.429, "short_pct": 1.571},
+            {"from": "2026-10-13", "long_pct": 4.858, "short_pct": 0.0},
+            {"from": "2026-10-14", "long_pct": 6.429, "short_pct": 0.0},
         ],
         "verified": True,
     },
     "GBP": {
         "fee_mode": "pct_notional", "fee_pct": 0.25,
-        "swap_rate_long_pct": 7.733, "swap_rate_short_pct": 0.267,
+        "swap_rate_long_pct": 7.733, "swap_rate_short_pct": 0.0,
         "swap_rate_schedule": [],
         "verified": True,
     },

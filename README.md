@@ -1949,15 +1949,25 @@ the raw text of each saved statement is re-parsed.
 **Broker terms per book** (confirmed by Ben, InvestGTX, 14-10-2026; code
 defaults in `gtx_books.BOOK_DEFAULTS`, overridable in ⚙ Settings → book):
 
-| Book | Fee (each way) | Swap long = ref + 4% | Swap short = 4% − ref |
+| Book | Fee (each way) | Swap long = ref + 4% | Swap short = min(0, 4% − ref) |
 |---|---|---|---|
-| USD | qty × $0.05 ("Order per lot") | 3.9 + 4 = **7.9%** (8.45145% before 29-09) | 0.1% |
-| EUR | **0.25% of notional** ("Order volume %") = qty × fill price × 0.0025 | 2.429 + 4 = **6.429%** from 14-10 | 1.571% |
-| GBP | 0.25% of notional | 3.733 + 4 = **7.733%** | 0.267% |
+| USD | qty × $0.05 ("Order per lot") | 3.9 + 4 = **7.9%** (8.45145% before 29-09) | 0 |
+| EUR | **0.25% of notional** ("Order volume %") = qty × fill price × 0.0025 | 2.429 + 4 = **6.429%** from 14-10 | 0 |
+| GBP | 0.25% of notional | 3.733 + 4 = **7.733%** | 0 |
 
-Swap = qty × price × rate% ÷ 360, ×3 Friday, lots open at 17:00. Short rate
-is a charge; it becomes a credit only if the reference rate exceeds 4%
-(negative rate in Settings). Short rates stay *unverified* until a first short.
+Swap = qty × price × rate% ÷ 360, ×3 Friday, charged on lots open at the
+**swap run = 22:00 London** (Ben 06-11-2026: "18:00 AST"). Statement / CSV
+times are a fixed UTC−4 clock, so the run reads **17:00 while the UK is on
+BST and 18:00 on GMT** (CSV swap rows: 17:00 to 23-10, 18:00 from
+26-10-2026); `gtx_engine._cutoff_for` (`swap_cutoff_tz`,
+`swap_cutoff_local`, `statement_utc_offset_h`). At 17:00 the engine had
+missed the EV 12,500 opened 02-11 17:08:57 and "inferred" 8.778% / 7.9% on
+02-11 / 03-11, putting $1.77 of swap on the wrong lot.
+
+Shorts (Ben 06-11-2026): a short is **credited** (ref − 4%) only when the
+reference rate is above the 4% charge rate; below it there is **no charge
+and no credit**. First short: FLUTTER 3,000, 03-11 17:06 → 04-11 17:18,
+charged $0.00 swap (net +$1,967.82).
 
 EUR rate history actually charged (operations CSV + statements): 12-10
 **7.875%** (€49.31), 13-10 **4.858%** (€30.63 — broker mis-set, Ben 14-10:
@@ -1975,7 +1985,7 @@ snapped to the exact 2dp amount that reconciles the full-precision balance
 (two truncated displays can otherwise be a cent out).
 
 Settings → *From a reference rate* adds a dated schedule row: long =
-ref + 4%, short = 4% − ref.
+ref + 4%, short = min(0, 4% − ref).
 
 Regression: `python tests\test_gtx_books.py` (real 12-10 + 13-10 emails in
 `tests/fixtures/`: USD + EUR to the cent, transfer, empty GBP hidden).
