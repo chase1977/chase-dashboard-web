@@ -53,6 +53,8 @@ const fmtDate = iso => iso ? iso.slice(0, 10).split('-').reverse().join('-') : '
 const fmtDt = iso => iso ? `${fmtDate(iso)} ${iso.slice(11, 16)}` : '—'
 const tone = x => (x > 0 ? C.pos : x < 0 ? C.neg : C.text)
 const shortInst = s => (s || '').replace(/\s*\(CFD\)\s*$/i, '')
+// Instrument column cap (Open / Closed tables): long names end in … with the full name on hover.
+const INST_W = 170
 
 // Default statement date: today if weekday, else previous Friday
 // Default = previous weekday: statements arrive ~23:00 and are entered the
@@ -250,7 +252,12 @@ function OpenTable({ rows }) {
         {rows.map(r => (
           <Fragment key={r.lot_id}>
             <tr onClick={() => setOpen(open === r.lot_id ? null : r.lot_id)} style={{ cursor: 'pointer' }}>
-              <td style={{ ...tdL, fontWeight: 600 }}>{open === r.lot_id ? '▾' : '▸'} {shortInst(r.instrument)}</td>
+              <td style={{ ...tdL, fontWeight: 600 }} title={shortInst(r.instrument)}>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, maxWidth: INST_W }}>
+                  <span style={{ flexShrink: 0 }}>{open === r.lot_id ? '▾' : '▸'}</span>
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{shortInst(r.instrument)}</span>
+                </span>
+              </td>
               <td style={tdL}><SideTag side={r.side} /></td>
               <td style={td}>{fmtNum(r.qty)}</td>
               <td style={tdL}>{fmtDt(r.open_dt)}</td>
@@ -302,7 +309,12 @@ function ClosedTable({ rows }) {
         {rows.map(r => (
           <Fragment key={r.lot_id}>
             <tr onClick={() => setOpen(open === r.lot_id ? null : r.lot_id)} style={{ cursor: 'pointer' }}>
-              <td style={{ ...tdL, fontWeight: 600 }}>{open === r.lot_id ? '▾' : '▸'} {shortInst(r.instrument)}</td>
+              <td style={{ ...tdL, fontWeight: 600 }} title={shortInst(r.instrument)}>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, maxWidth: INST_W }}>
+                  <span style={{ flexShrink: 0 }}>{open === r.lot_id ? '▾' : '▸'}</span>
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{shortInst(r.instrument)}</span>
+                </span>
+              </td>
               <td style={tdL}><SideTag side={r.side} /></td>
               <td style={td}>
                 {pieces[r.instrument + r.open_dt + r.open_px] > 1 && (
