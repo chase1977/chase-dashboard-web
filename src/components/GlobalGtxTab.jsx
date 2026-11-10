@@ -58,6 +58,14 @@ const INST_W = 230
 
 // Ring badge (Closed Positions): P = partial piece of a lot, C = broker correction. Legend under the table.
 const BADGE = { P: { label: 'Partial', color: C.warn }, C: { label: 'Correction', color: C.accent } }
+function BadgeLegend() {
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, marginTop: 8, fontSize: 11, color: C.muted }}>
+      {Object.keys(BADGE).map(k => <span key={k} style={{ display: 'inline-flex', alignItems: 'center' }}><RingBadge k={k} />{BADGE[k].label}</span>)}
+    </div>
+  )
+}
+
 function RingBadge({ k, title }) {
   const col = BADGE[k].color
   return (
@@ -253,6 +261,7 @@ function OpenTable({ rows }) {
   if (!rows.length) return <div style={{ fontSize: 13, color: C.dim, padding: '8px 0' }}>No open positions.</div>
   const tot = k => rows.reduce((a, r) => a + (r[k] || 0), 0)
   return (
+    <>
     <TableWrap minWidth={1180}>
       <thead><tr>
         <th style={thL}>Instrument</th><th style={thL}>Side</th><th style={th}>Qty</th><th style={thL}>Opened</th>
@@ -270,7 +279,10 @@ function OpenTable({ rows }) {
                 </span>
               </td>
               <td style={tdL}><SideTag side={r.side} /></td>
-              <td style={td}>{fmtNum(r.qty)}</td>
+              <td style={td}>
+                {r.partial && <RingBadge k="P" title="Partial — remainder of a lot already partly closed" />}
+                {fmtNum(r.qty)}
+              </td>
               <td style={tdL}>{fmtDt(r.open_dt)}</td>
               <td style={td}>{fmtPx(r.open_px)}</td>
               <td style={td}>{fmtPx(r.current_px)}</td>
@@ -299,6 +311,8 @@ function OpenTable({ rows }) {
         </tr>
       </tbody>
     </TableWrap>
+    <BadgeLegend />
+    </>
   )
 }
 
@@ -329,7 +343,7 @@ function ClosedTable({ rows }) {
               </td>
               <td style={tdL}><SideTag side={r.side} /></td>
               <td style={td}>
-                {pieces[r.instrument + r.open_dt + r.open_px] > 1 && (
+                {(r.partial ?? pieces[r.instrument + r.open_dt + r.open_px] > 1) && (
                   <RingBadge k="P" title="Partial — one piece of a lot closed in several parts" />
                 )}
                 {fmtNum(r.qty)}
@@ -366,9 +380,7 @@ function ClosedTable({ rows }) {
         </tr>
       </tbody>
     </TableWrap>
-    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, marginTop: 8, fontSize: 11, color: C.muted }}>
-      {Object.keys(BADGE).map(k => <span key={k} style={{ display: 'inline-flex', alignItems: 'center' }}><RingBadge k={k} />{BADGE[k].label}</span>)}
-    </div>
+    <BadgeLegend />
     </>
   )
 }
@@ -507,8 +519,7 @@ function BookedTable({ days, unmatched, ccy }) {
                     {d.trades.map(t => (
                       <div key={t.lot_id} style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', gap: 8, fontSize: 12, padding: '6px 10px', background: C.card, border: `1px solid ${C.border}`, borderRadius: 6 }}>
                         <span style={{ color: C.text, fontWeight: 600 }}>
-                          {shortInst(t.instrument)} <span style={{ color: C.dim, fontWeight: 400 }}>{fmtNum(t.qty)} · {fmtPx(t.open_px)} → {fmtPx(t.close_px)} · opened {fmtDate(t.open_dt)}</span>
-                          {t.corrected && <span style={{ marginLeft: 6, fontSize: 9, fontWeight: 700, color: C.accent }}>CORRECTED</span>}
+                          {t.partial && <RingBadge k="P" />}{t.corrected && <RingBadge k="C" />}{shortInst(t.instrument)} <span style={{ color: C.dim, fontWeight: 400 }}>{fmtNum(t.qty)} · {fmtPx(t.open_px)} → {fmtPx(t.close_px)} · opened {fmtDate(t.open_dt)}</span>
                         </span>
                         <span style={{ fontVariantNumeric: 'tabular-nums', color: C.dim }}>
                           gross {fmtUsd(t.gross, { sign: true })} · fees {fmtUsd(-t.fees)} · swaps {fmtUsd(t.swaps)} · <strong style={{ color: tone(t.net) }}>net {fmtUsd(t.net, { sign: true })}</strong>
@@ -532,6 +543,7 @@ function BookedTable({ days, unmatched, ccy }) {
           </tr>
         </tbody>
       </TableWrap>
+      <BadgeLegend />
       {unmatched?.length > 0 && (
         <div style={{ marginTop: 10, padding: '8px 12px', borderRadius: 8, background: `${C.warn}14`, border: `1px solid ${C.warn}40`, fontSize: 11, color: C.warn }}>
           {unmatched.map(u => <div key={u.date}>⚠ Daily feed has {fmtUsd(u.amount, { sign: true })} on {fmtDate(u.date)} but no trade closed that day in this book.</div>)}

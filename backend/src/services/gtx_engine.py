@@ -571,8 +571,14 @@ def _build_output(lots, log, cash_events, s) -> dict:
     total_swaps = sw_closed + sw_open                       # negative
     net_realised_closed = gross_real - sum(l.open_fee + l.close_fee for l in closed) + sw_closed
 
+    # A lot is "partial" when it was split by a partial close: the closed piece
+    # (parent_id set) and the lot it came from (open remainder or last piece).
+    parents = {l.parent_id for l in lots.values() if l.parent_id}
+    is_partial = lambda l: bool(l.parent_id) or l.lot_id in parents
+
     def lot_row(l: Lot) -> dict:
         r = asdict(l)
+        r["partial"] = is_partial(l)
         r["days_held"] = len(l.swap_ledger)
         r["unrealised"] = l.unrealised()
         if l.status == "open":
@@ -628,7 +634,8 @@ def _build_output(lots, log, cash_events, s) -> dict:
         b["trades"].append({"lot_id": l.lot_id, "instrument": l.instrument, "side": l.side, "qty": l.qty,
                             "open_dt": l.open_dt, "open_px": l.open_px, "close_dt": l.close_dt,
                             "close_px": l.close_px, "gross": l.gross, "fees": l.open_fee + l.close_fee,
-                            "swaps": l.swaps, "net": net, "corrected": l.correction is not None})
+                            "swaps": l.swaps, "net": net, "corrected": l.correction is not None,
+                            "partial": is_partial(l)})
     booked = []
     for d in sorted(by_day):
         b = by_day[d]
