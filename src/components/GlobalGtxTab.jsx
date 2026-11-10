@@ -54,7 +54,18 @@ const fmtDt = iso => iso ? `${fmtDate(iso)} ${iso.slice(11, 16)}` : '—'
 const tone = x => (x > 0 ? C.pos : x < 0 ? C.neg : C.text)
 const shortInst = s => (s || '').replace(/\s*\(CFD\)\s*$/i, '')
 // Instrument column cap (Open / Closed tables): long names end in … with the full name on hover.
-const INST_W = 170
+const INST_W = 230
+
+// Ring badge (Closed Positions): P = partial piece of a lot, C = broker correction. Legend under the table.
+const BADGE = { P: { label: 'Partial', color: C.warn }, C: { label: 'Correction', color: C.accent } }
+function RingBadge({ k, title }) {
+  const col = BADGE[k].color
+  return (
+    <span title={title || BADGE[k].label}
+      style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 14, height: 14, marginRight: 5, verticalAlign: '1px',
+        borderRadius: '50%', fontSize: 8, fontWeight: 800, lineHeight: 1, color: col, background: `${col}1A`, border: `1px solid ${col}66`, cursor: 'help' }}>{k}</span>
+  )
+}
 
 // Default statement date: today if weekday, else previous Friday
 // Default = previous weekday: statements arrive ~23:00 and are entered the
@@ -299,6 +310,7 @@ function ClosedTable({ rows }) {
   // a lot closed in pieces shows one row per piece — same instrument + open time
   const pieces = rows.reduce((m, r) => { const k = r.instrument + r.open_dt + r.open_px; m[k] = (m[k] || 0) + 1; return m }, {})
   return (
+    <>
     <TableWrap minWidth={1200}>
       <thead><tr>
         <th style={thL}>Instrument</th><th style={thL}>Side</th><th style={th}>Qty</th><th style={thL}>Opened</th><th style={th}>Open px</th>
@@ -318,7 +330,7 @@ function ClosedTable({ rows }) {
               <td style={tdL}><SideTag side={r.side} /></td>
               <td style={td}>
                 {pieces[r.instrument + r.open_dt + r.open_px] > 1 && (
-                  <span title="Part of a lot closed in pieces" style={{ marginRight: 6, padding: '1px 5px', borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: '0.4px', color: C.warn, border: `1px solid ${C.warn}55` }}>PARTIAL</span>
+                  <RingBadge k="P" title="Partial — one piece of a lot closed in several parts" />
                 )}
                 {fmtNum(r.qty)}
               </td>
@@ -327,11 +339,9 @@ function ClosedTable({ rows }) {
               <td style={tdL}>{fmtDt(r.close_dt)}</td>
               <td style={td}>
                 {r.correction && (
-                  <span title={r.correction.kind === 'missing_close'
-                      ? `Close missing from the ${fmtDate(r.close_dt)} statement; booked later by the broker (${fmtUsd(r.correction.delta, { sign: true })} net to balance). ${r.correction.note || ''}`
-                      : `Broker re-booked ${fmtDate(r.correction.booked)}: was ${r.correction.original_close_px} (${fmtUsd(r.correction.original_gross, { sign: true })}). ${r.correction.note || ''}`}
-                    style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 14, height: 14, marginRight: 5, verticalAlign: '1px',
-                      borderRadius: '50%', fontSize: 8, fontWeight: 800, lineHeight: 1, color: C.accent, background: `${C.accent}1A`, border: `1px solid ${C.accent}66`, cursor: 'help' }}>C</span>
+                  <RingBadge k="C" title={r.correction.kind === 'missing_close'
+                      ? `Correction — close missing from the ${fmtDate(r.close_dt)} statement; booked later by the broker (${fmtUsd(r.correction.delta, { sign: true })} net to balance). ${r.correction.note || ''}`
+                      : `Correction — broker re-booked ${fmtDate(r.correction.booked)}: was ${r.correction.original_close_px} (${fmtUsd(r.correction.original_gross, { sign: true })}). ${r.correction.note || ''}`} />
                 )}
                 {fmtPx(r.close_px)}
               </td>
@@ -356,6 +366,10 @@ function ClosedTable({ rows }) {
         </tr>
       </tbody>
     </TableWrap>
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, marginTop: 8, fontSize: 11, color: C.muted }}>
+      {Object.keys(BADGE).map(k => <span key={k} style={{ display: 'inline-flex', alignItems: 'center' }}><RingBadge k={k} />{BADGE[k].label}</span>)}
+    </div>
+    </>
   )
 }
 
