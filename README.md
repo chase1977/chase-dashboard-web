@@ -2042,6 +2042,20 @@ $3,250.92, gross $83,074.16, EUR fees €2,386.11, swaps €456.93, gross
 2,254.02 · 05-10 10,712.60 · 08-10 3,240.97 · 15-10 28,410.87 · 16-10
 4,053.09 · 20-10 22,099.12 · 22-10 1,380.26; (EUR) 21-10 33,425.50.
 
+**Broker missing close** (2026-11-10, `trade_corrections` entry with
+`kind: "missing_close"`) — a lot leaves the Open Position Report with no
+trade and no realised P/L, and the broker books the close afterwards. First
+case: ABIVAX 1,000 @ 86.50 (06-11) vanished from the 09-11 statement; Ben's
+corrected operations CSV (10-11, order 35444) sold BOTH lots at 87.38138
+(+1,628.38 and +881.38, $60 fee each). The engine closes the lot on
+`stmt_date` at `close_px` (open P/L, margin and the Daily Booked P/L day are
+right: 09-11 = +$2,269.76) and moves the balance by gross − close fee
+(+$821.38) on `booked`, or the next statement if not set — never as a
+deposit. Code defaults (`gtx_books.BOOK_CORRECTIONS`) are merged with any
+corrections saved in ⚙ Settings, so a list saved earlier can't hide a new
+known correction; missing-close entries are kept as-is when Settings saves.
+Regression: `tests\test_gtx_lots.py`.
+
 **Lot identity = instrument + open time + open price** (2026-11-09) — one
 order can fill as several lots at the same timestamp and different prices
 (06-11: ABIVAX 1,000 @ 86.50 + 1,000 @ 85.753, both 17:02:54.400). Keyed on

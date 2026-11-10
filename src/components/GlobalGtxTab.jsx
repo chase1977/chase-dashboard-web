@@ -315,7 +315,9 @@ function ClosedTable({ rows }) {
               <td style={tdL}>{fmtDt(r.close_dt)}</td>
               <td style={td}>
                 {r.correction && (
-                  <span title={`Broker re-booked ${fmtDate(r.correction.booked)}: was ${r.correction.original_close_px} (${fmtUsd(r.correction.original_gross, { sign: true })}). ${r.correction.note || ''}`}
+                  <span title={r.correction.kind === 'missing_close'
+                      ? `Close missing from the ${fmtDate(r.close_dt)} statement; booked later by the broker (${fmtUsd(r.correction.delta, { sign: true })} net to balance). ${r.correction.note || ''}`
+                      : `Broker re-booked ${fmtDate(r.correction.booked)}: was ${r.correction.original_close_px} (${fmtUsd(r.correction.original_gross, { sign: true })}). ${r.correction.note || ''}`}
                     style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 14, height: 14, marginRight: 5, verticalAlign: '1px',
                       borderRadius: '50%', fontSize: 8, fontWeight: 800, lineHeight: 1, color: C.accent, background: `${C.accent}1A`, border: `1px solid ${C.accent}66`, cursor: 'help' }}>C</span>
                 )}
@@ -705,7 +707,9 @@ function BookSettingsForm({ ccy, settings, effective, onClose, onSaved }) {
   const [feeMode, setFeeMode] = useState(base.fee_mode || 'per_unit')
   const [ref, setRef] = useState({ from: '', pct: '' })   // reference-rate helper
   // Broker re-bookings of closed trades: [{ instrument, open_dt, close_px, booked, note }]
-  const [corr, setCorr] = useState(() => (base.trade_corrections || []).map(e => ({ ...e })))
+  // Re-price corrections are editable here; other kinds (missing_close) are code-managed and saved through unchanged.
+  const [corr, setCorr] = useState(() => (base.trade_corrections || []).filter(e => !e.kind || e.kind === 'reprice').map(e => ({ ...e })))
+  const keepCorr = (base.trade_corrections || []).filter(e => e.kind && e.kind !== 'reprice')
   const setCorrRow = (i, k, x) => setCorr(corr.map((e, j) => (j === i ? { ...e, [k]: x } : e)))
   const [verified, setVerified] = useState(!!base.short_rate_verified)
   const [rulesOk, setRulesOk] = useState(!!base.verified)
@@ -730,7 +734,7 @@ function BookSettingsForm({ ccy, settings, effective, onClose, onSaved }) {
         close_px: Number(e.close_px), booked: e.booked, note: e.note || '' }))
       if (corrections.some(e => !e.instrument || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(e.open_dt) || Number.isNaN(e.close_px) || !/^\d{4}-\d{2}-\d{2}$/.test(e.booked || '')))
         throw new Error('Each correction needs instrument, open date-time (YYYY-MM-DD HH:MM), corrected close price and booked date')
-      const book = { ...patch, fee_mode: feeMode, short_rate_verified: verified, swap_rate_schedule: schedule, trade_corrections: corrections }
+      const book = { ...patch, fee_mode: feeMode, short_rate_verified: verified, swap_rate_schedule: schedule, trade_corrections: [...corrections, ...keepCorr] }
       await updateGtxSettings(ccy === 'USD' ? book
         : { books: { ...(settings.books || {}), [ccy]: { ...book, verified: rulesOk } } })
       onSaved()
@@ -812,6 +816,11 @@ function BookSettingsForm({ ccy, settings, effective, onClose, onSaved }) {
           </div>
         ))}
         <button onClick={() => setCorr([...corr, { instrument: '', open_dt: '', close_px: '', booked: '', note: '' }])} style={btn()}>+ Add correction</button>
+        {keepCorr.length > 0 && (
+          <div style={{ fontSize: 10, color: C.muted, marginTop: 8 }}>
+            + {keepCorr.length} broker missing-close {keepCorr.length === 1 ? 'entry' : 'entries'} (code-managed, kept on save): {keepCorr.map(e => `${shortInst(e.instrument)} @ ${e.open_px} → ${e.close_px} (${fmtDate(e.stmt_date)})`).join(' · ')}
+          </div>
+        )}
       </div>
       <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 14, fontSize: 12, color: C.dim, cursor: 'pointer' }}>
         <input type="checkbox" checked={verified} onChange={e => setVerified(e.target.checked)} /> Short swap rate verified against a statement

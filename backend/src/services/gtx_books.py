@@ -67,8 +67,20 @@ BOOK_CORRECTIONS = {
     "USD": [
         {"instrument": "CHIPOLTE MEXICAN (CFD)", "open_dt": "2026-10-05T13:43", "close_px": 31.52197,
          "booked": "2026-10-09", "note": "Broker re-booked close (CSV 07-10 19:00, CP 31.52197)"},
+        # ABIVAX 1,000 @ 86.50 (06-11 17:02:54) left the 09-11 statement with no
+        # trade and no P/L; broker system fault, rebooked 10-11 (Ben). Operations
+        # CSV 10-11: order 35444 sold BOTH lots at 87.38138 — +881.38 and a $60
+        # fee for this one. Balance moves on the next statement after 09-11.
+        {"kind": "missing_close", "instrument": "ABIVAX (CFD)", "open_dt": "2026-11-06T17:02", "open_px": 86.5,
+         "close_px": 87.38138, "close_dt": "2026-11-09T15:32:45.000", "stmt_date": "2026-11-09",
+         "note": "Broker booked this close late (ops CSV 10-11, order 35444: +881.38, fee 60)"},
     ],
 }
+
+
+def _corr_key(c: dict) -> tuple:
+    return (c.get("kind", "reprice"), c.get("instrument"), (c.get("open_dt") or "").replace(" ", "T")[:16],
+            c.get("open_px"), c.get("booked") or c.get("stmt_date"))
 
 
 # Instruments whose broker terms differ from their book (engine
@@ -92,8 +104,11 @@ def book_settings(settings: dict, ccy: str) -> dict:
         out = {**settings, "swap_rate_schedule": [], "short_rate_verified": False, "trade_corrections": None,
                "instrument_terms": None,
                **BOOK_DEFAULTS.get(ccy, {}), **override}
-    if out.get("trade_corrections") is None:
-        out["trade_corrections"] = [dict(c) for c in BOOK_CORRECTIONS.get(ccy, [])]
+    # Saved corrections (⚙ Settings) + any known broker correction not in them —
+    # a list saved before a new code default existed must not hide it.
+    saved = [dict(c) for c in (out.get("trade_corrections") or [])]
+    have = {_corr_key(c) for c in saved}
+    out["trade_corrections"] = saved + [dict(c) for c in BOOK_CORRECTIONS.get(ccy, []) if _corr_key(c) not in have]
     if out.get("instrument_terms") is None:
         out["instrument_terms"] = {k: dict(v) for k, v in BOOK_INSTRUMENT_TERMS.get(ccy, {}).items()}
     return out

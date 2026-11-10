@@ -234,6 +234,9 @@ def replay(statements: list[dict], settings: dict | None = None) -> dict:
     cur_long, cur_short = float(s["swap_rate_long_pct"]), float(s["swap_rate_short_pct"])
     sched = sorted(s.get("swap_rate_schedule") or [], key=lambda e: e["from"])
     corrections = list(s.get("trade_corrections") or [])
+    reprices = [c for c in corrections if c.get("kind", "reprice") == "reprice"]
+    missing = [c for c in corrections if c.get("kind") == "missing_close"]
+    pending: list[dict] = []                 # missing-close deltas waiting for their balance day
 
     for st in stmts:
         d = date.fromisoformat(st["date"])
@@ -336,6 +339,37 @@ def replay(statements: list[dict], settings: dict | None = None) -> dict:
             g, f = _close_fill(lots, lid, t, s, splits)
             gross_today += g
             fees_today -= f
+        # 2b. broker MISSING closes (2026-11-10, ABIVAX 09-11): a lot leaves the
+        # Open Position Report with no trade and nothing in realised; the broker
+        # books the close afterwards (operations CSV). The lot closes TODAY at
+        # the corrected price (so open P/L / margin reconcile and the booked
+        # day is right); its gross − close fee moves the balance only, on the
+        # entry's "booked" date or, if none, the next statement.
+        missing_notes: list[str] = []
+        for c in missing:
+            if c.get("stmt_date") != d.isoformat():
+                continue
+            lid = next((k for k, nq in need.items() if nq > 1e-9 and lots[k].instrument == c["instrument"]
+                        and _same_open(lots[k].open_dt, c["open_dt"])
+                        and abs(lots[k].open_px - float(c["open_px"])) < 1e-9), None)
+            if lid is None:
+                warnings.append(f"Missing-close entry {c['instrument']} @ {c['open_px']} — no unmatched lot today")
+                continue
+            q, lot0 = need[lid], lots[lid]
+            need[lid] = 0.0
+            px = float(c["close_px"])
+            n_before = len(splits)
+            g, f = _close_fill(lots, lid, {"instrument": lot0.instrument, "side": -lot0.side, "qty": q, "price": px,
+                                           "dt": c.get("close_dt") or lot0.open_dt, "profit": (px - lot0.open_px) * q * lot0.side},
+                               s, splits)
+            closed_lot = splits[-1] if len(splits) > n_before else lots[lid]
+            closed_lot.correction = {"kind": "missing_close", "booked": c.get("booked"), "original_close_px": None,
+                                     "original_gross": 0.0, "delta": g - f, "gross_delta": g, "note": c.get("note", "")}
+            pending.append({"after": d.isoformat(), "booked": c.get("booked"), "delta": g - f,
+                            "label": f"{lot0.instrument} {q:,.0f} @ {lot0.open_px:g} → {px:g}"})
+            missing_notes.append(f"Broker missing close: {lot0.instrument} {q:,.0f} @ {lot0.open_px:g} closed at {px:g} "
+                                 f"(gross {g:+,.2f}, fee {f:,.2f}) — balance moves "
+                                 f"{'on ' + c['booked'] if c.get('booked') else 'on the next statement'}")
         for c in splits:
             lots[c.lot_id] = c
         for lid, nq in need.items():
@@ -344,8 +378,12 @@ def replay(statements: list[dict], settings: dict | None = None) -> dict:
 
         # 3. broker trade corrections booked today (balance only, not realised)
         corr_today = 0.0
-        corr_notes: list[str] = []
-        for c in corrections:
+        corr_notes: list[str] = list(missing_notes)
+        for p in [p for p in pending if (p["booked"] == d.isoformat()) or (not p["booked"] and p["after"] < d.isoformat())]:
+            corr_today += p["delta"]
+            corr_notes.append(f"Broker missing close booked: {p['label']} ({p['delta']:+,.2f})")
+            pending.remove(p)
+        for c in reprices:
             if c.get("booked") != d.isoformat():
                 continue
             lot = next((l for l in lots.values() if l.status == "closed" and l.correction is None
@@ -559,7 +597,8 @@ def _build_output(lots, log, cash_events, s) -> dict:
         "swaps_total": -total_swaps, "swaps_closed": -sw_closed, "swaps_open": -sw_open,
         "total_costs": total_fees - total_swaps,
         "net_realised_closed": net_realised_closed,
-        "corrections_total": sum((l.correction or {}).get("delta", 0.0) for l in closed),
+        "corrections_total": sum((l.correction or {}).get("gross_delta", (l.correction or {}).get("delta", 0.0))
+                                 for l in closed),
         "running_realised": balance - starting,        # all realised incl. costs on open lots
         "net_pl_total": balance + open_pl - starting,
         "recon_ok": all(x["ok"] for x in log) if log else None,
