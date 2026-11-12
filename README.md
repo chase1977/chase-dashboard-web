@@ -2062,10 +2062,17 @@ order can fill as several lots at the same timestamp and different prices
 time alone they merged into one lot (one $60 fee, open P/L / margin ✗, false
 10.15% rate). Regression: `tests\test_gtx_lots.py`.
 
-**One order closing several lots** (2026-10-16) — QIAGEN sell 10,000 @
-46.412 on 15-10 closed the 06-10 (45.50) and 07-10 (45.18303) 5,000 lots;
-the engine picks the set of lots whose qty sums to the order and whose
-profit reproduces the broker's (4,560.00 + 6,144.85 = 10,704.85).
+**Closing-trade allocation — every combination** (2026-11-12,
+`gtx_engine._allocate_close`) — one closing trade can close one lot (whole
+or partly), several lots whole, or several whole + one partly, long or
+short. Candidates are the lots that left the Open Position Report that day
+(at the qty that left), any subset of them plus optionally one lot taken
+partly; the winner reproduces the broker's profit for the trade most
+exactly, then fewest pieces, then oldest first (FIFO; > 16 lots → FIFO).
+Each lot stays its own closed record (own open price, fees, swaps, nights).
+Cases: QIAGEN sell 10,000 on 15-10 → two 5,000 lots; ENERGY VAULT sell
+100,000 @ 3.73192264 on 11-11 → all 7 lots (+14,642.72; the old search
+stopped at 6 lots). Regression: `tests\test_gtx_allocation.py` (6 cases).
 
 Full-history regression: `python tests\test_gtx_history.py` — all 21
 statements 17-09 → 15-10 (`fixtures/gtx_history_2026-09-17_to_10-09.txt` +

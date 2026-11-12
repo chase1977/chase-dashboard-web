@@ -30,7 +30,6 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime, date, timedelta, timezone
 from zoneinfo import ZoneInfo
 from decimal import Decimal, ROUND_DOWN, ROUND_CEILING
-from itertools import combinations
 
 DEFAULT_SETTINGS = {
     "fee_per_unit": 0.05,
@@ -201,6 +200,54 @@ def _close_fill(lots: dict, lid: str, t: dict, s: dict, splits: list) -> tuple[f
     return gross, fee
 
 
+def _allocate_close(t: dict, pool: list, need: dict, lots: dict) -> list | None:
+    """
+    Split ONE closing trade across the open lots it closed — every case
+    (2026-11-12, after EV sell 100,000 on 11-11 closed 7 lots at once):
+      · one lot, whole or partly              · several lots, all whole
+      · several lots whole + one lot partly   · lots with equal / different prices
+    Candidates: any subset of the lots that left the Open Position Report today
+    (each at the qty that left: need), optionally plus ONE lot taken partly for
+    the remainder. Ranked by how exactly the pieces reproduce the broker's
+    profit for the trade, then fewest pieces, then oldest lots first (FIFO).
+    Returns [(lot_id, qty), ...] or None. More than 16 candidate lots: FIFO.
+    """
+    q, px, prof = t["qty"], t["price"], t["profit"]
+    pool = sorted(pool, key=lambda k: (lots[k].open_dt, k))
+    if not pool or sum(need[k] for k in pool) < q - 1e-6:
+        return None
+    piece = lambda k, x: (px - lots[k].open_px) * x * lots[k].side
+    if len(pool) > 16:                                   # FIFO fallback
+        out, left = [], q
+        for k in pool:
+            x = min(need[k], left)
+            if x > 1e-9:
+                out.append((k, x)); left -= x
+            if left <= 1e-6:
+                return out
+        return None
+    best = None
+    n = len(pool)
+    for mask in range(1 << n):
+        full = [pool[b] for b in range(n) if mask >> b & 1]
+        rest = q - sum(need[k] for k in full)
+        if rest < -1e-6:
+            continue
+        options = []
+        if abs(rest) <= 1e-6:
+            if full:
+                options.append([(k, need[k]) for k in full])
+        else:                                            # one more lot, taken partly
+            options += [[*((k, need[k]) for k in full), (m, rest)]
+                        for m in pool if m not in full and need[m] > rest + 1e-6]
+        for opt in options:
+            err = abs(sum(piece(k, x) for k, x in opt) - prof)
+            rank = (round(err, 4), len(opt), sum(pool.index(k) for k, _ in opt))
+            if best is None or rank < best[0]:
+                best = (rank, opt)
+    return best[1] if best else None
+
+
 def _lot_id(instrument: str, open_dt: str, open_px: float) -> str:
     """
     Lot identity = instrument + open time + open price (2026-11-09). One order
@@ -302,43 +349,18 @@ def replay(statements: list[dict], settings: dict | None = None) -> dict:
                 if lot.status == "open" and lot.qty - today_qty.get(lid, 0.0) > 1e-9}
         splits: list = []
         for i, t in sorted(((i, t) for i, t in enumerate(trades) if i not in used), key=lambda x: x[1]["dt"]):
-            cands = [lid for lid, nq in need.items()
-                     if nq >= t["qty"] - 1e-9 and lots[lid].instrument == t["instrument"]
-                     and lots[lid].side == -t["side"]]
-            if not cands:
-                # ONE closing order across SEVERAL lots (2026-10-16: QIAGEN sell
-                # 10,000 on 15-10 closed the 06-10 and 07-10 lots of 5,000 each).
-                # Pick the set of lots whose remaining qty sums to the order and
-                # whose combined profit reproduces the broker's profit.
-                pool = [lid for lid, nq in need.items() if nq > 1e-9
-                        and lots[lid].instrument == t["instrument"] and lots[lid].side == -t["side"]]
-                best = None
-                for n in range(2, min(len(pool), 6) + 1):
-                    for combo in combinations(sorted(pool, key=lambda k: lots[k].open_dt), n):
-                        if abs(sum(need[k] for k in combo) - t["qty"]) > 1e-9:
-                            continue
-                        err = abs(sum((t["price"] - lots[k].open_px) * need[k] * lots[k].side for k in combo)
-                                  - t["profit"])
-                        if best is None or err < best[0]:
-                            best = (err, combo)
-                if best is None:
-                    warnings.append(f"Unmatched trade {t['instrument']} {t['qty']:,.0f} {t['dt']}")
-                    continue
-                used.add(i)
-                for k in best[1]:
-                    q = need[k]
-                    need[k] = 0.0
-                    g, f = _close_fill(lots, k, {**t, "qty": q}, s, splits)
-                    gross_today += g
-                    fees_today -= f
+            pool = [lid for lid, nq in need.items() if nq > 1e-9
+                    and lots[lid].instrument == t["instrument"] and lots[lid].side == -t["side"]]
+            alloc = _allocate_close(t, pool, need, lots)
+            if alloc is None:
+                warnings.append(f"Unmatched trade {t['instrument']} {t['qty']:,.0f} {t['dt']}")
                 continue
-            lid = min(cands, key=lambda k: (abs((t["price"] - lots[k].open_px) * t["qty"] * lots[k].side
-                                                - t["profit"]), lots[k].open_dt))
             used.add(i)
-            need[lid] -= t["qty"]
-            g, f = _close_fill(lots, lid, t, s, splits)
-            gross_today += g
-            fees_today -= f
+            for k, q in alloc:                  # every lot stays its own closed record
+                need[k] -= q
+                g, f = _close_fill(lots, k, {**t, "qty": q}, s, splits)
+                gross_today += g
+                fees_today -= f
         # 2b. broker MISSING closes (2026-11-10, ABIVAX 09-11): a lot leaves the
         # Open Position Report with no trade and nothing in realised; the broker
         # books the close afterwards (operations CSV). The lot closes TODAY at
