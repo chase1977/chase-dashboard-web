@@ -2160,6 +2160,45 @@ currently 3.9" — the CSV shows Swap_rate_sell −4.0 as a display rounding of
 
 ---
 
+## 17.7 Portfolio KPI Snapshots — values as of a data date (2026-11-14)
+
+Headline Portfolio figures (Capital Invested, Active Capital Invested, Capital
+Allocated, Current Equity, Total P&L, Banked P/L, Banked P/L True, Performance,
+1D/7D/30D) recorded per **data date** for portfolio, every pod and every strategy.
+
+**Data date, never upload date.** AXIA / GTX statements for the 13th uploaded on the
+14th or the following Monday still count for the 13th. "Close of Thursday 12-11"
+with the 12th's statements arriving on the 13th = data date **2026-11-11**.
+
+| Piece | Where |
+|---|---|
+| Table | `portfolio_kpi_snapshots` — unique (snapshot_date, level, entity_id); `sql/2026-11-14_portfolio_kpi_snapshots.sql` |
+| As-of engine | `supabase_service.as_of_context(d)` — every dated read gets `<data_date_col> <= d`; cache keys get `@d`; writes never filtered |
+| Date columns | `AS_OF_DATE_COLS` + suffix rules: `*_daily_equity` → trade_date, `*_monthly_statements` → period_end_date |
+| Service | `backend/src/services/kpi_snapshot_service.py` — compute / save / list / Excel / scheduler |
+| Nightly | 23:30 Europe/London daemon thread (no extra dependency); recomputes last **10 weekdays** so late uploads land on their own date; upsert = idempotent |
+| Scheduler switch | On automatically on Railway (`RAILWAY_ENVIRONMENT`); off on local dev; force with `KPI_SNAPSHOT_SCHEDULER=1/0` |
+
+**Endpoints** (`/api/portfolio/...`)
+
+| Method | Path | Does |
+|---|---|---|
+| GET | `snapshots/preview?as_of=2026-11-11` | Compute only, no save |
+| POST | `snapshots/run?as_of=2026-11-11` | Compute + save one date (`source=manual`) |
+| POST | `snapshots/run?from=2026-09-01&to=2026-11-13` | Backfill weekdays (>10 dates runs in background, `source=backfill`) |
+| GET | `snapshots?from=&to=&level=` | Saved rows (JSON) |
+| GET | `snapshots/export.xlsx?from=&to=` | Excel: README + Portfolio / Pods / Strategies sheets |
+
+Same engine as the live page (`get_portfolio_kpis_fast` / `get_pods_with_kpis_fast` /
+`get_strategies_with_kpis_fast`) — `tests/kpi_snapshot_parity.py` proves as-of 2099
+equals live to the cent. Offline test: `tests/test_kpi_asof.py`.
+
+**Known limit:** strategy/pod master data (status, pod, watermark, profit share) is
+current, not historical — a strategy closed after date D shows its current status
+in a backfilled row. Nightly rows recorded from now on carry the status of that night.
+
+---
+
 ## 18. Roadmap — Outstanding
 
 - [ ] **Pod/portfolio-level watermark adjustment for non-AXIA strategies**

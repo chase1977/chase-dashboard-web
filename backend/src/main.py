@@ -64,6 +64,14 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup_event():
     print(f"[main] Supabase backend active. DATA_DIR: {os.path.abspath(DATA_DIR)}")
+    # Nightly 23:30 London KPI snapshot (README §KPI snapshots). Isolated: a
+    # failure here only logs — the API always starts.
+    try:
+        from src.services import kpi_snapshot_service
+        on = kpi_snapshot_service.start_scheduler()
+        print(f"[main] KPI snapshot scheduler {'ON' if on else 'off (set KPI_SNAPSHOT_SCHEDULER=1)'}")
+    except Exception as e:  # noqa: BLE001
+        print(f"[main] KPI snapshot scheduler failed to start: {e}")
 
 
 # ---------------------------------------------------------------------------

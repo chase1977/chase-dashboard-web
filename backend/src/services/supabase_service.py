@@ -3,7 +3,8 @@
 Supabase client and all data queries against live tables.
 
 Provides:
-  - get_client()                  Singleton Supabase client
+  - get_client()                  Singleton Supabase client (as-of filtered inside as_of_context)
+  - as_of_context(date)           Recompute every KPI from data dated <= date (README §KPI snapshots)
   - get_live_aum()                SUM(Invested) from latest pfees snapshot
   - get_live_pnl()                SUM(Current PnL) from latest pfees snapshot
   - get_latest_pfees_date()       Most recent Date in user_pfees_estimation
@@ -26,9 +27,11 @@ Provides:
   - create_strategy() / update_strategy() / delete_strategy()
 """
 
+import contextvars
 import os
 import threading
 import time
+from contextlib import contextmanager
 from functools import lru_cache, reduce
 from datetime import date, datetime, timedelta
 from typing import Optional
@@ -80,6 +83,100 @@ _key_locks: dict = {}
 _key_locks_guard = threading.Lock()
 
 
+# ---------------------------------------------------------------------------
+# As-of mode — recompute every KPI exactly as it stood at the close of a
+# DATA date (14-11-2026, Nish). Off by default: with no as_of set, get_client
+# returns the real client and every cache key is unchanged, so the live
+# dashboard behaves exactly as before.
+#
+# Inside `with as_of_context("2026-11-11"):` every read of a dated table gets
+# a server-side `<date_col> <= as_of` filter (so latest-date lookups such as
+# get_latest_pfees_date resolve to the latest date <= as_of), and every
+# _get_cached key gets an "@<as_of>" suffix. Dates are DATA dates
+# (trade_date / Date / event_date / period_end_date), never upload dates —
+# AXIA/GTX rows for the 13th uploaded on the 16th still count for the 13th.
+# Writes are never filtered (insert/update/upsert/delete pass straight through).
+# ---------------------------------------------------------------------------
+
+_AS_OF: contextvars.ContextVar = contextvars.ContextVar("kpi_as_of", default=None)
+
+# Exact table -> data-date column. Suffix rules below cover every AXIA / IG /
+# INVESTGTX / Data Feed equity table and every monthly statements table.
+AS_OF_DATE_COLS: dict[str, str] = {
+    "user_pfees_estimation": "Date",
+    "balance_history":       "Date",
+    "user_accounts_equity":  "Date",
+    "capital_events":        "event_date",
+    "capital_transfers":     "transfer_date",
+    "internal_transfers":    "transfer_date",
+    "misc_events":           "event_date",
+    "expenses":              "expense_date",
+}
+
+
+def as_of_date_col(table: str) -> Optional[str]:
+    """Data-date column used to filter `table` in as-of mode, or None (undated table: read whole)."""
+    if table in AS_OF_DATE_COLS:
+        return AS_OF_DATE_COLS[table]
+    if table.endswith("_daily_equity"):
+        return "trade_date"
+    if table.endswith("_monthly_statements"):
+        return "period_end_date"
+    return None
+
+
+class _AsOfTable:
+    """Wraps a postgrest request builder: select() gains `<col> <= as_of`; all else passes through."""
+    def __init__(self, builder, col: Optional[str], as_of: str):
+        self._b, self._col, self._as_of = builder, col, as_of
+
+    def select(self, *args, **kwargs):
+        q = self._b.select(*args, **kwargs)
+        return q.lte(self._col, self._as_of) if self._col else q
+
+    def __getattr__(self, name):
+        return getattr(self._b, name)
+
+
+class _AsOfClient:
+    """Read-filtering view of the real client, used only inside as_of_context."""
+    def __init__(self, client, as_of: str):
+        self._c, self._as_of = client, as_of
+
+    def table(self, name: str):
+        return _AsOfTable(self._c.table(name), as_of_date_col(name), self._as_of)
+
+    from_ = table
+
+    def __getattr__(self, name):
+        return getattr(self._c, name)
+
+
+def current_as_of() -> Optional[str]:
+    """Active as-of data date ('YYYY-MM-DD') or None in live mode."""
+    return _AS_OF.get()
+
+
+@contextmanager
+def as_of_context(as_of: str):
+    """Run KPI reads as of the close of data date `as_of` ('YYYY-MM-DD'). Thread/request local."""
+    as_of = date.fromisoformat(str(as_of)[:10]).isoformat()
+    token = _AS_OF.set(as_of)
+    try:
+        yield as_of
+    finally:
+        _AS_OF.reset(token)
+
+
+def purge_as_of_cache() -> None:
+    """Drop every as-of cache entry + its lock (call after a snapshot run). Live keys kept."""
+    for k in [k for k in list(_cache) if "@" in k]:
+        _cache.pop(k, None)
+    with _key_locks_guard:
+        for k in [k for k in list(_key_locks) if "@" in k]:
+            _key_locks.pop(k, None)
+
+
 def _get_cached(key: str, fetcher, ttl: int = _TTL):
     """Return cached value if still fresh, else fetch, store, return.
 
@@ -89,6 +186,9 @@ def _get_cached(key: str, fetcher, ttl: int = _TTL):
     fetches and the others wait for its result. RLock so a fetcher may call
     other cached getters (including itself recursively) without deadlock.
     """
+    _d = _AS_OF.get()
+    if _d:                                            # as-of run: own cache space, live keys untouched
+        key = f"{key}@{_d}"
     entry = _cache.get(key)
     if entry and time.monotonic() - entry["ts"] < ttl:
         return entry["val"]
@@ -119,12 +219,20 @@ def invalidate_all_cache() -> None:
 # ---------------------------------------------------------------------------
 
 @lru_cache(maxsize=1)
-def get_client() -> Client:
+def get_raw_client() -> Client:
+    """The real singleton client — never as-of filtered (snapshot writes use this)."""
     if not _SUPABASE_URL or not _SUPABASE_KEY:
         raise RuntimeError(
             "SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set in .env"
         )
     return create_client(_SUPABASE_URL, _SUPABASE_KEY)
+
+
+def get_client() -> Client:
+    """Real client in live mode; as-of read-filtered view inside as_of_context."""
+    c = get_raw_client()
+    d = _AS_OF.get()
+    return _AsOfClient(c, d) if d else c
 
 
 # ---------------------------------------------------------------------------

@@ -8,6 +8,10 @@ Endpoints:
   GET /api/portfolio/trader_context/{entity_id}  3-tab trader breakdown
   GET /api/portfolio/hierarchy/{entity_type}  Hierarchy table tabs (live Supabase)
   GET /api/portfolio/fund_ledger              TWR + bank balance + ledger (live Supabase)
+  GET  /api/portfolio/snapshots/preview?as_of=      KPIs as of a data date (computed, not saved)
+  POST /api/portfolio/snapshots/run?as_of= | from=&to=  compute + save to portfolio_kpi_snapshots
+  GET  /api/portfolio/snapshots?from=&to=&level=    saved snapshot rows
+  GET  /api/portfolio/snapshots/export.xlsx?from=&to=   formatted Excel download
 """
 
 from fastapi import APIRouter, Query, HTTPException
@@ -19,6 +23,7 @@ import os
 import datetime
 
 from src.services import supabase_service as sb_svc
+from src.services import kpi_snapshot_service as snap_svc
 from src.models.schemas import (
     PortfolioPageResponse, DrillDownPageResponse,
     TraderContextResponse,
@@ -322,4 +327,88 @@ def get_trader_context(entity_id: str):
         entity_name = entity_id,
         pods        = [],
         strategies  = [],
+    )
+
+
+# ---------------------------------------------------------------------------
+# KPI snapshots — headline figures per DATA date (14-11-2026, Nish).
+# Same engine as get_portfolio above, run as of the close of a data date.
+# Nightly 23:30 London save lives in kpi_snapshot_service.start_scheduler.
+# ---------------------------------------------------------------------------
+
+_SNAPSHOT_SYNC_MAX = 10          # more dates than this -> run in background
+
+
+def _iso(d: Optional[str], name: str) -> Optional[str]:
+    if d is None:
+        return None
+    try:
+        return datetime.date.fromisoformat(d[:10]).isoformat()
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"{name} must be YYYY-MM-DD")
+
+
+@router.get("/snapshots/preview")
+def snapshot_preview(as_of: str = Query(..., description="Data date YYYY-MM-DD")):
+    """Compute KPIs as of the close of `as_of` without saving. Portfolio row first."""
+    d = _iso(as_of, "as_of")
+    rows = snap_svc.compute_snapshot(d)
+    return {
+        "as_of":      d,
+        "portfolio":  rows[0],
+        "pods":       [r for r in rows if r["level"] == "pod"],
+        "strategies": [r for r in rows if r["level"] == "strategy"],
+    }
+
+
+@router.post("/snapshots/run")
+def snapshot_run(
+    as_of:     Optional[str] = Query(None, description="Single data date"),
+    date_from: Optional[str] = Query(None, alias="from"),
+    date_to:   Optional[str] = Query(None, alias="to"),
+):
+    """Compute + upsert snapshots. `as_of` (one date) or `from`+`to` (weekdays, backfill)."""
+    if as_of:
+        dates, source = [_iso(as_of, "as_of")], "manual"
+    elif date_from and date_to:
+        dates  = snap_svc.weekdays_between(_iso(date_from, "from"), _iso(date_to, "to"))
+        source = "backfill"
+    else:
+        raise HTTPException(status_code=400, detail="give as_of, or from + to")
+    if not dates:
+        raise HTTPException(status_code=400, detail="no weekdays in range")
+    if len(dates) > 400:
+        raise HTTPException(status_code=400, detail="max 400 weekdays per run")
+    if len(dates) > _SNAPSHOT_SYNC_MAX:
+        import threading
+        threading.Thread(target=snap_svc.save_snapshots, args=(dates, source),
+                         name="kpi-snapshot-backfill", daemon=True).start()
+        return {"status": "started", "dates": len(dates), "first": dates[0],
+                "last": dates[-1], "source": source}
+    return {"status": "done", **snap_svc.save_snapshots(dates, source)}
+
+
+@router.get("/snapshots")
+def snapshot_list(
+    date_from: Optional[str] = Query(None, alias="from"),
+    date_to:   Optional[str] = Query(None, alias="to"),
+    level:     Optional[str] = Query(None, description="portfolio | pod | strategy"),
+):
+    if level and level not in snap_svc.LEVELS:
+        raise HTTPException(status_code=400, detail="level must be portfolio, pod or strategy")
+    return snap_svc.list_snapshots(_iso(date_from, "from"), _iso(date_to, "to"), level)
+
+
+@router.get("/snapshots/export.xlsx")
+def snapshot_export(
+    date_from: Optional[str] = Query(None, alias="from"),
+    date_to:   Optional[str] = Query(None, alias="to"),
+):
+    f, t = _iso(date_from, "from"), _iso(date_to, "to")
+    data = snap_svc.export_xlsx(f, t)
+    name = f"Chase_KPI_Snapshots_{f or 'start'}_to_{t or 'latest'}.xlsx"
+    return StreamingResponse(
+        io.BytesIO(data),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{name}"'},
     )
