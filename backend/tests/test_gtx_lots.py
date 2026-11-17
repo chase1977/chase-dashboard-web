@@ -52,5 +52,24 @@ ok2 = (l9["ok"] and l10["ok"] and not r["cash_events"][1:] and abs(l10["correcti
 print(f"  09-11 {l9['checks']} notes {l9['corrections']}")
 print(f"  10-11 {l10['checks']} correction {l10['correction']:+.2f} cash events {r['cash_events'][1:]} booked {booked}")
 ok &= ok2
-print("\nSAME-TIMESTAMP LOTS KEPT SEPARATE + MISSING CLOSE ✓" if ok else "\nFAILURES ABOVE")
+
+# NVIDIA $0.10/unit (real 16-11-2026, after flat 11-11 + no statements 12/13-11):
+# fees 50 (AMBARELLA 1,000 × 0.05) + 200 (NVIDIA 2,000 × 0.10), swaps 12.10 + 68.75
+# at 7.9% -> realised −330.85, balance 1,377,990.74 -> 1,377,659.88 to the cent.
+def opn(inst, qty, px, dt, cur, profit, mg):
+    return {"instrument": inst, "side": 1, "qty": qty, "open_px": px, "open_dt": dt, "current_px": cur,
+            "profit": profit, "margin": mg, "account": "GTX0011-USD"}
+def tb(inst, qty, px, dt):
+    return {"instrument": inst, "side": 1, "qty": qty, "price": px, "dt": dt, "profit": 0.0}
+NV, AM = "NVIDIA CORP (CFD)", "AMBARELLA INC (CFD)"
+r = replay([st("2026-11-11", 1377990.74, 0.0, 0.0, 0.0, []),
+            st("2026-11-16", 1377659.88, -330.85, -2774.65, 90230.0,
+               [opn(NV, 2000.0, 157.5624825, "2026-11-16T15:48:20.811", 156.65, -1824.96, 62660.0),
+                opn(AM, 1000.0, 56.089685, "2026-11-16T16:55:29.628", 55.14, -949.68, 27570.0)],
+               [tb(AM, 1000.0, 56.089685, "2026-11-16T16:55:29.628"), tb(NV, 2000.0, 157.5624825, "2026-11-16T15:48:20.811")])], S)
+d16 = r["recon_log"][-1]
+ok3 = d16["ok"] and abs(d16["balance_diff"]) < 0.01 and abs(d16["fees"] + 250.0) < 1e-6 and abs(d16["swaps"] + 80.85) < 0.01
+print(f"  16-11 NVIDIA $0.10: fees {d16['fees']} swaps {d16['swaps']:.4f} diff {d16['balance_diff']:+.4f} ok {d16['ok']}")
+ok &= ok3
+print("\nSAME-TIMESTAMP LOTS KEPT SEPARATE + MISSING CLOSE + NVIDIA FEE ✓" if ok else "\nFAILURES ABOVE")
 assert ok

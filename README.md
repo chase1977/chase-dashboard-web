@@ -2017,7 +2017,17 @@ rate inference. Default `gtx_books.BOOK_INSTRUMENT_TERMS`: **ABIVAX (CFD)**
 (USD) — open 14-10 and close 15-10 each cost exactly **$300.00** beyond every
 other reconciled item → $0.06/unit fee, no swap (split pending broker; total
 exact either way). Without it the engine "inferred" a false USD rate of
-6.3948% on 14-10.
+6.3948% on 14-10. **NVIDIA CORP (CFD)** (USD, 2026-11-17) — **$0.10/unit**
+fee, normal swap: 16-11 −330.85 = 50 (AMBARELLA) + 200 (NVIDIA 2,000 × 0.10)
+fees + 80.85 swaps, confirmed by the operations file ("Fee per unit=0.1");
+engine was exactly $100.00 out without it. Saved `instrument_terms` merge
+over the code defaults (saved wins per instrument) — a saved dict never hides
+a new default (same rule as corrections).
+
+**No-statement days** (12–13-11-2026, broker-side Microsoft outage) — no
+statement produced; account flat, no swaps, balance unchanged. Upload the next
+statement as normal: the "2 weekday statement(s) missing" warning is expected
+and harmless when the operations file shows no activity.
 
 **Daily Booked P/L** (2026-10-26) — card per book (above the recon log)
 plus a *Booked net* column in the log. One row per close day: trades, gross,

@@ -89,9 +89,15 @@ def _corr_key(c: dict) -> tuple:
 # (14-10 −447.70 = −147.71 book swaps −300.00; 15-10 close −300.00) — i.e.
 # $0.06/unit fee and no overnight swap — confirmed by the operations CSV
 # (21-10-2026: "Fee per unit=0.06", no ABIVAX swap rows).
+# NVIDIA (USD book, 16-11-2026): 2,000 buy charged $200.00 = $0.10/unit,
+# swap at the normal book rate (68.75 at 7.9%) — 16-11 −330.85 = 50 + 200
+# fees + 80.85 swaps; confirmed by Ben's operations file 17-11-2026
+# ("Fee per unit=0.1"). Engine was exactly $100.00 out before this entry.
 BOOK_INSTRUMENT_TERMS = {
     "USD": {"ABIVAX (CFD)": {"fee_per_unit": 0.06, "swap_long_pct": 0.0,
-                             "note": "Confirmed by operations CSV 21-10-2026: Fee per unit=0.06, no swap rows"}},
+                             "note": "Confirmed by operations CSV 21-10-2026: Fee per unit=0.06, no swap rows"},
+            "NVIDIA CORP (CFD)": {"fee_per_unit": 0.10,
+                                  "note": "Confirmed by operations file 17-11-2026: Fee per unit=0.1, normal swap"}},
 }
 
 
@@ -109,8 +115,11 @@ def book_settings(settings: dict, ccy: str) -> dict:
     saved = [dict(c) for c in (out.get("trade_corrections") or [])]
     have = {_corr_key(c) for c in saved}
     out["trade_corrections"] = saved + [dict(c) for c in BOOK_CORRECTIONS.get(ccy, []) if _corr_key(c) not in have]
-    if out.get("instrument_terms") is None:
-        out["instrument_terms"] = {k: dict(v) for k, v in BOOK_INSTRUMENT_TERMS.get(ccy, {}).items()}
+    # Instrument terms: code defaults + saved ones (saved wins per instrument) —
+    # same rule as corrections, so a saved dict can never hide a new default.
+    saved_terms = out.get("instrument_terms") or {}
+    out["instrument_terms"] = {**{k: dict(v) for k, v in BOOK_INSTRUMENT_TERMS.get(ccy, {}).items()},
+                               **{k: dict(v) for k, v in saved_terms.items()}}
     return out
 
 
