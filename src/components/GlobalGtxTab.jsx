@@ -281,6 +281,9 @@ function OpenTable({ rows }) {
               <td style={tdL}><SideTag side={r.side} /></td>
               <td style={td}>
                 {r.partial && <RingBadge k="P" title="Partial — remainder of a lot already partly closed" />}
+                {r.correction?.kind === 'fee_override' && (
+                  <RingBadge k="C" title={`Correction — opening fee charged at $${r.correction.fee_per_unit}/unit (standard ${fmtUsd(r.correction.standard_fee)}). ${r.correction.note || ''}`} />
+                )}
                 {fmtNum(r.qty)}
               </td>
               <td style={tdL}>{fmtDt(r.open_dt)}</td>
@@ -353,7 +356,9 @@ function ClosedTable({ rows }) {
               <td style={tdL}>{fmtDt(r.close_dt)}</td>
               <td style={td}>
                 {r.correction && (
-                  <RingBadge k="C" title={r.correction.kind === 'missing_close'
+                  <RingBadge k="C" title={r.correction.kind === 'fee_override'
+                      ? `Correction — opening fee charged at $${r.correction.fee_per_unit}/unit (standard ${fmtUsd(r.correction.standard_fee)}). ${r.correction.note || ''}`
+                      : r.correction.kind === 'missing_close'
                       ? `Correction — close missing from the ${fmtDate(r.close_dt)} statement; booked later by the broker (${fmtUsd(r.correction.delta, { sign: true })} net to balance). ${r.correction.note || ''}`
                       : `Correction — broker re-booked ${fmtDate(r.correction.booked)}: was ${r.correction.original_close_px} (${fmtUsd(r.correction.original_gross, { sign: true })}). ${r.correction.note || ''}`} />
                 )}

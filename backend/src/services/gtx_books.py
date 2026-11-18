@@ -74,6 +74,14 @@ BOOK_CORRECTIONS = {
         {"kind": "missing_close", "instrument": "ABIVAX (CFD)", "open_dt": "2026-11-06T17:02", "open_px": 86.5,
          "close_px": 87.38138, "close_dt": "2026-11-09T15:32:45.000", "stmt_date": "2026-11-09",
          "note": "Broker booked this close late (ops CSV 10-11, order 35444: +881.38, fee 60)"},
+        # AMBARELLA 500 @ 52.696 (17-11 17:04:20): 17-11 statement is exactly
+        # $25.00 below the engine with every other item (gross 3,875.03, swaps
+        # 17.62, open P/L, margin) tying to the cent -> this open charged $50
+        # = $0.10/unit, not $0.05 like every other AMBARELLA fill (09-2026,
+        # 16-11). Lot-specific so the 16-11 1,000 @ 56.089685 stays at $0.05.
+        {"kind": "fee_override", "instrument": "AMBARELLA INC (CFD)", "open_dt": "2026-11-17T17:04",
+         "open_px": 52.696, "fee_per_unit": 0.10, "stmt_date": "2026-11-17",
+         "note": "17-11 statement $25.00 out vs engine at $0.05; inferred $0.10/unit (to confirm on next ops file)"},
     ],
 }
 

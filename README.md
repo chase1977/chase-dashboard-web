@@ -2024,6 +2024,16 @@ engine was exactly $100.00 out without it. Saved `instrument_terms` merge
 over the code defaults (saved wins per instrument) — a saved dict never hides
 a new default (same rule as corrections).
 
+**Lot fee override** (2026-11-18) — correction `kind: "fee_override"`
+{instrument, open_dt, open_px, fee_per_unit, stmt_date, note}: ONE lot's
+opening fill charged at a different per-unit fee than its instrument's terms
+(lot-specific, so other fills of that instrument keep their normal fee).
+First case: **AMBARELLA 500 @ 52.696** (17-11) — statement exactly $25.00 below
+the engine with gross, swaps, open P/L and margin all to the cent → opened at
+$0.10/unit ($50) while AMBARELLA 1,000 @ 56.089685 (16-11) and every earlier
+fill were $0.05. Shown with the (C) ring badge on Open and Closed tables and a
+note in the recon log; inferred, to confirm on the next operations file.
+
 **No-statement days** (12–13-11-2026, broker-side Microsoft outage) — no
 statement produced; account flat, no swaps, balance unchanged. Upload the next
 statement as normal: the "2 weekday statement(s) missing" warning is expected

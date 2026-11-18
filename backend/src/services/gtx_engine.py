@@ -191,7 +191,7 @@ def _close_fill(lots: dict, lid: str, t: dict, s: dict, splits: list) -> tuple[f
                 close_px=t["price"], close_dt=t["dt"], gross=gross,
                 open_fee=lot.open_fee * f, close_fee=fee, swaps=lot.swaps * f,
                 swap_ledger=[{**e, "amount": e["amount"] * f} for e in lot.swap_ledger],
-                status="closed", parent_id=lid)
+                status="closed", parent_id=lid, correction=lot.correction)
     lot.qty -= q
     lot.open_fee -= child.open_fee
     lot.swaps -= child.swaps
@@ -283,12 +283,34 @@ def replay(statements: list[dict], settings: dict | None = None) -> dict:
     corrections = list(s.get("trade_corrections") or [])
     reprices = [c for c in corrections if c.get("kind", "reprice") == "reprice"]
     missing = [c for c in corrections if c.get("kind") == "missing_close"]
+    # fee_override (2026-11-18): one lot's OPEN fill charged at a different
+    # per-unit fee than its instrument's terms, e.g. AMBARELLA 500 @ 52.696
+    # (17-11) at $0.10 while every other AMBARELLA fill is $0.05.
+    # {kind, instrument, open_dt, open_px, fee_per_unit, stmt_date, note}
+    fee_ovr = [c for c in corrections if c.get("kind") == "fee_override"]
+
+    def _open_fee(qty: float, px: float, inst: str, odt: str) -> tuple[float, dict | None]:
+        c = next((c for c in fee_ovr if c.get("instrument") == inst and _same_open(c.get("open_dt"), odt)
+                  and abs(float(c.get("open_px") or 0) - float(px)) < 1e-9), None)
+        if c is None:
+            return fee_for(qty, px, s, inst), None
+        return qty * float(c["fee_per_unit"]), c
+
+    def _mark_fee(lot: "Lot", c: dict | None, notes: list) -> None:
+        if c is None:
+            return
+        lot.correction = {"kind": "fee_override", "fee_per_unit": float(c["fee_per_unit"]),
+                          "standard_fee": fee_for(lot.qty, lot.open_px, s, lot.instrument),
+                          "note": c.get("note") or ""}
+        notes.append(f"Fee override: {lot.instrument} {lot.qty:,.0f} @ {lot.open_px:g} opened at "
+                     f"${float(c['fee_per_unit']):g}/unit (fee {lot.open_fee:,.2f})")
     pending: list[dict] = []                 # missing-close deltas waiting for their balance day
 
     for st in stmts:
         d = date.fromisoformat(st["date"])
         acct = st["account"]
         warnings: list[str] = []
+        fee_notes: list[str] = []
         fees_today = swaps_today = gross_today = 0.0
         swap_base = 0.0                       # Σ qty*price*mult for implied rate
 
@@ -310,9 +332,10 @@ def replay(statements: list[dict], settings: dict | None = None) -> dict:
                 opened = next((t["qty"] for t in st["trades"]
                                if _lot_id(t["instrument"], t["dt"], t["price"]) == lid and abs(t["profit"]) < 1e-9), None)
                 qty0 = opened if opened and opened > p["qty"] else p["qty"]
-                fee = fee_for(qty0, p["open_px"], s, p["instrument"])
+                fee, fo = _open_fee(qty0, p["open_px"], p["instrument"], p["open_dt"])
                 lots[lid] = Lot(lid, p["instrument"], p["side"], qty0,
                                 p["open_px"], p["open_dt"], open_fee=fee)
+                _mark_fee(lots[lid], fo, fee_notes)
                 if _d(p["open_dt"]).date() == d:
                     fees_today -= fee
                 else:
@@ -341,8 +364,9 @@ def replay(statements: list[dict], settings: dict | None = None) -> dict:
             if lid in today_ids:
                 used.add(i)                            # still (partly) held — step 1 has it
             elif lid not in lots:                      # opened and fully closed today
-                fee = fee_for(t["qty"], t["price"], s, t["instrument"])
+                fee, fo = _open_fee(t["qty"], t["price"], t["instrument"], t["dt"])
                 lots[lid] = Lot(lid, t["instrument"], t["side"], t["qty"], t["price"], t["dt"], open_fee=fee)
+                _mark_fee(lots[lid], fo, fee_notes)
                 fees_today -= fee
                 used.add(i)
         need = {lid: lot.qty - today_qty.get(lid, 0.0) for lid, lot in lots.items()
@@ -400,7 +424,7 @@ def replay(statements: list[dict], settings: dict | None = None) -> dict:
 
         # 3. broker trade corrections booked today (balance only, not realised)
         corr_today = 0.0
-        corr_notes: list[str] = list(missing_notes)
+        corr_notes: list[str] = list(missing_notes) + fee_notes
         for p in [p for p in pending if (p["booked"] == d.isoformat()) or (not p["booked"] and p["after"] < d.isoformat())]:
             corr_today += p["delta"]
             corr_notes.append(f"Broker missing close booked: {p['label']} ({p['delta']:+,.2f})")

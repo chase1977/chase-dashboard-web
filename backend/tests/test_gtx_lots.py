@@ -73,3 +73,28 @@ print(f"  16-11 NVIDIA $0.10: fees {d16['fees']} swaps {d16['swaps']:.4f} diff {
 ok &= ok3
 print("\nSAME-TIMESTAMP LOTS KEPT SEPARATE + MISSING CLOSE + NVIDIA FEE ✓" if ok else "\nFAILURES ABOVE")
 assert ok
+
+# fee_override (real 17-11-2026): NVIDIA 2,000 closed as 2 × 1,000 (+2,437.51 / +1,437.51),
+# AMBARELLA 500 @ 52.696 opened at $0.10/unit ($50, not $25). Statement: realised
+# +3,607.41, balance 1,381,267.29. AMBARELLA 1,000 @ 56.089685 (16-11) stays $0.05.
+def sl(inst, qty, px, dt, profit):
+    return {"instrument": inst, "side": -1, "qty": qty, "price": px, "dt": dt, "profit": profit}
+r = replay([st("2026-11-11", 1377990.74, 0.0, 0.0, 0.0, []),
+            st("2026-11-16", 1377659.88, -330.85, -2774.65, 90230.0,
+               [opn(NV, 2000.0, 157.5624825, "2026-11-16T15:48:20.811", 156.65, -1824.96, 62660.0),
+                opn(AM, 1000.0, 56.089685, "2026-11-16T16:55:29.628", 55.14, -949.68, 27570.0)],
+               [tb(AM, 1000.0, 56.089685, "2026-11-16T16:55:29.628"), tb(NV, 2000.0, 157.5624825, "2026-11-16T15:48:20.811")]),
+            st("2026-11-17", 1381267.29, 3607.41, -2127.68, 40155.0,
+               [opn(AM, 1000.0, 56.089685, "2026-11-16T16:55:29.628", 53.54, -2549.68, 26770.0),
+                opn(AM, 500.0, 52.696, "2026-11-17T17:04:20.090", 53.54, 422.0, 13385.0)],
+               [sl(NV, 1000.0, 160.0, "2026-11-17T17:43:08.571", 2437.51), sl(NV, 1000.0, 159.0, "2026-11-17T17:43:08.571", 1437.51),
+                tb(AM, 500.0, 52.696, "2026-11-17T17:04:20.090")])], S)
+d17 = r["recon_log"][-1]
+am = {p["open_px"]: p for p in r["open_positions"]}
+ok4 = (d17["ok"] and abs(d17["balance_diff"]) < 0.01 and abs(d17["fees"] + 250.0) < 1e-6
+       and abs(am[52.696]["open_fee"] - 50.0) < 1e-9 and am[52.696]["correction"]["kind"] == "fee_override"
+       and abs(am[56.089685]["open_fee"] - 50.0) < 1e-9 and am[56.089685]["correction"] is None
+       and r["recon_log"][-2]["ok"])
+print(f"  17-11 fee override: fees {d17['fees']} swaps {d17['swaps']:.4f} diff {d17['balance_diff']:+.4f} ok {d17['ok']} notes {d17['corrections']}")
+assert ok4
+print("AMBARELLA 17-11 FEE OVERRIDE ✓")
