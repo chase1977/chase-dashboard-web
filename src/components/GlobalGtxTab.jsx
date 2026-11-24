@@ -17,6 +17,7 @@ import useIsMobile from '../hooks/useIsMobile.js'
 import {
   fetchGtxState, previewGtxStatement, saveGtxStatement,
   fetchGtxStatementRaw, deleteGtxStatement, updateGtxSettings,
+  downloadGtxClosedXlsx,
 } from '../services/api.js'
 
 const C = {
@@ -316,6 +317,39 @@ function OpenTable({ rows }) {
     </TableWrap>
     <BadgeLegend />
     </>
+  )
+}
+
+// Closed Positions → Excel (2026-11-24): one workbook, sheets USD / EUR / GBP,
+// built by the backend from the same engine rows as these tables.
+function ExportClosedButton() {
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState(null)
+  const run = async () => {
+    setBusy(true); setErr(null)
+    try {
+      const blob = await downloadGtxClosedXlsx()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `GlobalGTX_Closed_Positions_${new Date().toISOString().slice(0, 10)}.xlsx`
+      document.body.appendChild(a); a.click(); a.remove()
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      setErr(e.message || 'Export failed')
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+      {err && <span style={{ fontSize: 10, color: C.neg }}>{err}</span>}
+      <button onClick={run} disabled={busy} title="Excel workbook — Closed Positions, sheets USD / EUR / GBP"
+        style={{ fontSize: 11, fontWeight: 600, padding: '5px 10px', borderRadius: 6, cursor: busy ? 'wait' : 'pointer',
+                 color: C.text, background: C.surface, border: `1px solid ${C.border}`, whiteSpace: 'nowrap' }}>
+        {busy ? 'Exporting…' : '⬇ Excel'}
+      </button>
+    </span>
   )
 }
 
@@ -912,7 +946,7 @@ function BookSection({ book, account, statements, onDelete, onViewRaw }) {
           <OpenTable rows={book.open_positions} />
         </Card>
 
-        <Card title={`${book.ccy} · Closed Positions (${book.closed_positions.length})`}>
+        <Card title={`${book.ccy} · Closed Positions (${book.closed_positions.length})`} right={<ExportClosedButton />}>
           <ClosedTable rows={book.closed_positions} />
         </Card>
 

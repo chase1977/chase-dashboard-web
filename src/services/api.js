@@ -403,3 +403,10 @@ export function fetchGtxSettings() {
 export function updateGtxSettings(patch) {
   return _patch('/api/gtx/settings', patch)
 }
+
+// Closed Positions workbook — sheets USD / EUR / GBP (2026-11-24). Returns a Blob.
+export async function downloadGtxClosedXlsx() {
+  const res = await fetch(`${BASE}/api/gtx/export/closed.xlsx`)
+  if (!res.ok) throw new Error(`Export failed (${res.status})`)
+  return res.blob()
+}

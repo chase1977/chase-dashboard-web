@@ -10,14 +10,16 @@ Endpoints:
   DELETE /api/gtx/statements/{id}       Delete statement
   GET    /api/gtx/settings              Engine parameters (defaults + overrides)
   PATCH  /api/gtx/settings              Update parameter overrides
+  GET    /api/gtx/export/closed.xlsx    Closed Positions workbook — sheets USD / EUR / GBP
 """
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 from src.services import gtx_service as svc
+from src.services import gtx_export
 
 router = APIRouter(prefix="/api/gtx", tags=["gtx"])
 
@@ -47,6 +49,22 @@ def state(account: str = svc.DEFAULT_ACCOUNT):
         if _missing_table(e):
             raise HTTPException(503, "GTX tables not created yet — run sql/2026-09-29_gtx_statements.sql")
         raise
+
+
+@router.get("/export/closed.xlsx")
+def export_closed(account: str = svc.DEFAULT_ACCOUNT):
+    """Closed Positions, one sheet per book (USD / EUR / GBP), exactly as the tab's tables."""
+    try:
+        data = gtx_export.export_closed_xlsx(account)
+    except Exception as e:
+        if _missing_table(e):
+            raise HTTPException(503, "GTX tables not created yet — run sql/2026-09-29_gtx_statements.sql")
+        raise
+    from datetime import date
+    name = f"GlobalGTX_Closed_Positions_{date.today():%Y-%m-%d}.xlsx"
+    return Response(content=data,
+                    media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
 @router.post("/preview")

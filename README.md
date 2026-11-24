@@ -2034,6 +2034,17 @@ $0.10/unit ($50) while AMBARELLA 1,000 @ 56.089685 (16-11) and every earlier
 fill were $0.05. Shown with the (C) ring badge on Open and Closed tables and a
 note in the recon log; inferred, to confirm on the next operations file.
 
+**Closed Positions → Excel** (2026-11-24) — **⬇ Excel** on each book's Closed
+Positions card downloads `GlobalGTX_Closed_Positions_YYYY-MM-DD.xlsx`
+(`GET /api/gtx/export/closed.xlsx`, `backend/src/services/gtx_export.py`).
+Sheets **USD / EUR / GBP** — always all three; GBP shows "No closed positions
+yet" until that book opens, then fills automatically. Columns exactly as the
+table: Instrument · Side · Qty · Opened · Open px · Closed · Close px · Gross
+P/L · Open fee · Close fee · Swaps · Net P/L · Nights — one row per lot /
+partial piece, fees negative, full precision with 2dp display, real Excel
+date-times. Ordered by **open time latest → oldest**; SUM total row, filters,
+frozen header. Test: `tests/test_gtx_export.py`.
+
 **No-statement days** (12–13-11-2026, broker-side Microsoft outage) — no
 statement produced; account flat, no swaps, balance unchanged. Upload the next
 statement as normal: the "2 weekday statement(s) missing" warning is expected
