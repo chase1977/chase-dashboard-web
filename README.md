@@ -2034,6 +2034,22 @@ $0.10/unit ($50) while AMBARELLA 1,000 @ 56.089685 (16-11) and every earlier
 fill were $0.05. Shown with the (C) ring badge on Open and Closed tables and a
 note in the recon log; inferred, to confirm on the next operations file.
 
+**Minimum fee per order** (2026-11-26) — `min_fee_per_order` (USD $50; EUR/GBP
+0). The broker tops up any order (one Trades Report row) whose fees total less
+than the minimum — ops file row "Fee: [Min Fee adj equity]". First seen
+AMBARELLA 500 buy 17-11: fee 25.00 + adj 25.00. The engine adds the top-up to
+the lot's open fee (opening order) or close fee (closing order) and notes it in
+the recon log. This replaced the 17-11 AMBARELLA `fee_override` entry (the
+override mechanism stays for genuine per-lot rate exceptions).
+
+**GBX / price scale** (2026-11-26) — UK equities in the GBP book are quoted in
+**pence** (broker Cross_price 0.01). `price_scale` (GBP book default 0.01,
+overridable per instrument in `instrument_terms`) scales every money amount
+derived from a price: gross, open P/L, 0.25% fee and swap. First GBP trade
+IMPERIAL BRANDS 10,000 @ 2,938p (25-11): fee £734.50, swap £69.22 at
+**8.2246%** (GBP ref 4.2246 + 4), realised −£803.72 — to the penny.
+GBP ref > 4% → a GBP short would be credited 0.2246% (untested).
+
 **Closed Positions → Excel** (2026-11-24) — **⬇ Excel** on each book's Closed
 Positions card downloads `GlobalGTX_Closed_Positions_YYYY-MM-DD.xlsx`
 (`GET /api/gtx/export/closed.xlsx`, `backend/src/services/gtx_export.py`).
