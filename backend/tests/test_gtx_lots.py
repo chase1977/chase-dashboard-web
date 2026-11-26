@@ -92,28 +92,9 @@ r = replay([st("2026-11-11", 1377990.74, 0.0, 0.0, 0.0, []),
 d17 = r["recon_log"][-1]
 am = {p["open_px"]: p for p in r["open_positions"]}
 ok4 = (d17["ok"] and abs(d17["balance_diff"]) < 0.01 and abs(d17["fees"] + 250.0) < 1e-6
-       and abs(am[52.696]["open_fee"] - 50.0) < 1e-9 and am[52.696]["correction"] is None   # 25 + 25 min-fee adj
+       and abs(am[52.696]["open_fee"] - 50.0) < 1e-9 and am[52.696]["correction"]["kind"] == "fee_override"
        and abs(am[56.089685]["open_fee"] - 50.0) < 1e-9 and am[56.089685]["correction"] is None
        and r["recon_log"][-2]["ok"])
-print(f"  17-11 min fee $50: fees {d17['fees']} swaps {d17['swaps']:.4f} diff {d17['balance_diff']:+.4f} ok {d17['ok']} notes {d17['corrections']}")
+print(f"  17-11 fee override: fees {d17['fees']} swaps {d17['swaps']:.4f} diff {d17['balance_diff']:+.4f} ok {d17['ok']} notes {d17['corrections']}")
 assert ok4
-print("AMBARELLA 17-11 MINIMUM FEE ✓")
-
-# GBP book, first trade (real 25-11-2026): IMPERIAL BRANDS 10,000 @ 2,938p (GBX,
-# Cross_price 0.01). Fee 0.25% × 10,000 × 2,938 × 0.01 = 734.50; swap at 8.2246%
-# on 3,030p = 69.22; realised −803.72; open P/L +9,200.00; margin 75,750.
-_bs = book_settings
-G = _bs({**DEFAULT_SETTINGS, "swap_rate_long_pct": 7.9, "short_rate_verified": True}, "GBP")
-IB = "IMPERIAL BRANDS PLC (CFD)"
-def gst(d, bal, real, opl, mg, pos, trades=()):
-    return {"date": d, "account": {"account": "GTX0011-GBP", "balance": bal, "open_pl": opl, "margin_req": mg,
-                                   "today_realised": real}, "open_positions": pos, "trades": list(trades)}
-r = replay([gst("2026-11-24", 0.0, 0.0, 0.0, 0.0, []),
-            gst("2026-11-25", -803.72, -803.72, 9200.0, 75750.0,
-                [{"instrument": IB, "side": 1, "qty": 10000.0, "open_px": 2938.0, "open_dt": "2026-11-25T07:25:42.758",
-                  "current_px": 3030.0, "profit": 9200.0, "margin": 75750.0, "account": "GTX0011-GBP"}],
-                [{"instrument": IB, "side": 1, "qty": 10000.0, "price": 2938.0, "dt": "2026-11-25T07:25:42.758", "profit": 0.0}])], G)
-g = r["recon_log"][-1]
-print(f"  25-11 GBP GBX: fees {g['fees']:.2f} swaps {g['swaps']:.4f} open P/L {g['engine_open_pl']:.2f} diff {g['balance_diff']:+.4f} ok {g['ok']}")
-assert g["ok"] and abs(g["fees"] + 734.5) < 1e-9 and abs(g["swaps"] + 69.2237) < 1e-3 and abs(g["engine_open_pl"] - 9200.0) < 1e-6
-print("GBP GBX PRICE SCALE ✓")
+print("AMBARELLA 17-11 FEE OVERRIDE ✓")

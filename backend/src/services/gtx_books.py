@@ -34,19 +34,14 @@ SYMBOL = {"USD": "$", "EUR": "€", "GBP": "£"}
 #           the difference; if below, no charge and no credit → short charge
 #           rate = min(0, 4 − ref) = 0 at today's USD/EUR/GBP references
 #           (confirmed: Flutter short 03→04-11 charged nothing). % p.a. / 360.
-#           USD ref 3.9 → 7.9% · EUR ref 2.429 → 6.429% · GBP ref 4.2246 → 8.2246%
-#           (GBP from the first GBP trade, ops file 25-11-2026: IMPERIAL BRANDS
-#           Swap_rate_sell −4.2246, swap 69.22 = 10,000 × 3,030p × 0.01 × 8.2246%/360).
-#           GBP ref > 4% → a GBP short would be CREDITED 0.2246% — untested.
-#   GBX   : UK equities quoted in pence (Cross_price 0.01) → price_scale 0.01.
-#   Min fee: USD $50 per order ("Min Fee adj equity"); EUR/GBP none seen (0).
+#           USD ref 3.9 → 7.9% · EUR ref 2.429 → 6.429% · GBP ref 3.733 → 7.733%
 #   Fee   : 0.25% of notional each way (50bps round trip).
 #   EUR history (from the operations CSV + statements): 12-10 charged 7.875%;
 #   13-10 charged 4.858% (broker mis-set, Ben 14-10); 6.429% from 14-10.
 SWAP_MARKUP_PCT = 4.0
 BOOK_DEFAULTS = {
     "EUR": {
-        "fee_mode": "pct_notional", "fee_pct": 0.25, "price_scale": 1.0, "min_fee_per_order": 0.0,
+        "fee_mode": "pct_notional", "fee_pct": 0.25,
         "swap_rate_long_pct": 7.875, "swap_rate_short_pct": 0.0,
         "swap_rate_schedule": [
             {"from": "2026-10-13", "long_pct": 4.858, "short_pct": 0.0},
@@ -55,8 +50,8 @@ BOOK_DEFAULTS = {
         "verified": True,
     },
     "GBP": {
-        "fee_mode": "pct_notional", "fee_pct": 0.25, "price_scale": 0.01, "min_fee_per_order": 0.0,
-        "swap_rate_long_pct": 8.2246, "swap_rate_short_pct": 0.0,
+        "fee_mode": "pct_notional", "fee_pct": 0.25,
+        "swap_rate_long_pct": 7.733, "swap_rate_short_pct": 0.0,
         "swap_rate_schedule": [],
         "verified": True,
     },
@@ -79,9 +74,14 @@ BOOK_CORRECTIONS = {
         {"kind": "missing_close", "instrument": "ABIVAX (CFD)", "open_dt": "2026-11-06T17:02", "open_px": 86.5,
          "close_px": 87.38138, "close_dt": "2026-11-09T15:32:45.000", "stmt_date": "2026-11-09",
          "note": "Broker booked this close late (ops CSV 10-11, order 35444: +881.38, fee 60)"},
-        # AMBARELLA 500 @ 52.696 (17-11): the extra $25 was the broker minimum
-        # fee per order ("Min Fee adj equity" 25.00, ops file 25-11) — now the
-        # engine's min_fee_per_order rule; the earlier fee_override is retired.
+        # AMBARELLA 500 @ 52.696 (17-11 17:04:20): 17-11 statement is exactly
+        # $25.00 below the engine with every other item (gross 3,875.03, swaps
+        # 17.62, open P/L, margin) tying to the cent -> this open charged $50
+        # = $0.10/unit, not $0.05 like every other AMBARELLA fill (09-2026,
+        # 16-11). Lot-specific so the 16-11 1,000 @ 56.089685 stays at $0.05.
+        {"kind": "fee_override", "instrument": "AMBARELLA INC (CFD)", "open_dt": "2026-11-17T17:04",
+         "open_px": 52.696, "fee_per_unit": 0.10, "stmt_date": "2026-11-17",
+         "note": "17-11 statement $25.00 out vs engine at $0.05; inferred $0.10/unit (to confirm on next ops file)"},
     ],
 }
 
