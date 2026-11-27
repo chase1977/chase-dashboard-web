@@ -10,3 +10,5 @@ __pycache__/
 *.pyo
 *.bak
 vite.config.js.timestamp-*.mjs
+# local broker data for regression runs (never commit)
+backend/tests/fixtures/local/

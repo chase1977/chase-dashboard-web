@@ -2034,6 +2034,31 @@ $0.10/unit ($50) while AMBARELLA 1,000 @ 56.089685 (16-11) and every earlier
 fill were $0.05. Shown with the (C) ring badge on Open and Closed tables and a
 note in the recon log; inferred, to confirm on the next operations file.
 
+**Minimum fee per order** (2026-11-27) — `min_fee_per_order` (USD $50; EUR/GBP
+0). The broker tops up an ORDER whose fees total less than the minimum — ops
+file row "Fee: [Min Fee adj equity]" (AMBARELLA 500 buy 17-11: 25 + 25 adj).
+Order = Trades Report rows of one instrument / side / timestamp. An opening
+order's fee is on its FULL quantity, including any part closed the same day
+(10-11 CLOROX buy 2,000 with 1,500 sold that afternoon = $100, no top-up — the
+first attempt, 2b81887, missed this and was reverted). Top-up goes on the lot's
+open / close fee and is noted in the recon log. Replaces the 17-11 AMBARELLA
+`fee_override` entry (mechanism kept for genuine per-lot rate exceptions).
+
+**GBX / price scale** (2026-11-27) — UK equities in the GBP book are quoted in
+**pence** (broker Cross_price 0.01). `price_scale` (GBP default 0.01,
+overridable per instrument in `instrument_terms`) scales every money amount from
+a price: gross, open P/L, 0.25% fee, swap. IMPERIAL BRANDS 25-11: fee £734.50,
+swap £69.22 at **8.2246%** (GBP ref 4.2246 + 4), realised −£803.72; 26-11 closed
+15,000 @ 3,391.3202p, realised +£66,283.84 — to the penny. GBP ref > 4% → a GBP
+short would be credited 0.2246% (untested).
+
+**Full-history regression — run before every engine push**:
+`python tests\gtx_full_replay.py` (live: every saved statement + saved settings
+via backend/.env, read-only) — add unsaved days with
+`--add 2026-11-25=path\stmt.txt`; `--csv` replays a Supabase export instead.
+Every book, every day must stay ✓. Local data lives in
+`backend/tests/fixtures/local/` (git-ignored).
+
 **Closed Positions → Excel** (2026-11-24) — **⬇ Excel** on each book's Closed
 Positions card downloads `GlobalGTX_Closed_Positions_YYYY-MM-DD.xlsx`
 (`GET /api/gtx/export/closed.xlsx`, `backend/src/services/gtx_export.py`).

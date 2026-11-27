@@ -14,6 +14,15 @@ Broker rules (verified 29-09-2026 against CSV + 7 statements, exact to 1e-8):
   swap  = qty * price * rate% / day_count, x3 on Friday
           charged if lot open at swap cutoff (17:00) that day
   gross = (close - open) * qty * side
+  price_scale (2026-11-27): instruments quoted in a sub-unit (UK equities in
+          GBX pence, broker "Cross_price: 0.01") — every money amount from a
+          price (gross, open P/L, % fee, swap) is × price_scale. GBP book 0.01.
+  min_fee_per_order (2026-11-27): broker "Fee: [Min Fee adj equity]" — an
+          ORDER whose fees total less than the minimum is topped up to it
+          (USD $50: AMBARELLA 500 buy 17-11 = 25 + 25 adj). An order = all
+          Trades Report rows of one instrument / side / timestamp; an opening
+          order's fee is the fee on its FULL quantity, incl. any part closed
+          the same day (10-11 CLOROX buy 2,000, 1,500 sold same day = $100).
 Broker keeps full precision; statement DISPLAYS truncated 2dp.
 
 Broker trade corrections (2026-10-14): the broker can re-book a closed trade
@@ -72,6 +81,11 @@ DEFAULT_SETTINGS = {
     # A fixed swap rate is outside the book's dated schedule and inference.
     # None = the book's known terms (gtx_books.BOOK_INSTRUMENT_TERMS).
     "instrument_terms": None,
+    # Sub-unit quoting (GBX = 0.01 GBP) and minimum fee per order — see module
+    # docstring. Book defaults in gtx_books.BOOK_DEFAULTS; instrument_terms
+    # may override price_scale per instrument.
+    "price_scale": 1.0,
+    "min_fee_per_order": 50.0,
 }
 
 
@@ -99,11 +113,17 @@ def inst_terms(s: dict, instrument: str) -> dict:
     return (s.get("instrument_terms") or {}).get(instrument) or {}
 
 
+def price_scale(s: dict, instrument: str | None = None) -> float:
+    """Money per price unit: 1.0, or 0.01 for a GBX (pence) quoted instrument."""
+    t = {**s, **inst_terms(s, instrument)} if instrument else s
+    return float(t.get("price_scale") or 1.0)
+
+
 def fee_for(qty: float, price: float, s: dict, instrument: str | None = None) -> float:
     """Broker brokerage fee for one fill (open or close), full precision."""
     t = {**s, **inst_terms(s, instrument)} if instrument else s
     if t.get("fee_mode") == "pct_notional":
-        return qty * price * float(t["fee_pct"]) / 100
+        return qty * price * float(t.get("price_scale") or 1.0) * float(t["fee_pct"]) / 100
     return qty * t["fee_per_unit"]
 
 
@@ -154,17 +174,19 @@ class Lot:
     parent_id: str | None = None  # set on a partial close split off another lot
     correction: dict | None = None    # broker re-booking applied (2026-10-14)
     margin_rate: float | None = None  # from the statement's own per-position Margin (2026-10-06)
+    scale: float = 1.0                # price_scale: 0.01 for GBX-quoted (2026-11-27)
 
     def margin(self, default_pct: float) -> float:
         if self.status != "open" or not self.current_px:
             return 0.0
-        rate = self.margin_rate if self.margin_rate is not None else default_pct / 100
-        return self.qty * self.current_px * rate
+        if self.margin_rate is not None:          # statement Margin ÷ (qty × px): scale already inside
+            return self.qty * self.current_px * self.margin_rate
+        return self.qty * self.current_px * self.scale * default_pct / 100
 
     def unrealised(self) -> float:
         if self.status != "open" or self.current_px is None:
             return 0.0
-        return (self.current_px - self.open_px) * self.qty * self.side
+        return (self.current_px - self.open_px) * self.qty * self.side * self.scale
 
 
 def _close_fill(lots: dict, lid: str, t: dict, s: dict, splits: list) -> tuple[float, float]:
@@ -180,7 +202,7 @@ def _close_fill(lots: dict, lid: str, t: dict, s: dict, splits: list) -> tuple[f
     lot = lots[lid]
     q = t["qty"]
     fee = fee_for(q, t["price"], s, lot.instrument)
-    gross = (t["price"] - lot.open_px) * q * lot.side
+    gross = (t["price"] - lot.open_px) * q * lot.side * lot.scale
     if abs(q - lot.qty) < 1e-9:
         lot.status, lot.close_px, lot.close_dt = "closed", t["price"], t["dt"]
         lot.gross, lot.close_fee, lot.current_px = gross, fee, None
@@ -191,7 +213,7 @@ def _close_fill(lots: dict, lid: str, t: dict, s: dict, splits: list) -> tuple[f
                 close_px=t["price"], close_dt=t["dt"], gross=gross,
                 open_fee=lot.open_fee * f, close_fee=fee, swaps=lot.swaps * f,
                 swap_ledger=[{**e, "amount": e["amount"] * f} for e in lot.swap_ledger],
-                status="closed", parent_id=lid, correction=lot.correction)
+                status="closed", parent_id=lid, correction=lot.correction, scale=lot.scale)
     lot.qty -= q
     lot.open_fee -= child.open_fee
     lot.swaps -= child.swaps
@@ -216,7 +238,7 @@ def _allocate_close(t: dict, pool: list, need: dict, lots: dict) -> list | None:
     pool = sorted(pool, key=lambda k: (lots[k].open_dt, k))
     if not pool or sum(need[k] for k in pool) < q - 1e-6:
         return None
-    piece = lambda k, x: (px - lots[k].open_px) * x * lots[k].side
+    piece = lambda k, x: (px - lots[k].open_px) * x * lots[k].side * lots[k].scale
     if len(pool) > 16:                                   # FIFO fallback
         out, left = [], q
         for k in pool:
@@ -334,7 +356,8 @@ def replay(statements: list[dict], settings: dict | None = None) -> dict:
                 qty0 = opened if opened and opened > p["qty"] else p["qty"]
                 fee, fo = _open_fee(qty0, p["open_px"], p["instrument"], p["open_dt"])
                 lots[lid] = Lot(lid, p["instrument"], p["side"], qty0,
-                                p["open_px"], p["open_dt"], open_fee=fee)
+                                p["open_px"], p["open_dt"], open_fee=fee,
+                                scale=price_scale(s, p["instrument"]))
                 _mark_fee(lots[lid], fo, fee_notes)
                 if _d(p["open_dt"]).date() == d:
                     fees_today -= fee
@@ -365,13 +388,15 @@ def replay(statements: list[dict], settings: dict | None = None) -> dict:
                 used.add(i)                            # still (partly) held — step 1 has it
             elif lid not in lots:                      # opened and fully closed today
                 fee, fo = _open_fee(t["qty"], t["price"], t["instrument"], t["dt"])
-                lots[lid] = Lot(lid, t["instrument"], t["side"], t["qty"], t["price"], t["dt"], open_fee=fee)
+                lots[lid] = Lot(lid, t["instrument"], t["side"], t["qty"], t["price"], t["dt"], open_fee=fee,
+                                scale=price_scale(s, t["instrument"]))
                 _mark_fee(lots[lid], fo, fee_notes)
                 fees_today -= fee
                 used.add(i)
         need = {lid: lot.qty - today_qty.get(lid, 0.0) for lid, lot in lots.items()
                 if lot.status == "open" and lot.qty - today_qty.get(lid, 0.0) > 1e-9}
         splits: list = []
+        close_pieces: dict[int, list] = {}
         for i, t in sorted(((i, t) for i, t in enumerate(trades) if i not in used), key=lambda x: x[1]["dt"]):
             pool = [lid for lid, nq in need.items() if nq > 1e-9
                     and lots[lid].instrument == t["instrument"] and lots[lid].side == -t["side"]]
@@ -380,9 +405,12 @@ def replay(statements: list[dict], settings: dict | None = None) -> dict:
                 warnings.append(f"Unmatched trade {t['instrument']} {t['qty']:,.0f} {t['dt']}")
                 continue
             used.add(i)
+            close_pieces[i] = []
             for k, q in alloc:                  # every lot stays its own closed record
                 need[k] -= q
+                n0 = len(splits)
                 g, f = _close_fill(lots, k, {**t, "qty": q}, s, splits)
+                close_pieces[i].append(splits[-1] if len(splits) > n0 else lots[k])
                 gross_today += g
                 fees_today -= f
         # 2b. broker MISSING closes (2026-11-10, ABIVAX 09-11): a lot leaves the
@@ -406,7 +434,7 @@ def replay(statements: list[dict], settings: dict | None = None) -> dict:
             px = float(c["close_px"])
             n_before = len(splits)
             g, f = _close_fill(lots, lid, {"instrument": lot0.instrument, "side": -lot0.side, "qty": q, "price": px,
-                                           "dt": c.get("close_dt") or lot0.open_dt, "profit": (px - lot0.open_px) * q * lot0.side},
+                                           "dt": c.get("close_dt") or lot0.open_dt, "profit": (px - lot0.open_px) * q * lot0.side * lot0.scale},
                                s, splits)
             closed_lot = splits[-1] if len(splits) > n_before else lots[lid]
             closed_lot.correction = {"kind": "missing_close", "booked": c.get("booked"), "original_close_px": None,
@@ -418,6 +446,40 @@ def replay(statements: list[dict], settings: dict | None = None) -> dict:
                                  f"{'on ' + c['booked'] if c.get('booked') else 'on the next statement'}")
         for c in splits:
             lots[c.lot_id] = c
+
+        # 2c. minimum fee per order (broker "Min Fee adj equity", 2026-11-27).
+        # Order = Trades Report rows of one instrument / side / timestamp.
+        # Opening order: fee on its full qty = open fee of each lot it opened
+        # PLUS the open fee already moved to pieces of it closed today (10-11
+        # CLOROX buy 2,000: 1,500 sold the same afternoon -> $100, no top-up).
+        # Closing order: the close fees of every piece it closed.
+        min_fee = float(s.get("min_fee_per_order") or 0.0)
+        if min_fee > 0:
+            orders: dict[tuple, dict] = {}
+            for i, t in enumerate(trades):
+                if i in close_pieces:
+                    o = orders.setdefault(("C", t["instrument"], t["side"], t["dt"]),
+                                          {"pieces": [], "attr": "close_fee", "qty": 0.0})
+                    o["pieces"] += close_pieces[i]
+                elif abs(t["profit"]) < 1e-9:
+                    lid = _lot_id(t["instrument"], t["dt"], t["price"])
+                    if lid not in lots or _d(lots[lid].open_dt).date() != d:
+                        continue
+                    o = orders.setdefault(("O", t["instrument"], t["side"], t["dt"]),
+                                          {"pieces": [], "attr": "open_fee", "qty": 0.0})
+                    o["pieces"] += [l for l in lots.values() if l.lot_id == lid or l.parent_id == lid]
+                else:
+                    continue
+                o["qty"] += t["qty"]
+            for (_, inst, _, _), o in orders.items():
+                paid = sum(getattr(x, o["attr"]) for x in o["pieces"])
+                if 1e-9 < paid < min_fee - 1e-9:
+                    adj = min_fee - paid
+                    tgt = o["pieces"][0]
+                    setattr(tgt, o["attr"], getattr(tgt, o["attr"]) + adj)
+                    fees_today -= adj
+                    fee_notes.append(f"Minimum fee: {inst} {o['qty']:,.0f} order fee {paid:,.2f} "
+                                     f"topped up to {min_fee:,.2f} (+{adj:,.2f})")
         for lid, nq in need.items():
             if nq > 1e-9:
                 warnings.append(f"Lot {lots[lid].instrument} {nq:,.0f} closed but no matching close in Trades Report")
@@ -438,7 +500,7 @@ def replay(statements: list[dict], settings: dict | None = None) -> dict:
                 warnings.append(f"Correction for {c['instrument']} opened {c['open_dt']} — no closed lot found")
                 continue
             new_px = float(c["close_px"])
-            delta = (new_px - lot.close_px) * lot.qty * lot.side
+            delta = (new_px - lot.close_px) * lot.qty * lot.side * lot.scale
             lot.correction = {"booked": c["booked"], "original_close_px": lot.close_px,
                               "original_gross": lot.gross, "delta": delta, "note": c.get("note", "")}
             lot.close_px, lot.gross = new_px, lot.gross + delta
@@ -472,14 +534,14 @@ def replay(statements: list[dict], settings: dict | None = None) -> dict:
                 warnings.append(f"{lot.instrument} closed after cutoff — swap price estimated from close")
             charged.append((lot, px, est))
             if _fixed_rate(s, lot) is None:            # implied / inferred rate: book-rate lots only
-                swap_base += lot.qty * px * mult
+                swap_base += lot.qty * px * lot.scale * mult
 
         def lot_rate(lot, r_long: float, r_short: float) -> float:
             fx = _fixed_rate(s, lot)
             return fx if fx is not None else (r_long if lot.side == 1 else r_short)
 
         def swaps_at(r_long: float, r_short: float) -> list[float]:
-            return [-lot.qty * px * lot_rate(lot, r_long, r_short) / 100 / s["day_count"] * mult
+            return [-lot.qty * px * lot.scale * lot_rate(lot, r_long, r_short) / 100 / s["day_count"] * mult
                     for lot, px, _ in charged]
 
         stmt_bal, stmt_real = acct["balance"], acct["today_realised"]
